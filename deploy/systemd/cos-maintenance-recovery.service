@@ -1,0 +1,11 @@
+# Managed by Chat On Steroids headless deployment
+[Unit]
+Description=Recover interrupted Chat On Steroids installation before runtime services
+Before=cos-headless.target cos-display.service cos-session.service cos-browser.service cos-backend.service cos-discord.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /opt/chat-on-steroids/maintenance.py boot-guard
+RemainAfterExit=yes
+UMask=0077

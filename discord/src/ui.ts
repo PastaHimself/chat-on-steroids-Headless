@@ -18,7 +18,7 @@ export function select(viewId: string, action: string, placeholder: string, opti
 }
 export function sessionDescription(detail: any): string {
   const session = detail.session, live = detail.live;
-  return [`Session: ${session.title || session.id}`, `Local ID: ${session.id}`, `Project: ${session.projectId ?? 'unfiled'}`,
+  return [`Session: ${session.title || 'Untitled session'}`,
     `Observed model: ${session.model ?? 'unknown'}`, `State: ${live?.activeTurnId ? 'working' : live?.stopPending ? 'stop requested' : 'no proven active turn'}`,
     `Automation: ${live?.automation ?? 'unavailable'}`, live?.blocked ? `Blocked: ${live.blocked}` : '',
     live?.goalWait ? `Waiting: ${live.goalWait.reason}` : '', live?.job ? `Compact & Resume: ${live.job.stage}` : '',

@@ -123,3 +123,44 @@ describe('authenticated remote service adapters', () => {
     expect(JSON.stringify(await read('/v1/remote/settings'))).not.toContain('private custom text');
   });
 });
+
+it('archives over 1,000 backend receipts through serialized upkeep without replaying identities', async () => {
+  const first = randomUUID(), body = { id: first, maxWorkers: 2 };
+  await action('settings', body);
+  let state: any = await durable.readDurableStrict('remote-control');
+  const original = state.operations[0]; original.createdAt = 1; original.settledAt = 1;
+  state.operations = [original, ...Array.from({ length: 799 }, () => ({ ...original, id: randomUUID() }))];
+  await durable.writeDurableNow('remote-control', state);
+  await Promise.all([remote.maintainRemoteReceipts(), remote.maintainRemoteReceipts()]);
+  await expect(action('settings', body)).rejects.toMatchObject({ code: 'operation_archived' });
+  await expect(action('settings', { ...body, maxWorkers: 3 })).rejects.toMatchObject({ code: 'id_conflict' });
+  state = await durable.readDurableStrict('remote-control'); expect(state.operations).toHaveLength(0);
+  state.operations = Array.from({ length: 400 }, () => ({ ...original, id: randomUUID() }));
+  await durable.writeDurableNow('remote-control', state); await remote.maintainRemoteReceipts();
+  expect(await read(`/v1/remote/operations/${first}`)).toMatchObject({ state: 'archived', outcome: 'settled' });
+  expect(await read('/v1/remote/operations')).toMatchObject({ operations: [] });
+}, 120_000);
+
+it('retains unresolved receipts and proves rejection only before an effect', async () => {
+  const id = randomUUID();
+  await expect(action('ask', { id, sessionId: 'missing-session', text: 'must not run' })).rejects.toMatchObject({ outcome: 'rejected', operationId: id });
+  expect(await read(`/v1/remote/operations/${id}`)).toMatchObject({ state: 'rejected' });
+  const state: any = await durable.readDurableStrict('remote-control');
+  state.operations.push({ id: randomUUID(), fingerprint: 'a'.repeat(64), state: 'started', action: 'ask', createdAt: 1 });
+  await durable.writeDurableNow('remote-control', state); await remote.maintainRemoteReceipts(Date.now() + 7200000);
+  expect(await read('/v1/remote/operations')).toMatchObject({ operations: [expect.objectContaining({ state: 'unconfirmed' })] });
+});
+
+it('keeps hot receipts when archive fence publication fails', async () => {
+  await action('settings', { id: randomUUID(), maxWorkers: 2 });
+  const state: any = await durable.readDurableStrict('remote-control'); state.operations[0].createdAt = 1; state.operations[0].settledAt = 1;
+  await durable.writeDurableNow('remote-control', state);
+  const rename = fs.rename.bind(fs);
+  vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+    if (String(to).includes(`${path.sep}fences${path.sep}`)) throw new Error('fence publication interrupted');
+    return rename(from, to);
+  });
+  await expect(remote.maintainRemoteReceipts()).rejects.toThrow('interrupted');
+  expect((await durable.readDurableStrict<any>('remote-control')).operations).toHaveLength(1);
+  vi.restoreAllMocks();
+});

@@ -1,3 +1,4 @@
+import { operationalHealth } from './operational-health.js';
 /**
  * A self-test that answers "where exactly is this broken", one hop at a time.
  *
@@ -405,6 +406,12 @@ export async function runDiagnostics(): Promise<Diagnosis> {
   // 7. The failure that looks exactly like success: ChatGPT connects, this app
   //    answers, and the model is still not allowed to call anything.
   checks.push(developerMode(seen, lastToolCallAt()));
+
+  const health = await operationalHealth();
+  for (const component of health.components) checks.push({ name: component.label,
+    status: component.state === 'unknown' ? 'not-run' : component.state === 'attention' ? 'fail' : 'pass',
+    ok: component.state === 'unknown' ? null : component.state === 'available',
+    detail: `${component.detail}${component.state !== 'available' ? ` ${component.action}` : ''} Observed ${new Date(component.observedAt).toISOString()}.` });
 
   const broken = checks.filter((c) => c.status === 'fail');
   const incomplete = checks.filter((c) => c.status === 'not-run');

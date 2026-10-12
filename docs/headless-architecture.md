@@ -44,8 +44,8 @@ Grouped suffixes in the table inherit the first route's `/v1/remote` or `/v1/ses
 
 | Routes | Scope |
 | --- | --- |
-| `GET /v1/remote/settings`, `/resources`, `/models`, `/projects`, `/files` | Safe settings, resources, observed model catalog and approved directory reads |
-| `GET /v1/remote/plans`, `/plans/{id}`, `/operations/{id}` | Review drafts and durable mutation receipts |
+| `GET /v1/remote/settings`, `/health`, `/resources`, `/models`, `/projects`, `/files` | Safe settings, resources, observed model catalog and approved directory reads |
+| `GET /v1/remote/plans`, `/plans/{id}`, `/operations`, `/operations/{id}` | Review drafts and durable mutation receipts |
 | `GET /v1/sessions/{id}/controls`, `/taskplan`, `/workers` | Actual per-session controls, executor plan and owned worker family |
 | `POST /v1/remote/ask`, `/new`, `/stop`, `/compact` | Existing input, session opening, native Stop and continuation owners; `send` grant |
 | `POST /v1/remote/automation`, `/objective`, `/project`, `/settings` | Narrow existing settings; `configure` grant |
@@ -59,3 +59,6 @@ unconfirmed. Reads expose redacted projections, so a stage edit addresses one in
 writing a displayed/truncated plan back over the raw stages. Worker operations additionally
 require the owning prime session and exact run incarnation. Existing health, status, history,
 outbox and cancel routes remain in their original owners.
+
+Operational health, durable controls, archive formats and local recovery workflows are documented
+in [Reliability rollout](reliability-rollout.md). Live acceptance remains an explicit deployment gate.

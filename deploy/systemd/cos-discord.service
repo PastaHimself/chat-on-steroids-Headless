@@ -1,5 +1,7 @@
 # Managed by Chat On Steroids headless deployment
 [Unit]
+Requires=cos-maintenance-recovery.service
+After=cos-maintenance-recovery.service
 Description=Chat On Steroids Discord remote control
 PartOf=cos-headless.target
 Wants=network-online.target cos-backend.service

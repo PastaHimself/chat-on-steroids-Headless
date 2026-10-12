@@ -11,11 +11,11 @@ try {
     const response = await fetch(`http://127.0.0.1:${endpoint.port}${route}`, { redirect: 'error', headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) });
     if (!response.ok) throw new Error('Backend health request refused'); return response.json();
   };
-  const health = await request('/v1/health');
-  if (!health.ok) throw new Error('Backend unhealthy');
-  if (process.argv.includes('--ready')) {
-    const status = await request('/v1/status');
-    if (!status.bridge.present || !status.bridge.paired || status.connection.state !== 'connected') throw new Error('Manual browser/extension/tunnel setup or recovery is required');
+  const health = await request('/v1/remote/health');
+  console.log(`Service: ${health.serviceAvailable ? 'available' : 'unavailable'}; task readiness: ${health.taskReadiness}.`);
+  for (const component of health.components) console.log(`${component.label}: ${component.state}. ${component.detail}${component.state !== 'available' ? ` ${component.action}` : ''} Observed ${new Date(component.observedAt).toISOString()}.`);
+  if (process.argv.includes('--ready') && health.taskReadiness !== 'ready') {
+    console.error('Task readiness is not proven; inspect the provider login and a real task receipt locally.');
+    process.exitCode = 2;
   }
-  console.log('Loopback backend health verified. Account authentication is a separate manual/provider check.');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

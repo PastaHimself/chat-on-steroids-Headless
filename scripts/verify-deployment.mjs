@@ -11,6 +11,7 @@ for (const name of ['install-ubuntu.sh', 'swap-zram.sh', 'swap-disk.sh']) {
   try { execFileSync('bash', [path.join(root, 'deploy', name)], { stdio: 'pipe' }); throw new Error(`${name} did not enforce its privileged installer boundary`); }
   catch (error) { if (error.status !== 1 || !String(error.stderr).includes('sudo')) throw error; }
 }
+execFileSync('python3', [path.join(root, 'test/maintenance_drills.py')], { stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-unit-check-'));
 try {
   const units = [];

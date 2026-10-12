@@ -1,3 +1,5 @@
+import { stageGoalControlJournal, settleGoalControlJournal, supersedeGoalControlJournal, reopenGoalControlJournal } from './goal-control-journal.js';
+import { recoveryHeld } from './recovery-hold.js';
 /**
  * The goal loop — a second model, standing in for the user, that keeps a chat moving.
  *
@@ -773,6 +775,113 @@ export interface GoalObjectivesSnapshot {
 type GoalControlWrite = { conversationId: string; invalidated: boolean; changed: boolean };
 const pendingGoalObjectives = new Set<GoalControlWrite>();
 const pendingGoalSwitches = new Set<GoalControlWrite>();
+const compoundGoalControls = new Set<string>();
+let goalControlRecoveryRequired = false;
+export function goalControlRecoveryNeeded(): boolean { return goalControlRecoveryRequired; }
+export function goalControlsPending(conversationId: string): boolean { return compoundGoalControls.has(conversationId); }
+
+/** Stage the three owner rows; durable intent and all ledgers precede one memory publication. */
+export function saveCombinedGoalControlsNow(requestedSessionId: string | null, conversationId: string, input: {
+  mode: GoalMode; enabled: boolean; afterTurn?: boolean; objective?: string; active: boolean; preserveSwitch?: boolean; current?: (silenceSourceTurnId?: string) => boolean;
+}, assertCurrent: () => Promise<void>): Promise<void> {
+  const write: GoalControlWrite = { conversationId, invalidated: false, changed: false };
+  const offOnly = !input.enabled && !input.active && input.objective === undefined && !input.preserveSwitch;
+  if (goalControlRecoveryRequired) return Promise.reject(new Error("Goal controls need recovery before another save"));
+  if (!input.enabled && !input.preserveSwitch) invalidateGoalControlWrites(pendingGoalSwitches, [conversationId]);
+  pendingGoalSwitches.add(write); pendingGoalObjectives.add(write);
+  return serialGoalSwitch(async () => {
+    compoundGoalControls.add(conversationId);
+    let staged = false;
+    try {
+      if (goalControlRecoveryRequired) throw new Error('Goal controls need recovery before another save');
+      const sessionId = requestedSessionId ?? (await findSessionByConversation(conversationId, { requireUnique: true }))?.id ?? null;
+      const assertBoundOwner = async () => {
+        const session = sessionId ? await getSession(sessionId) : await findSessionByConversation(conversationId, { requireUnique: true });
+        if ((sessionId && !session) || (session && session.conversationId !== conversationId) ||
+            (!offOnly && (session?.origin?.kind === 'worker' || session?.origin?.kind === 'helper'))) throw new Error('conversation_changed');
+      };
+      await assertBoundOwner();
+      await assertCurrent();
+      if (write.invalidated || write.conversationId !== conversationId) throw new Error('Goal controls were superseded');
+      for (let attempt = 0; attempt < 8; attempt++) {
+        write.changed = false;
+        const beforeSwitch = goalSwitches.get(conversationId), beforeReply = goalReplies.get(conversationId);
+        const replyRevision = JSON.stringify([...goalReplies.values()]);
+        if (beforeSwitch?.role === 'decision' && !offOnly) throw new Error('goal_helper_controls');
+        const switches = new Map(goalSwitches), objectives = new Map(goalObjectives), replies = new Map(goalReplies);
+        if (!input.preserveSwitch && beforeSwitch?.role !== 'decision') switches.set(conversationId, { enabled: input.enabled, mode: input.mode, afterTurn: input.afterTurn ?? beforeSwitch?.afterTurn ?? false, at: Date.now() });
+        if (input.objective !== undefined) {
+          objectives.delete(conversationId);
+          if (input.objective.trim()) objectives.set(conversationId, input.objective.trim());
+        }
+        const session = sessionId ? await getSession(sessionId) : null;
+        if (sessionId && session?.conversationId !== conversationId) throw new Error("conversation_changed");
+        const [end] = sessionId ? await readRecentEvents(sessionId, 1, { kinds: ["turn_start", "turn_end", "user_message"] }) : [];
+        const silenceSource = (beforeReply?.listenUntil ?? 0) <= Date.now() ? beforeReply?.silenceSourceTurnId : undefined;
+        const idle = () => input.current?.(silenceSource) ?? true;
+        const active = input.active && idle() && (!session?.activeTurnId || session.activeTurnId === silenceSource) &&
+          (!beforeReply?.silencePro || input.afterTurn !== false) &&
+          !(end && (end.kind === "turn_start" || end.kind === "user_message") && (!beforeReply || beforeReply.eventSeq <= end.seq)) &&
+          !(end?.kind === "turn_end" && end.reason === "thinking_failed" && end.time + 5 * 60_000 > Date.now());
+        if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()])) continue;
+        if (beforeReply) replies.set(conversationId, { ...beforeReply, state: active ? 'pending' : 'handled',
+          ...(active ? { acceptedAt: Math.max(Date.now(), beforeReply.acceptedAt + 1), explicitActivation: true } : {}) });
+        if (active && sessionId && end?.kind === "turn_end" && end.turnId &&
+            (end.outcome === "stopped" || (end.outcome === "failed" && end.reason === "thinking_failed")) && (!beforeReply || beforeReply.eventSeq < end.seq)) {
+          replies.set(conversationId, { conversationId, sessionId, replyId: `activation:${end.turnId}`.slice(0, 200),
+            turnId: end.turnId, eventSeq: end.seq, acceptedAt: Date.now(), state: "pending", explicitActivation: true });
+        }
+        boundGoalSwitches(switches);
+        const ownerRows = (a: typeof switches, b: typeof objectives, c: typeof replies): Array<Record<string, unknown> | null> => [
+          a.has(conversationId) ? { conversationId, ...a.get(conversationId)! } : null,
+          b.has(conversationId) ? { conversationId, objective: b.get(conversationId)! } : null,
+          c.has(conversationId) ? { ...c.get(conversationId)! } : null
+        ];
+        staged = true;
+        await stageGoalControlJournal(sessionId, conversationId, ownerRows(goalSwitches, goalObjectives, goalReplies), ownerRows(switches, objectives, replies));
+        await writeDurableNow(GOAL_SWITCHES_STATE, goalSwitchesSnapshot(switches));
+        await writeDurableNow(GOAL_OBJECTIVES_STATE, goalObjectivesSnapshot(objectives));
+        await writeDurableNow(GOAL_REPLIES_STATE, { version: 1, savedAt: Date.now(), replies: [...replies.values()] });
+        await assertCurrent();
+        await assertBoundOwner();
+        if (write.invalidated || write.conversationId !== conversationId) throw new Error('Goal controls were superseded');
+        if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()]) || (active && !idle())) continue;
+        await settleGoalControlJournal();
+        await assertCurrent();
+        await assertBoundOwner();
+        if (write.invalidated || write.conversationId !== conversationId) throw new Error('Goal controls changed during commit');
+        if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()]) || (active && !idle())) continue;
+        publishGoalSwitches(switches);
+        goalObjectives.clear(); for (const [id, objective] of objectives) goalObjectives.set(id, objective);
+        goalReplies.clear(); for (const [id, reply] of replies) goalReplies.set(id, reply);
+        revokeGoalControlDraft(conversationId);
+        notifyGoalChange();
+        return;
+      }
+      throw new Error('Goal controls kept changing; retry after changes settle');
+    } catch (error) {
+      if (!staged) throw error;
+      // Repair from current accepted owners. Never restore a stale transaction snapshot.
+      try {
+        await reopenGoalControlJournal();
+        let repaired = false;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          write.changed = false;
+          const replyRevision = JSON.stringify([...goalReplies.values()]);
+          await writeDurableNow(GOAL_SWITCHES_STATE, snapshotGoalSwitches());
+          await writeDurableNow(GOAL_OBJECTIVES_STATE, snapshotGoalObjectives());
+          await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
+          if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()])) continue;
+          await supersedeGoalControlJournal();
+          if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()])) continue;
+          repaired = true; break;
+        }
+        goalControlRecoveryRequired = !repaired;
+      } catch { goalControlRecoveryRequired = true; }
+      throw error;
+    } finally { compoundGoalControls.delete(conversationId); pendingGoalSwitches.delete(write); pendingGoalObjectives.delete(write); }
+  });
+}
 
 function invalidateGoalControlWrites(pending: Set<GoalControlWrite>, conversations?: readonly string[]): void {
   for (const write of pending) {
@@ -803,6 +912,7 @@ function saveGoalControl<T>(
   const write: GoalControlWrite = { conversationId, invalidated: false, changed: false };
   pending.add(write);
   return serialGoalSwitch(async () => {
+    if (goalControlRecoveryRequired) { pending.delete(write); throw new Error("Goal controls need recovery before another save"); }
     let attempted = false;
     try {
       for (let revision = 0; revision < 8; revision++) {
@@ -1118,6 +1228,7 @@ export function goalSwitchEnabledFor(conversationId: string): boolean {
  * places that ask — the route and the ticket below — must never drift apart.
  */
 export function goalArmedFor(conversationId: string): boolean {
+  if (recoveryHeld() || goalControlRecoveryRequired || goalControlsPending(conversationId)) return false;
   const held = goalSwitchFor(conversationId);
   if (held.own) return held.enabled;
   return held.enabled || goalObjectiveFor(conversationId) !== '';
@@ -1402,6 +1513,14 @@ export function retireGoalDraftsFor(conversationId: string): boolean {
   return true;
 }
 
+function revokeGoalControlDraft(conversationId: string): void {
+  const draft = drafts.get(conversationId);
+  if (!draft) return;
+  draft.acknowledged = true; draft.abort?.abort();
+  draft.settledAt ||= Date.now(); draft.text = ''; draft.reply = '';
+  drafts.delete(conversationId);
+}
+
 /**
  * Applies one chat switch to the durable Goal obligation, not merely to its current draft.
  *
@@ -1532,6 +1651,7 @@ export async function claimGoalRecoveryStopNow(conversationId: string, replyId: 
 }
 
 export function resetGoalStateForTests(): void {
+  goalControlRecoveryRequired = false; compoundGoalControls.clear();
   for (const draft of drafts.values()) draft.abort?.abort();
   invalidateGoalControlWrites(pendingGoalObjectives);
   invalidateGoalControlWrites(pendingGoalSwitches);

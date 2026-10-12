@@ -1,5 +1,7 @@
 # Managed by Chat On Steroids headless deployment
 [Unit]
+Requires=cos-maintenance-recovery.service
+After=cos-maintenance-recovery.service
 Description=Chat On Steroids Brave companion browser
 PartOf=cos-headless.target
 Requires=cos-display.service cos-session.service

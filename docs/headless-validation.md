@@ -18,7 +18,38 @@ owner map and additive endpoint surface are in [architecture](headless-architect
 The existing desktop remains the default; server mode retains Electron and a graphical browser
 on Xvfb. This is not a claim of display-independent or native Chromium headless operation.
 
-## Results
+## Reliability roadmap follow-up
+
+The [implementation record](reliability-implementation.md) and
+[rollout worksheet](reliability-rollout.md) cover this PR's durable controls, receipt upkeep,
+health, recoverable updates, encrypted backups and operator workflow changes.
+
+| Check | Result |
+| --- | --- |
+| `COS_TEST_WORKERS=2 GITHUB_ACTIONS=true npm run verify` | Exit 0: 8,411 passed, 162 skipped, no test retries enabled |
+| Full-suite phases | 321 passed/14 skipped files and 8,405 passed/140 skipped tests; serialized shutdown/computer phase: six passed/22 skipped |
+| Root and Discord type checks, public-history privacy and notices | Passed in full verification |
+| Root and Discord production builds | Passed |
+| Generated Discord reference | Passed: 34 command definitions |
+| `npm run verify:deployment` | Passed: 11 filesystem/restart/GPG drills, shell/unit syntax, privilege refusal and read-only swap checks |
+| Isolated Electron/Xvfb/Brave smoke | Passed: authenticated loopback API, no renderer windows, clean shutdown/credential removal, profile persistence and browser process-group stop/restart |
+| Desktop UI checks | All 50 covered: 49 passed in the repeated complete run, and the native pet overlay passed its final isolated run |
+
+The native pet overlay check passed in the earlier complete UI coverage, then failed at two
+different existing render/timing assertions during repeated checks (restored shell count and
+transparent-window pixels). Pet source and timing assertions were not changed. After full
+regression and the other UI checks finished, the final isolated run passed on its first attempt
+with the repository retry setting available; no retry was needed in that final run. The complete
+repeated UI command exited 1, so the native-window flakiness remains visible in this record.
+
+The [before](reliability-ui/before.png) and [after](reliability-ui/after.png) health screenshots
+use the production renderer with isolated placeholder diagnostic responses. They illustrate
+the added unknown-provider and restore-hold rows; they do not prove live provider readiness.
+
+No authenticated VPS task, installed systemd lifecycle, unattended reboot, phone walkthrough,
+24-hour acceptance run or seven-day soak was performed. The worksheet keeps those gates pending.
+
+## Initial headless baseline results
 
 | Check | Result |
 | --- | --- |
@@ -117,8 +148,10 @@ not establish ChatGPT sign-in. Browser last-session restoration can require manu
 after a crash; background flags do not establish tab-discard immunity. An acknowledged final
 turn is reported as a recorded completion, not independent proof of whole-task correctness.
 
-Receipts, plans, panels, notifications and bot state have explicit caps. A busy service needs
-the manual settled-receipt maintenance described in [operations](headless-vps.md#6-operations-monitoring-and-recovery).
+Hot receipts, plans, panels, notifications and bot state have explicit caps. Settled receipts
+archive automatically with permanent replay fences; unresolved records remain protected.
+See [operations](headless-vps.md#6-operations-monitoring-and-recovery) and the
+[reliability rollout](reliability-rollout.md) for storage and recovery requirements.
 Uncertain effects fail closed and require owner-state inspection; they are never blindly replayed.
 Known credential shapes and local tokens are redacted, but arbitrary unlabeled secrets in
 conversation prose cannot be reliably detected. Use explicitly authorized private channels.

@@ -127,8 +127,14 @@ async function flushOne(name: string, slot: PendingWrite): Promise<void> {
     if (slot.value === null) {
       await fs.rm(target, { force: true });
     } else {
-      await fs.writeFile(tmp, JSON.stringify(slot.value), 'utf8');
+      await fs.writeFile(tmp, JSON.stringify(slot.value), { encoding: 'utf8', mode: 0o600 });
+      const handle = await fs.open(tmp, 'r+');
+      try { await handle.sync(); } finally { await handle.close(); }
       await fs.rename(tmp, target);
+    }
+    if (process.platform === 'linux') {
+      const directory = await fs.open(root, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
     }
   } catch (err) {
     logWarn(`could not save ${name} state: ${(err as Error).message}`);

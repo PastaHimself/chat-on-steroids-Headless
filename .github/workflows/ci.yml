@@ -220,6 +220,8 @@ jobs:
         run: |
           npm ci
           npm run discord:install
+          # Electron downloads its runtime on first resolution, not during npm ci.
+          node -e "require('electron')"
           sudo apt-get update
           sudo apt-get install -y xvfb xauth x11-utils
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
@@ -231,6 +233,6 @@ jobs:
           node scripts/generate-discord-reference.mjs --check
       - name: Verify server boundaries and real windowless lifecycle
         run: |
-          npm test -- --maxWorkers=2 test/headless.test.ts test/remote-control.test.ts test/discord.test.ts test/control-api.test.ts
+          npm test -- --maxWorkers=2 test/headless.test.ts test/remote-control.test.ts test/discord.test.ts test/control-api.test.ts test/receipt-archive.test.ts test/health-alerts.test.ts test/recovery-hold.test.ts test/goal-control-race.test.ts
           npm run verify:deployment
           npm run verify:headless

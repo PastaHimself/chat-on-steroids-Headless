@@ -1,3 +1,4 @@
+import { recoveryHeld } from '../recovery-hold.js';
 import { offerToolInput, acknowledgeToolInput, TOOL_INPUT_HEADER } from '../session/input.js';
 import { noteConnectorUse } from '../connector-proof.js';
 import { pluginManager } from '../plugins/manager.js';
@@ -633,6 +634,7 @@ export async function dispatch(
   parent?: CallContext,
   setupProfileId: string | null = null
 ): Promise<ToolResult> {
+  if (recoveryHeld()) return fail('RESTORE_HELD: Local reconciliation is required before model tools or instructions can run. No tool was executed.');
   // The context is built here, one layer out from where the work happens, because the
   // compaction barrier asks about the whole request and not just the handler. A call is
   // still unsettled while it waits for its request-id evidence, while its outcome is being

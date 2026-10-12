@@ -28,7 +28,7 @@ for envfile in backend discord; do
   fi
 done
 apt-get update
-apt-get install -y xvfb xauth x11-utils dbus-x11 gnome-keyring libsecret-1-0 libnss3 libatk-bridge2.0-0 libgtk-3-0t64 libgbm1 libasound2t64 openssl curl ca-certificates ripgrep
+apt-get install -y xvfb xauth x11-utils dbus-x11 gnome-keyring libsecret-1-0 libnss3 libatk-bridge2.0-0 libgtk-3-0t64 libgbm1 libasound2t64 openssl curl ca-certificates ripgrep gnupg python3
 if ! command -v brave-browser >/dev/null; then
   [[ ! -e /usr/share/keyrings/brave-browser-archive-keyring.gpg && ! -e /etc/apt/sources.list.d/brave-browser-release.sources ]] || { echo 'Existing Brave configuration needs manual validation.' >&2; exit 1; }
   temp=$(mktemp -d); trap 'rm -rf "$temp"' EXIT
@@ -56,30 +56,11 @@ install -d -m 0700 -o cos-backend -g cos-backend /var/lib/cos-backend/app /var/l
 install -d -m 0750 -o cos-backend -g cos-backend /srv/cos-projects
 install -d -m 0700 /etc/chat-on-steroids
 install -d -m 0755 /opt/chat-on-steroids
-if [[ -e "$destination" ]]; then
-  [[ "${1:-}" = '--update' && -d "$destination" && ! -L "$destination" ]] || { echo 'Existing installation retained. Use --update after a backup and validation.' >&2; exit 1; }
-  systemctl stop cos-headless.target cos-discord.service cos-backend.service cos-browser.service cos-session.service cos-display.service
-  mv "$destination" "/opt/chat-on-steroids/previous-$(date +%Y%m%d%H%M%S)"
-fi
-install -d -m 0755 "$destination"
-for item in package.json package-lock.json LICENSE THIRD-PARTY-NOTICES.txt node_modules out extension discord deploy; do cp -a "$repo/$item" "$destination/"; done
-for item in resources native; do [[ ! -d "$repo/$item" ]] || cp -a "$repo/$item" "$destination/"; done
-chown -R root:root "$destination"
-chmod -R go-w "$destination"
-[[ -x "$destination/node_modules/electron/dist/chrome-sandbox" ]] || { echo 'Verified Electron sandbox helper is missing.' >&2; exit 1; }
-chmod 4755 "$destination/node_modules/electron/dist/chrome-sandbox"
-find "$destination/deploy" -name '*.sh' -exec chmod 0755 {} +
+python3 "$repo/deploy/maintenance.py" bootstrap --source "$repo"
 for envfile in backend discord; do
   [[ -e "/etc/chat-on-steroids/$envfile.env" ]] || install -m 0600 "$repo/deploy/$envfile.env.example" "/etc/chat-on-steroids/$envfile.env"
 done
 gid=$(getent group cos-control | cut -d: -f3)
 sed -i "s/^COS_CONTROL_GID=REPLACE_LOCALLY$/COS_CONTROL_GID=$gid/" /etc/chat-on-steroids/backend.env
-for unit in "$repo"/deploy/systemd/*; do
-  target="/etc/systemd/system/$(basename "$unit")"
-  if [[ -e "$target" ]] && ! cmp -s "$unit" "$target"; then
-    cp -a "$target" "$target.bak-$(date +%Y%m%d%H%M%S)"
-  fi
-  install -m 0644 "$unit" "$target"
-done
-systemctl daemon-reload
-echo 'Installed. Complete secure local bootstrap, interactive authentication and keyring provisioning before enabling the services. See docs/headless-vps.md.'
+python3 "$repo/deploy/maintenance.py" install --source "$repo"
+echo 'Complete secure local bootstrap, interactive authentication and keyring provisioning before enabling services. See docs/headless-vps.md.'

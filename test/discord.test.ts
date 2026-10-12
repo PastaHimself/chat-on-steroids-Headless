@@ -23,6 +23,7 @@ function interaction(name: string, values: Record<string, any> = {}, user = admi
 }
 function backend() {
   const request = vi.fn(async (route: string): Promise<any> => {
+    if (route === '/v1/remote/health') return { components: [{ id: 'recovery', state: 'available' }], serviceAvailable: true, taskReadiness: 'unknown' };
     if (route === '/v1/health') return { ok: true, actions: { enabled: true } };
     if (route === '/v1/status') return { bridge: { running: true, present: true, paired: true }, connection: { state: 'connected' } };
     if (route.startsWith('/v1/remote/settings')) return { actionsAllowed: true, permissions: { send: true, configure: true, plan: true, workers: true } };
@@ -252,4 +253,40 @@ describe('control transport and notifications', () => {
     await expect((notifications as any).update(key)).rejects.toThrow('changed');
     expect(send).not.toHaveBeenCalled(); expect(store.snapshot().monitors[key]).toMatchObject({ inputId: newInput, from: 0, createdAt: 200 }); notifications.stop();
   });
+});
+
+it('processes more than 2,000 bot receipts across archive cycles and preserves unresolved work', async () => {
+  const first = '666666666666666666';
+  await store.update(state => {
+    for (let index = 0; index < 1600; index++) state.interactions[String(BigInt(first) + BigInt(index))] =
+      { operationId: randomUUID(), state: 'done', createdAt: 1, fingerprint: 'a'.repeat(64) };
+    state.interactions['777777777777777777'] = { operationId: randomUUID(), state: 'started', createdAt: 1 };
+  });
+  await Promise.all([store.upkeep(), store.upkeep()]);
+  expect(Object.keys(store.snapshot().interactions)).toEqual(['777777777777777777']);
+  expect(await store.archive.get(first)).toMatchObject({ outcome: 'done' });
+  await store.update(state => {
+    for (let index = 1600; index < 2200; index++) state.interactions[String(BigInt(first) + BigInt(index))] =
+      { operationId: randomUUID(), state: 'done', createdAt: 1, fingerprint: 'a'.repeat(64) };
+  });
+  await store.upkeep(); const restarted = new StateStore(store.directory); await restarted.load();
+  expect(await restarted.archive.get(first)).toMatchObject({ outcome: 'done' });
+  expect(Object.keys(restarted.snapshot().interactions)).toHaveLength(1);
+}, 120_000);
+
+it('offers owner-bound operation inspection and never resends an uncertain receipt', async () => {
+  const operation = randomUUID(), api = backend(), request = api.request.getMockImplementation()!;
+  api.request.mockImplementation(async (route: string) => route.startsWith('/v1/remote/operations?')
+    ? { operations: [{ id: operation, action: 'ask', state: 'unconfirmed', createdAt: 1 }], nextCursor: null }
+    : route === `/v1/remote/operations/${operation}` ? { id: operation, action: 'ask', state: 'unconfirmed', sessionId: session } : request(route));
+  const controller = new DiscordController(config, store, api as unknown as ControlClient);
+  const list = await controller.command(interaction('operations'));
+  const choose = list.components[0].toJSON().components[0].custom_id;
+  const viewId = choose.split(':')[0];
+  const receipt = await (controller as any).component({ ...interaction('operations'), values: [operation] }, viewId, 'choose', store.getView(viewId, admin, guild, channel));
+  const check = receipt.components[0].toJSON().components[0].custom_id, checkView = check.split(':')[0];
+  await (controller as any).component(interaction('operation'), checkView, 'receipt', store.getView(checkView, admin, guild, channel));
+  expect(api.action).not.toHaveBeenCalled();
+  const stolen = { ...interaction('operations', {}, other), customId: choose, values: [operation], isChatInputCommand: () => false, isStringSelectMenu: () => true };
+  await controller.handle(stolen); expect(api.action).not.toHaveBeenCalled(); expect(stolen.reply).toHaveBeenCalled();
 });

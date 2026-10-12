@@ -374,7 +374,8 @@ async function handleAction(req: http.IncomingMessage, res: http.ServerResponse,
     if (answer === undefined) return reply(res, 404, { error: 'not_found' });
     return reply(res, answer.status, answer.body);
   } catch (error) {
-    if (error instanceof RequestError) return reply(res, error.status, { error: error.code, ...(error.detail ? { detail: error.detail } : {}) });
+    if (error instanceof RequestError) return reply(res, error.status, { error: error.code, ...(error.detail ? { detail: error.detail } : {}),
+      ...(error.outcome ? { outcome: error.outcome } : {}), ...(error.operationId ? { operationId: error.operationId } : {}) });
     throw error;
   }
 }

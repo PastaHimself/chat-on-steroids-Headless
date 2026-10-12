@@ -22,6 +22,7 @@ export class Notifications {
   private running = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  private backoff = new Map<string, { failures: number; until: number }>();
   constructor(readonly config: Bootstrap, readonly store: StateStore, readonly api: ControlClient, readonly transport: NotificationTransport,
     private readonly report: (message: string) => void = () => undefined) {}
   start(): void { if (!this.timer && !this.stopped) this.timer = setTimeout(() => { this.timer = null; void this.tick(); }, 1000); }
@@ -32,27 +33,53 @@ export class Notifications {
     try {
       const state = this.store.snapshot();
       if (!state.settings.progress && !state.settings.finalResults) return;
-      for (const [key, monitor] of Object.entries(state.monitors)) {
-        if (this.stopped) break;
-        if (Date.now() - monitor.lastUpdate < state.settings.frequencySeconds * 1000) continue;
-        try { await this.update(key); }
-        catch { this.report(`Notification update pending for monitor ${key}; backend or Discord unavailable. No mutation was retried.`); }
-      }
+      for (const key of this.backoff.keys()) if (!state.monitors[key]) this.backoff.delete(key);
+      const due = Object.entries(state.monitors).filter(([key, monitor]) =>
+        Date.now() - monitor.lastUpdate >= state.settings.frequencySeconds * 1000 && (this.backoff.get(key)?.until ?? 0) <= Date.now()).map(([key]) => key);
+      if (!due.length) return;
+      const health = await this.api.request('/v1/remote/health', undefined, 5000);
+      if (health.components.some((row: any) => row.id === 'recovery' && row.state === 'attention')) return;
+      const queue = await this.api.request('/v1/inputs?limit=100', undefined, 5000).catch(() => ({ inputs: [] }));
+      let index = 0;
+      const poll = async () => {
+        while (!this.stopped && index < due.length) {
+          const key = due[index++]!;
+          try { await this.update(key, queue); this.backoff.delete(key); }
+          catch {
+            const failures = (this.backoff.get(key)?.failures ?? 0) + 1;
+            this.backoff.set(key, { failures, until: Date.now() + Math.min(300_000, 15_000 * 2 ** Math.min(failures, 5)) });
+            this.report(`Notification update pending for monitor ${key}; backend or Discord unavailable. No backend mutation was retried.`);
+          }
+        }
+      };
+      await Promise.all([poll(), poll()]);
+    } catch {
+      const until = Date.now() + 30_000;
+      for (const key of Object.keys(this.store.snapshot().monitors)) this.backoff.set(key, { failures: 1, until });
+      this.report('Notification health observation unavailable; publications remain held.');
     } finally {
       this.running = false;
       if (!this.stopped) this.timer = setTimeout(() => { this.timer = null; void this.tick(); }, 15_000);
     }
   }
-  private async update(key: string): Promise<void> {
+  private async update(key: string, queue?: any): Promise<void> {
     const state = this.store.snapshot(), monitor = state.monitors[key]; if (!monitor) return;
     const owns = (row: typeof monitor | undefined) => row?.inputId === monitor.inputId && row?.createdAt === monitor.createdAt && row?.from === monitor.from;
     if (state.settings.notificationChannel !== monitor.channelId ||
       (this.config.channels.length && !this.config.channels.includes(monitor.channelId)) ||
       (state.settings.channels.length && !state.settings.channels.includes(monitor.channelId))) return;
     const path = `/v1/sessions/${monitor.sessionId}`;
-    const detail = await this.api.request(`${path}?live=1`);
-    const page = await this.api.request(`${path}/events?from=${monitor.from}&limit=100`);
-    const queue = await this.api.request('/v1/inputs?limit=100');
+    let detail = await this.api.request(`${path}?live=1`, undefined, 5000);
+    const page: { events: any[]; nextFrom: number } = { events: [], nextFrom: monitor.from };
+    const deadline = Date.now() + 10_000;
+    for (let count = 0; count < 5 && !this.stopped; count++) {
+      const next = await this.api.request(`${path}/events?from=${page.nextFrom}&limit=100`, undefined, 5000);
+      if (!Number.isSafeInteger(next.nextFrom) || next.nextFrom < page.nextFrom) throw new Error('Invalid event cursor');
+      page.events.push(...next.events);
+      const moved = next.nextFrom > page.nextFrom; page.nextFrom = next.nextFrom;
+      if (!moved || next.events.length < 100 || Date.now() >= deadline) break;
+    }
+    queue ??= await this.api.request('/v1/inputs?limit=100', undefined, 5000);
     const input = queue.inputs.find((row: any) => row.id === monitor.inputId);
     let turn = monitor.activeTurnId;
     // Only an admitted monitored input's observed user message grants its exact reply identity.
@@ -70,6 +97,7 @@ export class Notifications {
     const synthetic = [...page.events];
     if (candidate && !finalEvent) synthetic.push({ ...candidate, kind: 'assistant_message', final: true, message: { text: candidate.text } });
     if (completedTurnId && !completed) synthetic.push({ kind: 'turn_end', turnId: completedTurnId, outcome: 'completed' });
+    if (candidate && completedTurnId) detail = await this.api.request(`${path}?live=1`, undefined, 5000);
     const final = questionSeq !== undefined && deliveryConfirmed ? recordedFinal(synthetic, { ...monitor, activeTurnId: turn }, detail.live) : null;
     const finalKey = final ? `${turn}:${final.seq}` : null;
     const completion = finalKey && finalKey !== monitor.notifiedFinal;
@@ -91,6 +119,7 @@ export class Notifications {
       return;
     }
     const channel = await this.transport.channel(monitor.channelId);
+    if (this.stopped) return;
     if (!this.config.guilds.includes(channel.guildId)) throw new Error('Notification channel is outside the authorized guilds');
     const marker = `CoS monitor ${key}`;
     let messageId = monitor.messageId;

@@ -1,3 +1,4 @@
+import { verifyDurableFormats } from '../../runtime/durable-formats.mjs';
 import { stopInputStartup } from './session/start-input.js';
 import { browserExtensionRequired } from '../shared/types.js';
 import { requestSessionFinishGoal, setFinishNotifier } from './session/finish.js';
@@ -64,7 +65,7 @@ import {
   type RetiredWorkersSnapshot,
   type SwarmSnapshot
 } from './agents.js';
-import { flushDurable, initDurableStore, readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
+import { flushDurable, initDurableStore, readDurable, readDurableStrict, writeDurableNow, writeDurableSoon } from './durable.js';
 import { loadConnectorIdentity } from './connector-identity.js';
 import { initControlApiPath, shutdownControlApi, startControlApi } from './control-api.js';
 import { restoreRequestCorrelations } from './session/correlation.js';
@@ -110,7 +111,9 @@ import { browserWindowIconPath } from './window-icon.js';
 import { editContextMenuTemplate } from './edit-context-menu.js';
 import { showConnectionLossNotice } from './connection-loss-notice.js';
 import { runtimeMode, validateHeadlessEnvironment } from './runtime-mode.js';
-import { shutdownRemoteControl } from './remote-control.js';
+import { initializeRemoteControl, shutdownRemoteControl } from './remote-control.js';
+import { initRecoveryHold } from './recovery-hold.js';
+import { recoverGoalControlJournal } from './goal-control-journal.js';
 
 const headless = runtimeMode() === 'headless';
 validateHeadlessEnvironment();
@@ -424,6 +427,8 @@ void app.whenReady().then(async () => {
   try { await initSkillsPath(userData); }
   catch (error) { logWarn(`Skills library unavailable: ${error instanceof Error ? error.message : String(error)}`); }
   initDurableStore(userData);
+  await initRecoveryHold(userData);
+  await verifyDurableFormats(userData, false);
   savedWindowBounds = await readDurable<unknown>(WINDOW_BOUNDS_STATE);
   restoreMainTextTranslations(await readDurable<unknown>(MAIN_TEXTS_STATE));
   await loadConnectorIdentity();
@@ -448,15 +453,18 @@ void app.whenReady().then(async () => {
   // user choice instead of Electron's default `system` theme. On macOS this controls the window
   // frame, application menus and OS dialogs; on Linux/Windows it covers Electron-native UI.
   nativeTheme.themeSource = getConfig().ui.theme;
-  const savedGoalObjectives = await readDurable<GoalObjectivesSnapshot>(GOAL_OBJECTIVES_STATE);
+  await recoverGoalControlJournal();
+  const savedGoalObjectives = await readDurableStrict<GoalObjectivesSnapshot>(GOAL_OBJECTIVES_STATE);
   if (windowActivation.isDisabled()) return;
   restoreGoalObjectives(savedGoalObjectives);
-  const savedGoalSwitches = await readDurable<GoalSwitchesSnapshot>(GOAL_SWITCHES_STATE);
+  const savedGoalSwitches = await readDurableStrict<GoalSwitchesSnapshot>(GOAL_SWITCHES_STATE);
   if (windowActivation.isDisabled()) return;
   restoreGoalSwitches(savedGoalSwitches);
-  const savedGoalReplies = await readDurable<GoalRepliesSnapshot>(GOAL_REPLIES_STATE);
+  const savedGoalReplies = await readDurableStrict<GoalRepliesSnapshot>(GOAL_REPLIES_STATE);
   if (windowActivation.isDisabled()) return;
   restoreGoalReplies(savedGoalReplies);
+  await initializeRemoteControl();
+  await verifyDurableFormats(userData);
   // Request ownership must exist before either side of the bridge can race in. A request id
   // that was proved yesterday remains the same workflow today even if its ChatGPT tab closed.
   await restoreRequestCorrelations();

@@ -1,3 +1,4 @@
+import { recoveryHeld } from './recovery-hold.js';
 import { conversationProgress } from './session/progress.js';
 import { cosSignInTransfer, SignInTransferError } from './cos-browser/sign-in-transfer.js';
 import { externalBrowserProof, noteExternalInstalled, noteExternalSignedIn, resetBrowserProofForTests } from './browser-proof.js';
@@ -99,7 +100,7 @@ import {
   retireGoalDraftsFor,
   setGoalReplyActiveNow,
   withdrawSilenceGoalReplyNow,
-  setGoalObjectiveNow,
+  saveCombinedGoalControlsNow,
   setGoalSwitchNow,
   startGoalDraft
 } from './goal.js';
@@ -2007,7 +2008,7 @@ async function pendingStopCommands(): Promise<Array<{ id: string; conversationId
   return pending;
 }
 /** Switch activation cannot spend a live generation or silence-recovery window. */
-function activateConversationGoalReply(id: string, active: boolean): Promise<boolean> {
+function conversationGoalIdle(id: string): (silenceSourceTurnId?: string) => boolean {
   const grant = activeUntil.get(id);
   const idle = (silenceSourceTurnId?: string) => {
     const live = liveConversations().find(row => row.conversationId === id);
@@ -2015,7 +2016,10 @@ function activateConversationGoalReply(id: string, active: boolean): Promise<boo
       (!chatIsWorking(id) || (!!silenceSourceTurnId && live?.activeTurnId === silenceSourceTurnId)) &&
       observationWritesInFlight === 0 && (!grant || grant.until <= Date.now());
   };
-  return setGoalReplyActiveNow(id, active, idle);
+  return idle;
+}
+function activateConversationGoalReply(id: string, active: boolean): Promise<boolean> {
+  return setGoalReplyActiveNow(id, active, conversationGoalIdle(id));
 }
 
 /** Both UIs write the existing objective/switch/ticket authorities in the same order. */
@@ -2025,23 +2029,17 @@ async function saveConversationObjective(id: string, text: string, named: 'goal'
   if (goalWorkerChat(id)) throw new Error('goal_worker_chat');
   if (text.trim() && await conversationWasSuperseded(id)) throw new Error('conversation_superseded');
   if (text.trim() && isChatBlocked(id)) throw new Error('chat_blocked');
-  let chatSwitch: { enabled: boolean; mode: 'goal' | 'loop' } | null = null;
-  if (named) {
-    const held = goalSwitchFor(id);
-    const on = text.trim().length > 0;
-    const which = on ? named : held.enabled ? held.mode : named;
+  const session = await findSessionByConversation(id, { requireUnique: true });
+  const held = goalSwitchFor(id), mode = named && text.trim() ? named : held.mode;
+  const enabled = named ? Boolean(text.trim()) : held.enabled;
+  const active = (enabled || (!named && !held.own && Boolean(text.trim()))) && getConfig().sessions.record && await goalKeyPresent(mode);
+  await saveCombinedGoalControlsNow(session?.id ?? null, id, { mode, enabled, objective: text, active, preserveSwitch: !named, current: conversationGoalIdle(id) }, async () => {
     await assertCurrent();
-    try { chatSwitch = await setGoalSwitchNow(id, which, on); }
-    catch { throw new Error('goal_switch_not_durable'); }
-  }
-  await assertCurrent();
-  const objective = await setGoalObjectiveNow(id, text);
-  await assertCurrent();
-  try {
-    await activateConversationGoalReply(id,
-      goalActiveFor(id) && getConfig().sessions.record && await goalKeyPresent(goalModeFor(id)));
-    forgetGoalWatch(id);
-  } catch { throw new Error('goal_ticket_not_durable'); }
+    if (session && (await getSession(session.id))?.conversationId !== id) throw new Error('conversation_changed');
+  });
+  const objective = goalObjectiveFor(id);
+  const chatSwitch = named ? goalSwitchFor(id) : null;
+  forgetGoalWatch(id);
   changed();
   return { objective, ...(chatSwitch ? { enabled: chatSwitch.enabled, own: true, mode: chatSwitch.mode } : {}) };
 }
@@ -2055,15 +2053,17 @@ export async function setSessionObjective(sessionId: string, text: string, mode:
 export async function setSessionAutomation(sessionId: string, automation: SessionControlsView['automation'], afterTurn?: boolean): Promise<SessionControlsView> {
   const id = await controlledConversation(sessionId);
   if (automation !== 'off' && goalBlockReason(id)) throw new Error(goalWorkerChat(id) ? 'worker_goal_disabled' : 'chat_blocked');
+  if (automation === 'off' && isGoalDecisionChat(id)) {
+    await activateConversationGoalReply(id, false); forgetGoalWatch(id); changed(); return sessionControlsFor(sessionId);
+  }
   const mode = automation === 'off' ? goalSwitchFor(id).mode : automation;
-  // The existing reply setter retires drafts and durably closes the pickup for Off.
-  const held = await setGoalSwitchNow(id, mode, automation !== 'off', afterTurn);
+  const enabled = automation !== 'off';
+  const keyPresent = enabled && await goalKeyPresent(mode);
+  await saveCombinedGoalControlsNow(sessionId, id, { mode, enabled, afterTurn,
+    active: enabled && !goalBlockReason(id) && getConfig().sessions.record && keyPresent, current: conversationGoalIdle(id) }, async () => {
+    if (await controlledConversation(sessionId) !== id) throw new Error('conversation_changed');
+  });
   if (!loopAfterTurnFor(id) && goalPendingReplyFor(id)?.silencePro) await revokeSilenceLoop(id);
-  const keyPresent = held.enabled && await goalKeyPresent(mode);
-  if (await controlledConversation(sessionId) !== id) throw new Error('conversation_changed');
-  const live = goalSwitchFor(id);
-  await activateConversationGoalReply(id, held.enabled && live.enabled && live.mode === held.mode && !goalBlockReason(id)
-    && getConfig().sessions.record && keyPresent);
   forgetGoalWatch(id);
   changed();
   return sessionControlsFor(sessionId);
@@ -10416,6 +10416,7 @@ const isLeased = (command: Command): boolean => {
  * In particular, a stalled automatic resume must not expire unrelated worker invitations.
  */
 function nextDeliverable(): Command | null {
+  if (recoveryHeld()) return null;
   if (commandWrites.size > 0) return null;
   // A spent lease stays spent even after its deadline; only expiry settles it.
   return commands.find((command) => command.claimedAt === null &&

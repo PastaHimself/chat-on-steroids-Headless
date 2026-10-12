@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { ReceiptArchive, RECEIPT_AGE_MS, writePrivateJson } from '../../runtime/receipt-archive.mjs';
 import { z } from 'zod';
 
 export const snowflake = z.string().regex(/^\d{17,20}$/);
@@ -14,6 +15,7 @@ const settingsSchema = z.object({
   channelSessions: z.record(snowflake, z.string().max(64)).default({}),
   notificationChannel: snowflake.nullable().default(null),
   progress: z.boolean().default(false), finalResults: z.boolean().default(false),
+  operationalAlerts: z.boolean().default(false),
   frequencySeconds: z.number().int().min(15).max(3600).default(30),
   defaultModel: z.string().max(80).nullable().default(null),
   defaultReasoning: z.string().max(20).nullable().default(null),
@@ -21,14 +23,14 @@ const settingsSchema = z.object({
 }).strict();
 export type BotSettings = z.infer<typeof settingsSchema>;
 const viewSchema = z.object({ user: snowflake, guild: snowflake, channel: snowflake, expiresAt: z.number(),
-  kind: z.enum(['sessions', 'history', 'help', 'setup', 'plan', 'confirm', 'status']),
+  kind: z.enum(['sessions', 'history', 'help', 'setup', 'plan', 'confirm', 'status', 'operation']),
   sessionId: z.string().optional(), cursor: z.string().nullable().optional(), before: z.number().optional(),
   planId: z.string().optional(), revision: z.number().optional(), command: z.string().optional(),
   action: z.string().optional(), args: z.record(z.string(), z.unknown()).optional(), page: z.number().optional()
 }).strict();
 export type View = z.infer<typeof viewSchema>;
 const stateSchema = z.object({
-  version: z.literal(1), settings: settingsSchema, settingsRevision: z.number().int().nonnegative().default(0),
+  version: z.union([z.literal(1), z.literal(2)]), settings: settingsSchema, settingsRevision: z.number().int().nonnegative().default(0),
   selected: z.record(snowflake, z.string().max(64)),
   selection: z.record(z.string(), z.object({ model: z.string().max(80), reasoning: z.string().max(20).nullable() })),
   paused: z.record(z.string(), z.object({ mode: z.enum(['goal', 'loop']), afterTurn: z.boolean() })),
@@ -36,7 +38,12 @@ const stateSchema = z.object({
   setup: z.record(snowflake, z.object({ id: z.string().uuid(), revision: z.number(), baseRevision: z.number().int().nonnegative().default(0), settings: settingsSchema,
     backend: z.object({ maxWorkers: z.number().int().min(1).max(8).optional(), globalMaxWorkers: z.number().int().min(0).max(64).optional(),
       finishTool: z.boolean().optional(), planBackend: z.enum(['chatgpt', 'api']).optional() }).default({}) })),
-  interactions: z.record(snowflake, z.object({ operationId: z.string().uuid(), createdAt: z.number(), state: z.enum(['started', 'done']), summary: z.string().max(1800).optional() })),
+  interactions: z.record(snowflake, z.object({ operationId: z.string().uuid(), createdAt: z.number(), state: z.enum(['started', 'done', 'rejected']), settledAt: z.number().finite().optional(),
+    fingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(), summary: z.string().max(1800).optional() })),
+  health: z.object({ lastSeen: z.number().default(0), episodes: z.record(z.string(), z.object({
+    id: z.string().uuid(), channelId: snowflake, failures: z.number().int().nonnegative(), successes: z.number().int().nonnegative(),
+    reported: z.boolean(), recovered: z.boolean(), messageId: snowflake.nullable(), pending: z.boolean(), detail: z.string().max(1000)
+  })) }).default({ lastSeen: 0, episodes: {} }),
   monitors: z.record(z.string(), z.object({ sessionId: z.string(), channelId: snowflake, messageId: snowflake.nullable(),
     from: z.number().int().nonnegative(), lastUpdate: z.number(), signature: z.string(), pendingSignature: z.string().optional(),
     activeTurnId: z.string().nullable(), inputId: z.string().nullable(), createdAt: z.number(), notifiedFinal: z.string().nullable(),
@@ -48,15 +55,23 @@ export type BotState = z.infer<typeof stateSchema>;
 /** This bot's state only. It never opens the backend's session/config ledgers. */
 export class StateStore {
   private chain: Promise<unknown> = Promise.resolve();
-  private state: BotState = stateSchema.parse({ version: 1, settings: {}, selected: {}, selection: {}, paused: {}, views: {}, setup: {}, interactions: {}, monitors: {} });
-  constructor(readonly directory: string) {}
+  private state: BotState = stateSchema.parse({ version: 2, settings: {}, selected: {}, selection: {}, paused: {}, views: {}, setup: {}, interactions: {}, monitors: {} });
+  readonly archive: ReceiptArchive;
+  constructor(readonly directory: string) { this.archive = new ReceiptArchive(path.join(directory, 'receipt-archive')); }
   async load(): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     try {
       const handle = await fs.open(path.join(this.directory, 'state.json'), 'r');
       try {
         if ((await handle.stat()).size > 4 * 1024 * 1024) throw new Error('Bot state exceeds its bounded envelope');
-        this.state = stateSchema.parse(JSON.parse(await handle.readFile('utf8')));
+        const raw = JSON.parse(await handle.readFile('utf8'));
+        const parsed = stateSchema.parse(raw);
+        if (parsed.version === 1) {
+          const backup = path.join(this.directory, 'state-v1-backup.json');
+          try { await fs.access(backup); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; await writePrivateJson(backup, raw); }
+          parsed.version = 2; await writePrivateJson(path.join(this.directory, 'state.json'), parsed);
+        }
+        this.state = parsed;
       } finally { await handle.close(); }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Bot state is invalid; restore its backup before starting'); }
   }
@@ -64,22 +79,31 @@ export class StateStore {
   update<T>(work: (state: BotState) => T | Promise<T>): Promise<T> {
     const operation = this.chain.then(async () => {
       const next = structuredClone(this.state);
+      if (Object.keys(next.interactions).length >= 1600) await this.archiveSettled(next, Date.now());
       const result = await work(next);
       stateSchema.parse(next);
       const bytes = JSON.stringify(next);
       if (Buffer.byteLength(bytes) > 4 * 1024 * 1024) throw new Error('Bot state capacity reached');
       const file = path.join(this.directory, 'state.json');
-      const temp = `${file}.${randomUUID()}.tmp`;
-      try {
-        const handle = await fs.open(temp, 'wx', 0o600);
-        try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
-        await fs.rename(temp, file);
-        this.state = next;
-      } finally { await fs.rm(temp, { force: true }); }
+      await writePrivateJson(file, next);
+      this.state = next;
       return result;
     });
     this.chain = operation.catch(() => undefined);
     return operation;
+  }
+  private async archiveSettled(state: BotState, now: number): Promise<void> {
+    for (const [id, row] of Object.entries(state.interactions)) {
+      if (row.state === 'started' || (row.settledAt ?? row.createdAt) > now - RECEIPT_AGE_MS) continue;
+      // Old receipts predate fingerprints. Their immutable interaction/operation pair is still a replay fence.
+      await this.archive.put({ id, operationId: row.operationId, fingerprint: row.fingerprint ?? createHash('sha256').update(`${id}:${row.operationId}`).digest('hex'),
+        outcome: row.state === 'rejected' ? 'rejected' : 'done', createdAt: row.createdAt, settledAt: row.settledAt }, row.summary ?? null, now);
+      delete state.interactions[id];
+    }
+  }
+  async upkeep(now = Date.now()): Promise<void> {
+    await this.update(async state => { await this.archiveSettled(state, now); });
+    await this.archive.expire(now);
   }
   async view(view: Omit<View, 'expiresAt'>): Promise<string> {
     return this.update(state => {
