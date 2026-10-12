@@ -194,7 +194,19 @@ def install(source):
 
 
 def copy_owned_tree(origin, target):
-    shutil.copytree(origin, target, symlinks=True, ignore=shutil.ignore_patterns('SingletonLock', 'SingletonSocket', 'SingletonCookie'))
+    def ignore_transient(directory, names):
+        # Keyring/DBus sockets are process-local endpoints, not restorable data.
+        ignored = set(shutil.ignore_patterns('SingletonLock', 'SingletonSocket', 'SingletonCookie')(directory, names))
+        for name in names:
+            try:
+                if stat.S_ISSOCK((Path(directory) / name).lstat().st_mode):
+                    ignored.add(name)
+            except FileNotFoundError:
+                # A runtime endpoint can disappear between directory listing and lstat.
+                ignored.add(name)
+        return ignored
+
+    shutil.copytree(origin, target, symlinks=True, ignore=ignore_transient)
     for file in [target, *target.rglob('*')]:
         source = origin / file.relative_to(target)
         info = source.lstat()
