@@ -1,0 +1,9 @@
+# Managed by Chat On Steroids headless deployment
+[Unit]
+Description=Chat On Steroids complete headless stack
+Wants=network-online.target cos-display.service cos-session.service cos-browser.service cos-backend.service cos-discord.service
+Upholds=cos-display.service cos-session.service cos-browser.service cos-backend.service cos-discord.service
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

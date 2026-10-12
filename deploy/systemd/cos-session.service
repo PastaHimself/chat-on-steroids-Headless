@@ -1,0 +1,32 @@
+# Managed by Chat On Steroids headless deployment
+[Unit]
+Description=Chat On Steroids private D-Bus and Secret Service
+Requires=cos-display.service
+After=cos-display.service
+Before=cos-browser.service cos-backend.service
+PartOf=cos-headless.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+User=cos-backend
+Group=cos-backend
+RuntimeDirectory=cos-session
+RuntimeDirectoryMode=0700
+Environment=DISPLAY=:99
+Environment=XAUTHORITY=/run/cos-display/Xauthority
+ExecStart=/opt/chat-on-steroids/current/deploy/start-session.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=40
+KillMode=control-group
+UMask=0077
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cos-backend /run/cos-session /tmp
+PrivateTmp=false
+# Provision locally; never enter this password in Discord.
+# LoadCredentialEncrypted=keyring-password:/etc/chat-on-steroids/keyring-password.cred
+
+[Install]
+WantedBy=cos-headless.target

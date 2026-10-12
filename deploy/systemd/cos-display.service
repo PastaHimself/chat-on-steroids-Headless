@@ -1,0 +1,25 @@
+# Managed by Chat On Steroids headless deployment
+[Unit]
+Description=Chat On Steroids private virtual display
+Before=cos-session.service cos-browser.service cos-backend.service
+PartOf=cos-headless.target
+
+[Service]
+Type=simple
+User=cos-backend
+Group=cos-backend
+RuntimeDirectory=cos-display
+RuntimeDirectoryMode=0700
+ExecStart=/opt/chat-on-steroids/current/deploy/start-display.sh
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=false
+ReadWritePaths=/run/cos-display /tmp
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=cos-headless.target

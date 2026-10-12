@@ -1,0 +1,33 @@
+# Managed by Chat On Steroids headless deployment
+[Unit]
+Description=Chat On Steroids Discord remote control
+PartOf=cos-headless.target
+Wants=network-online.target cos-backend.service
+After=network-online.target cos-backend.service
+
+[Service]
+Type=simple
+User=cos-discord
+Group=cos-discord
+SupplementaryGroups=cos-control
+EnvironmentFile=/etc/chat-on-steroids/discord.env
+WorkingDirectory=/opt/chat-on-steroids/current/discord
+ExecStart=/usr/local/bin/node /opt/chat-on-steroids/current/discord/dist/index.js
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadOnlyPaths=/run/cos-control
+ReadWritePaths=/var/lib/cos-discord
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=true
+
+[Install]
+WantedBy=cos-headless.target

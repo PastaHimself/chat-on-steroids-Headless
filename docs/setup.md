@@ -69,6 +69,8 @@ groups use the window.
 
 ## Local control API
 
+The Linux VPS/Discord edition adds narrowly scoped session, automation, plan, worker, approved-project and resource routes. See [server setup](headless-vps.md) and [service ownership](headless-architecture.md). They reuse this listener's authentication and `allowActions` switch, with additional local `COS_REMOTE_PERMISSIONS` grants. An explicitly configured Linux `COS_CONTROL_DIRECTORY`/`COS_CONTROL_GID` can share only its discovery/token files with the restricted bot account; the default desktop path below remains private.
+
 **Settings → General → For developers → Local control API** (off by default) lets an agent running on
 this computer check on CoS, and read its chats, from outside the app. It is meant for an agent's
 MCP server that watches for a hung app. **Turning it on lets any process that can read your user
@@ -152,6 +154,7 @@ These continuity features do not grant additional quota or access. Do not use ne
 
 ```sh
 npm ci
+npm run discord:install          # separate bot dependencies used by the integration tests
 npm run dev
 npm run verify
 ```

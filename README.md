@@ -45,6 +45,8 @@ This notice states the project's intended use; it does not certify compliance or
 
 ## Get started
 
+For an Ubuntu VPS controlled from Discord, use the [headless deployment guide](docs/headless-vps.md), [complete command reference](docs/discord-commands.md), and [validation report](docs/headless-validation.md). This fork retains the desktop default and adds an explicit Linux server mode, a standalone Discord bot, private systemd services and optional swap helpers. Server mode runs Electron and Brave on Xvfb; account sign-in and initial permissions require a private interactive bootstrap.
+
 1. **Install CoS** and approve your project folder in **Settings → Workspace**.
 2. **Connect Core** through **Settings → Setup** and add it in ChatGPT under **Plugins → Add → Add custom MCP server**. [Tunnel setup →](docs/setup.md#tunnel-setup)
 3. **Load the companion extension.** Click **Open extension folder**, then **Load unpacked** in Chrome’s extension settings. Pairing is automatic.

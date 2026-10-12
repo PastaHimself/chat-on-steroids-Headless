@@ -1,0 +1,32 @@
+# Managed by Chat On Steroids headless deployment
+[Unit]
+Description=Chat On Steroids Brave companion browser
+PartOf=cos-headless.target
+Requires=cos-display.service cos-session.service
+After=network-online.target cos-display.service cos-session.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cos-backend
+Group=cos-backend
+EnvironmentFile=/etc/chat-on-steroids/backend.env
+Environment=DISPLAY=:99
+Environment=XAUTHORITY=/run/cos-display/Xauthority
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/cos-session/bus
+ExecStartPre=/opt/chat-on-steroids/current/deploy/check-display.sh
+ExecStart=/opt/chat-on-steroids/current/deploy/start-browser.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=false
+ReadWritePaths=/var/lib/cos-backend /tmp
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Keep Chromium's user-namespace / setuid sandbox available. No --no-sandbox workaround.
+
+[Install]
+WantedBy=cos-headless.target

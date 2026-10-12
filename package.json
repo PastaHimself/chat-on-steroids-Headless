@@ -18,6 +18,8 @@
     "discord:install": "npm ci --prefix discord --ignore-scripts",
     "discord:typecheck": "npm run typecheck --prefix discord",
     "discord:build": "npm run build --prefix discord",
+    "verify:headless": "node scripts/verify-headless.mjs",
+    "verify:deployment": "node scripts/verify-deployment.mjs",
     "verify:notices": "node scripts/generate-third-party-notices.mjs --check && node scripts/package-native-sources.mjs --check && node scripts/generate-discord-notices.mjs --check",
     "verify:privacy": "node scripts/verify-public-history.mjs",
     "verify:ui": "node scripts/verify-ui.mjs",

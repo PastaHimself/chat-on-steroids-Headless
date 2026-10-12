@@ -226,6 +226,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Area | Files and responsibility |
 | --- | --- |
 | App shell | `src/main/index.ts`, `window-lifecycle.ts`, `window-layout.ts`, `window-icon.ts`, `tray-image.ts`, `shutdown.ts`: bootstrap, activation, geometry, tray and bounded exit. |
+| Linux server/Discord | `runtime-mode.ts`, `resource-monitor.ts`, `remote-control.ts`, `shared/remote-control.ts`, `discord/src/*`, `deploy/*`: explicit windowless Electron mode on Xvfb; standalone authenticated Discord adapter; private systemd display/keyring/browser stack. Remote drafts/operation fences are adapter-owned; execution, delivery and recovery stay with existing owners. |
 | Config/security | `src/main/config.ts`, `platform.ts`, `secrets.ts`, `sandbox.ts`, `redaction.ts`; `src/shared/types.ts`, `capabilities.ts`: permission and host projection, secrets, approved paths. |
 | Publication | `src/main/connection.ts`, `mcp/server.ts`, `mcp/surfaces.ts`, `tunnel/{index,health,locate}.ts`, `diagnostics.ts`: endpoint/tunnel generation and truthful status. |
 | Local control API | `src/main/control-api.ts`, `src/main/control-reads.ts`, `src/main/control-actions.ts`, `src/shared/control-api.ts`: opt-in loopback listener, per-launch token, allowlisted read-only projections of other owners, and (behind `controlApi.allowActions`) send and cancel through the outbox. Owns no fact. The session list and event page it serves come from `session/read-model.ts`, the same functions the renderer's IPC handlers call. |
@@ -283,6 +284,16 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Control API endpoint | `control-api.ts` / `control-api/{token,endpoint.json}` | Per launch, only while the listener runs. Token written before the endpoint; endpoint removed first on stop. A crash can leave both behind, so a caller must still reach the port. |
 
 ## 5. Startup, configuration and shutdown
+
+The desktop default is unchanged. Explicit `COS_RUNTIME_MODE=headless` requires Linux, a real
+virtual DISPLAY, absolute `COS_DATA_DIR`/`COS_BROWSER_PROFILE` and an unprivileged user. It skips
+workspace windows, tray/overlay, desktop notifications, login startup and updater, while restoring
+the same backend owners and using their bounded shutdown. `COS_DATA_DIR` also supports a temporary
+desktop bootstrap against the server's data. Headless is windowless Electron, not a Node-only or
+native-headless-browser claim. `deploy/systemd/cos-headless.target` owns continuous service
+availability; display/private Secret Service/Brave precede the backend. Stop the target for maintenance.
+The dedicated profile is passed on every external browser URL handoff and an explicit executable
+cannot fall back to another browser family. See `docs/headless-vps.md` and `scripts/verify-headless.mjs`.
 
 **Intent:** open a usable local workspace, restore accepted work consistently, and exit without
 leaving an invisible process, tool, writer or installer competing with the next launch.
@@ -3563,6 +3574,31 @@ Current persistence/publication exceptions are in §21.
 
 ## 18. Desktop workspace, plugins, connection and native control
 
+### Authenticated Discord controls
+
+The loopback listener keeps its existing bearer/Origin/Host, rate/body/deadline and allowActions
+checks. `remote-control.ts` projects controls/models/projects/resources and admits narrowly
+validated mutations behind locally bootstrapped send/configure/plan/workers grants. Its
+`remote-control` durable file owns only composer review drafts and operation UUID fences.
+Write the operation fence before effects; a started receipt after restart means unconfirmed,
+never permission to replay. Generation uses `draftTaskPlan`; revision-checked approval binds the
+same provider conversation and enters the existing finish/checkpoint outbox. Stage edits modify
+one raw stage on the server; never copy redacted/truncated display text over untouched stages.
+Executor `update_plan` remains independently owned by session storage. Worker admission now lives
+in shared `worker-admission.ts`, retaining staged broker publication, durable rollback, worktree
+leases, approved-root revalidation and caller incarnation; MCP and remote controls use that owner.
+
+`discord/src/state.ts` owns only bot grants, setup drafts, local session mappings and notification
+checkpoints. It never reads backend ledgers. Local bootstrap establishes administrators/guilds/
+channels; roles cannot grant access. Every interaction rechecks permission and panel ownership.
+Setup publishes after validation/confirmation, rejects a draft based on superseded settings and
+preserves published state on a failed file write. Backend/bot writes are separate authorities;
+partial cross-service saves must remain uncertain. Notification polling uses the API's exact
+event sequence, confirmed input/turn evidence, bounded pages and persisted message/nonce fences.
+Recorded turn completion is not whole-task success. No automatic retries of mutations, uncertain
+notification creation, or historical receipt eviction. Capacity requires reviewed local maintenance.
+Tests: `headless`, `remote-control`, `discord`, `control-api*`, `mcp-worktree-spawn`, lifecycle/shutdown.
+
 Dark is the default theme. Theme selection belongs in Appearance settings; the main header
 has no light/dark shortcut. Files and worker-panel controls attach to the header independently
 of appearance controls.
@@ -4571,6 +4607,7 @@ rotted unnoticed for weeks before the runner existed.
 
 ```sh
 npm run dev
+npm run discord:install           # after npm ci: integration tests use the standalone bot package
 npm run typecheck
 npm test -- --run test/<target>.test.ts
 npm run verify:privacy
