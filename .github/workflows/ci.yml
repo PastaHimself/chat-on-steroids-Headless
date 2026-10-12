@@ -220,6 +220,8 @@ jobs:
         run: |
           npm ci
           npm run discord:install
+          # Electron downloads its runtime on first resolution, not during npm ci.
+          node -e "require('electron')"
           sudo apt-get update
           sudo apt-get install -y xvfb xauth x11-utils
           sudo chown root:root node_modules/electron/dist/chrome-sandbox

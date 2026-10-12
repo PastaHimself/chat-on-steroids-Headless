@@ -69,3 +69,19 @@ Removed desktop download buttons, screenshots, demo and desktop setup promotion 
 retaining upstream credit. Validated all 19 local links/heading targets, the 25 listed Discord
 commands, syntax of four shell examples and the whitespace check. This follow-up changes
 documentation only; the runtime verification results above still apply.
+
+## GitHub CI follow-up
+
+The first hosted run after the complete README rewrite exposed two packaging checks that
+still required upstream desktop README text. Removed that obsolete coupling while retaining
+all package metadata/native runtime assertions and the AppImage security-documentation checks.
+The Node 24 VPS job also configured `chrome-sandbox` before Electron's lazy runtime download.
+It now resolves the pinned Electron package before touching the sandbox helper; sandbox
+permissions and runtime assertions are unchanged.
+
+Both affected suites pass locally (35 tests). A fresh temporary Electron package successfully
+downloads its checked runtime and supplies the sandbox helper before configuration. Workflow
+YAML, shell syntax and ordering checks pass, as do all 11 deployment fault drills, both builds,
+the 34-command reference and the real isolated Electron/Xvfb/Brave lifecycle smoke. Complete
+regression and hosted cross-platform checks are being repeated; their final status is tracked
+in the [PR checks](https://github.com/PastaHimself/chat-on-steroids-Headless/pull/1/checks).

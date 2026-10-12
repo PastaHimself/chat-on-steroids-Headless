@@ -553,12 +553,10 @@ describe('cross-platform packaging targets', () => {
     );
     expect(appImageSection.replace(/^\s*#.*$/gm, '')).not.toContain('ELECTRON_RUN_AS_NODE');
 
-    const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
     const security = readFileSync(path.join(root, 'SECURITY.md'), 'utf8');
-    for (const document of [readme, security]) {
-      expect(document).toContain('--no-sandbox');
-      expect(document).toMatch(/unprivileged user namespaces/i);
-    }
+    // Portable desktop packaging is documented in SECURITY; the README covers the VPS edition.
+    expect(security).toContain('--no-sandbox');
+    expect(security).toMatch(/unprivileged user namespaces/i);
   });
 
   it('keeps the static AppImage sandbox fallback conditional and duplicate-safe', () => {
@@ -631,9 +629,6 @@ describe('cross-platform packaging targets', () => {
     expect(packagedRuntime).toContain("required('desktop/macos-desktop-addon.node')");
     expect(packagedRuntime).toContain("required('desktop/libcos-desktop.dylib')");
     expect(packagedRuntime).toContain("addon.handle('{\"op\":\"warm\"}')");
-
-    const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
-    expect(readme).toContain('macOS 13 Ventura or newer');
   });
 
   it('hides Electron helper parentheses from otool-classic without changing the inspected file', () => {
