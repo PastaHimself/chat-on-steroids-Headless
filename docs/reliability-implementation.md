@@ -60,3 +60,11 @@ zero/one/two worker workloads, provider-login expiry, component restarts, compac
 unattended reboot/keyring recovery, privileged update/restore drills, phone walkthrough,
 24-hour delivery acceptance and a seven-day resource/notification soak remain required.
 This implementation is reviewable in a draft PR; it is not production acceptance evidence.
+
+## README follow-up
+
+Updated the README to lead with the headless VPS edition, link deployment and recovery guides,
+explain receipt inspection/upkeep and restored-work holds, and state the pending live gates.
+The existing desktop downloads and demo remain explicitly attributed to upstream. Validated
+all 30 README local links/heading targets and the whitespace check. This follow-up changes
+documentation only; the runtime verification results above still apply.

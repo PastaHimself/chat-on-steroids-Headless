@@ -1,3 +1,23 @@
+# Chat On Steroids — Headless VPS edition
+
+Run Chat On Steroids on your own **Ubuntu 24.04 x64 VPS** and control it through an authorized private Discord channel. This fork keeps the desktop app as the default and adds explicit server mode, separate backend and bot service accounts, and managed systemd services. Electron and a dedicated graphical Brave profile run on Xvfb; browser sign-in, keyring provisioning and provider approvals remain interactive setup steps.
+
+[VPS deployment](docs/headless-vps.md) · [Discord commands](docs/discord-commands.md) · [Reliability and recovery](docs/reliability-rollout.md) · [Validation results](docs/headless-validation.md)
+
+## Daily operation and recovery
+
+- **Understand readiness.** `/monitor` explains service health and recovery actions; `/status` shows the selected project, requested and observed model, delivery proof, automation and workers. Pairing or a healthy process does not prove provider sign-in or task delivery. Operational failure/recovery alerts are opt-in.
+- **Inspect uncertain work.** `/operations` lists current receipts for the selected session; `/operation id:<UUID>` checks an exact hot or archived receipt. Receipt, queue and history inspection never resends a request.
+- **Keep durable records manageable.** Settled receipts older than one hour archive automatically, with permanent private replay fences committed before hot removal. Bulky archived results expire after 30 days; unresolved receipts and replay protection remain.
+- **Recover safely.** Combined Goal controls commit through a recovery journal. Updates stage and verify code and managed units before stopping services. Encrypted local backups preserve matching code, data, browser profile, keyring, bot state, configuration and ownership. Restored work stays held until local reconciliation.
+- **Measure capacity.** Shared resource observations and bounded notification polling support daily monitoring. Start a new VPS trial with two workers and a global cap of two through confirmed setup; preserve existing explicit limits. The read-only benchmark sampler records idle, task and soak measurements.
+
+**Acceptance status:** automated tests, builds, deployment drills and isolated Electron/Xvfb/Brave checks have passed locally. Authenticated VPS tasks, installed update/restore drills, unattended reboot, phone walkthrough, the 24-hour delivery run and seven-day soak remain pending. Review the [acceptance worksheet](docs/reliability-rollout.md#acceptance-worksheet) before treating an installation as ready for unattended daily use.
+
+## Desktop app
+
+The downloads and demo below are from the [upstream desktop project](https://github.com/totec448-spec/chat-on-steroids). For this fork's VPS installation, follow the deployment guide above.
+
 <p align="center"><img src="docs/images/readme-hero.svg?v=2" width="960" alt="Turn ChatGPT into Codex-style local coding. Chat On Steroids: Your files. Your terminal. Your ChatGPT plan." /></p>
 
 <p align="center">
@@ -45,7 +65,9 @@ This notice states the project's intended use; it does not certify compliance or
 
 ## Get started
 
-For an Ubuntu VPS controlled from Discord, use the [headless deployment guide](docs/headless-vps.md), [complete command reference](docs/discord-commands.md), and [validation report](docs/headless-validation.md). This fork retains the desktop default and adds an explicit Linux server mode, a standalone Discord bot, private systemd services and optional swap helpers. Server mode runs Electron and Brave on Xvfb; account sign-in and initial permissions require a private interactive bootstrap.
+**Ubuntu VPS:** use the [deployment guide](docs/headless-vps.md) for build, private bootstrap and service setup. Read the [recovery procedures](docs/reliability-rollout.md#local-update-backup-and-restore) before updating or restoring, and complete the live acceptance gates. The [command reference](docs/discord-commands.md) covers staged setup, permissions, receipt inspection and opt-in alerts.
+
+**Desktop:** follow the original setup flow below.
 
 1. **Install CoS** and approve your project folder in **Settings → Workspace**.
 2. **Connect Core** through **Settings → Setup** and add it in ChatGPT under **Plugins → Add → Add custom MCP server**. [Tunnel setup →](docs/setup.md#tunnel-setup)
