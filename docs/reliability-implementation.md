@@ -82,6 +82,11 @@ permissions and runtime assertions are unchanged.
 Both affected suites pass locally (35 tests). A fresh temporary Electron package successfully
 downloads its checked runtime and supplies the sandbox helper before configuration. Workflow
 YAML, shell syntax and ordering checks pass, as do all 11 deployment fault drills, both builds,
-the 34-command reference and the real isolated Electron/Xvfb/Brave lifecycle smoke. Complete
-regression and hosted cross-platform checks are being repeated; their final status is tracked
+the 34-command reference and the real isolated Electron/Xvfb/Brave lifecycle smoke. The complete
+local repeat passed 8,411 tests with 162 skips and no retries. Both hosted Linux jobs, macOS
+verification, and both hosted UI jobs passed. Windows exposed a POSIX-only file-mode assertion
+in receipt expiry coverage; only that assertion now follows the archive owner's POSIX guard.
+Payload expiry, permanent fence readback, corruption and conflicting replay checks still run
+on every platform. The final focused repeat passed all 128 tests in the nine affected/adjacent
+suites. Hosted cross-platform checks are being repeated; their final status is tracked
 in the [PR checks](https://github.com/PastaHimself/chat-on-steroids-Headless/pull/1/checks).

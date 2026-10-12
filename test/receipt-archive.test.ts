@@ -12,7 +12,8 @@ it('keeps deterministic replay fences after result payload expiry', async () => 
   const row = receipt(), saved = await archive.put(row, { result: 'large output' }, Date.now() - PAYLOAD_AGE_MS - 1);
   await archive.expire(); expect(await archive.get(row.id)).toMatchObject(row);
   await expect(fs.access(path.join(directory, saved.payloadFile))).rejects.toMatchObject({ code: 'ENOENT' });
-  expect((await fs.stat(archive.file(row.id))).mode & 0o777).toBe(0o600);
+  // Windows uses ACLs; stat.mode cannot prove owner-only access there.
+  if (process.platform !== 'win32') expect((await fs.stat(archive.file(row.id))).mode & 0o777).toBe(0o600);
 });
 it('does not publish a fence when payload publication fails', async () => {
   const row = receipt(); vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('interrupted payload publication'));
