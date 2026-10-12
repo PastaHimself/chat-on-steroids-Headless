@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import subprocess
 import shutil
+import socket
 import unittest
 from unittest.mock import patch
 
@@ -90,6 +91,12 @@ class MaintenanceDrills(unittest.TestCase):
         for home in homes: home.mkdir()
         app = homes[0] / 'app'; app.mkdir(); (app / 'receipt').write_text('accepted-before-backup')
         profile = homes[0] / 'brave'; profile.mkdir(); (profile / 'state').write_text('profile retained')
+        cache = homes[0] / '.cache/keyring-test'; cache.mkdir(parents=True)
+        (cache / 'ordinary').write_text('regular keyring cache file')
+        if os.name == 'posix' and hasattr(socket, 'AF_UNIX'):
+            # A stopped keyring daemon can leave a non-restorable socket pathname.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+                endpoint.bind(str(cache / 'control'))
         (homes[1] / 'state.json').write_text('bot checkpoint')
         account = {'uid': os.getuid(), 'gid': os.getgid()}
         metadata = {'cos-backend': account, 'cos-discord': account, 'cos-control': {'gid': os.getgid()}}
@@ -113,6 +120,8 @@ class MaintenanceDrills(unittest.TestCase):
         self.assertEqual((app / 'receipt').read_text(), 'accepted-before-backup')
         self.assertTrue(json.loads((app / 'restore-hold.json').read_text())['held'])
         self.assertEqual((profile / 'state').read_text(), 'profile retained')
+        self.assertEqual((cache / 'ordinary').read_text(), 'regular keyring cache file')
+        self.assertFalse((cache / 'control').exists())
         self.assertEqual((homes[1] / 'state.json').read_text(), 'bot checkpoint')
         self.assertEqual(maintenance.Replacement(self.install, [code, *homes]).read()['phase'], 'committed')
 
