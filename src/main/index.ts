@@ -109,6 +109,16 @@ import { trayGuidArgsForPlatform, trayImageSpec } from './tray-image.js';
 import { browserWindowIconPath } from './window-icon.js';
 import { editContextMenuTemplate } from './edit-context-menu.js';
 import { showConnectionLossNotice } from './connection-loss-notice.js';
+import { runtimeMode, validateHeadlessEnvironment } from './runtime-mode.js';
+import { shutdownRemoteControl } from './remote-control.js';
+
+const headless = runtimeMode() === 'headless';
+validateHeadlessEnvironment();
+if (process.env.COS_DATA_DIR) {
+  if (!path.isAbsolute(process.env.COS_DATA_DIR)) throw new Error('COS_DATA_DIR must be absolute');
+  app.setPath('userData', process.env.COS_DATA_DIR);
+}
+if (headless && process.getuid?.() === 0) throw new Error('Run the headless application as an unprivileged user');
 
 /** Durable state file holding the multi-agent run. Hashes only, never credentials. */
 const SWARM_STATE = 'swarm';
@@ -138,6 +148,7 @@ if (!hasSingleInstanceLock) {
 const BENIGN_RENDERER_ERRORS = new Set(['ResizeObserver loop completed with undelivered notifications.']);
 
 function createWindow(): void {
+  if (headless) return;
   const primaryWorkArea = screen.getPrimaryDisplay().workArea;
   const { layout, restored } = windowLayoutForDisplays(
     primaryWorkArea,
@@ -273,7 +284,7 @@ function showWindow(): void {
 }
 
 setFinishNotifier((title, body, sessionId, turnId) => {
-  if (window?.isFocused() || !Notification.isSupported()) return false;
+  if (headless || window?.isFocused() || !Notification.isSupported()) return false;
   const write = (): void => {
     showWindow();
     if (!window) return;
@@ -296,7 +307,7 @@ setFinishNotifier((title, body, sessionId, turnId) => {
 setStuckNotifier((title, body, sessionId, opens = 'app') => {
   // A person looking at the app already has the timeline note this accompanies; interrupting
   // them with the same sentence is noise, exactly as the finish notice treats a focused window.
-  if (window?.isFocused() || !Notification.isSupported()) return false;
+  if (headless || window?.isFocused() || !Notification.isSupported()) return false;
   const notice = new Notification({ title, body });
   notice.on('click', () => {
     if (opens === 'browser') {
@@ -315,7 +326,7 @@ setStuckNotifier((title, body, sessionId, opens = 'app') => {
 setConnectionLossNotifier(surface => showConnectionLossNotice(surface, {
   isQuitting: () => quitting,
   isFocused: () => window?.isFocused() ?? false,
-  isSupported: () => Notification.isSupported(),
+  isSupported: () => !headless && Notification.isSupported(),
   text: mainText,
   create: options => new Notification(options),
   showWindow
@@ -386,7 +397,7 @@ function refreshTray(): void {
 }
 
 app.on('second-instance', (_event, argv) => {
-  if (!isBackgroundLaunch(argv)) windowActivation.request();
+  if (!headless && !isBackgroundLaunch(argv)) windowActivation.request();
 });
 
 void app.whenReady().then(async () => {
@@ -420,7 +431,7 @@ void app.whenReady().then(async () => {
   initControlApiPath(userData);
   initUvRuntime(userData);
   // Bundled pet packages: the packaged app's resources, or the repository's pets/ folder in dev.
-  try { await initPetLibrary(userData, app.isPackaged ? path.join(process.resourcesPath, 'pets') : path.join(app.getAppPath(), 'pets')); }
+  try { if (!headless) await initPetLibrary(userData, app.isPackaged ? path.join(process.resourcesPath, 'pets') : path.join(app.getAppPath(), 'pets')); }
   catch (error) { logWarn(`Pet library unavailable: ${error instanceof Error ? error.message : String(error)}`); }
   await restoreChatModels();
   if (windowActivation.isDisabled()) return;
@@ -431,7 +442,7 @@ void app.whenReady().then(async () => {
   for (const surface of await enrolledPluginSurfaces()) notePluginInstalled(surface);
   await pluginManager.initialize(userData);
   if (windowActivation.isDisabled()) return;
-  try { applyLoginStartup(app, getConfig().ui.startAtLogin === true); }
+  try { if (!headless) applyLoginStartup(app, getConfig().ui.startAtLogin === true); }
   catch (error) { logWarn(`Windows login startup: ${error instanceof Error ? error.message : String(error)}`); }
   // The renderer has its own explicit light/dark palette, so native chrome must follow the same
   // user choice instead of Electron's default `system` theme. On macOS this controls the window
@@ -571,25 +582,27 @@ void app.whenReady().then(async () => {
     }
   );
   windowActivation.enable();
-  if (!isBackgroundLaunch(process.argv)) windowActivation.request();
-  // The desktop pet overlay is independent of the main window once started; it stays hidden
-  // until a pet is enabled.
-  await startPetOverlay(() => window, () => windowActivation.request());
-  // macOS `activate` can fire on first launch, so do not wire it at module load where it could
-  // create a BrowserWindow before Electron is ready. Once the initial window path is established,
-  // Dock activation/re-launch can safely recreate or focus it.
-  registerNativeWindowActivation(app, windowActivation.request);
+  if (!headless) {
+    if (!isBackgroundLaunch(process.argv)) windowActivation.request();
+    // The desktop pet overlay is independent of the main window once started; it stays hidden
+    // until a pet is enabled.
+    await startPetOverlay(() => window, () => windowActivation.request());
+    // macOS `activate` can fire on first launch, so do not wire it at module load where it could
+    // create a BrowserWindow before Electron is ready. Once the initial window path is established,
+    // Dock activation/re-launch can safely recreate or focus it.
+    registerNativeWindowActivation(app, windowActivation.request);
 
-  tray = new Tray(trayIcon(false), ...trayGuidArgsForPlatform());
-  tray.on('click', windowActivation.request);
-  refreshTray();
-  onStatusChange(refreshTray);
-  // The built-in browser's own hooks live in its module, which loads only once it is selected.
-  onCosBrowserLoaded(cosBrowser => { cosBrowser.onChange(refreshTray); refreshTray(); });
-  onMainTextsChange(refreshTray);
+    tray = new Tray(trayIcon(false), ...trayGuidArgsForPlatform());
+    tray.on('click', windowActivation.request);
+    refreshTray();
+    onStatusChange(refreshTray);
+    // The built-in browser's own hooks live in its module, which loads only once it is selected.
+    onCosBrowserLoaded(cosBrowser => { cosBrowser.onChange(refreshTray); refreshTray(); });
+    onMainTextsChange(refreshTray);
+  }
   onMainTextsChange(() => writeDurableSoon(MAIN_TEXTS_STATE, mainTextTranslations()));
 
-  logInfo('app started');
+  logInfo(`app started (${headless ? 'headless' : 'desktop'})`);
 
   // Historical Unattributed repair may legitimately scan and rewrite a large legacy bucket.
   // It is maintenance, not a prerequisite for showing the app or accepting new exact-id
@@ -614,7 +627,7 @@ void app.whenReady().then(async () => {
   // window that is already on screen. Everything it learns arrives through the ordinary state
   // push, every failure ends inside it, and its own timer keeps it running for a tray app that
   // is never restarted.
-  startUpdateChecks();
+  if (!headless) startUpdateChecks();
   // Warm the existing derived cache once, after startup, without delaying the UI.
   // A visit to Usage joins this same calculation; unchanged recordings cost no reads.
   void usageOverview(usageWarmup.signal).catch((error: Error) => {
@@ -637,8 +650,12 @@ app.on('window-all-closed', () => {
   // macOS convention: closing the last window is not quitting the application. The Dock/menu
   // bar stay alive and `activate` recreates it. Windows/Linux retain the explicit close-to-tray
   // preference; Cmd+Q / app.quit bypasses this event and still enters the shutdown sequence.
-  if (shouldQuitOnWindowAllClosed(process.platform, getConfig().ui.minimizeToTray)) app.quit();
+  if (!headless && shouldQuitOnWindowAllClosed(process.platform, getConfig().ui.minimizeToTray)) app.quit();
 });
+
+if (headless) {
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => app.quit());
+}
 
 /**
  * Ends the process at once, without Chromium's teardown. Only for a shutdown sequence that has
@@ -671,7 +688,7 @@ app.on('will-quit', (event) => {
       {
         name: 'admission/drain',
         budgetMs: 40_000,
-        run: () => [shutdownConnection(), shutdownBridge(), shutdownControlApi(), stopAgentRuntimeGc()]
+        run: () => [shutdownConnection(), shutdownBridge(), shutdownControlApi(), shutdownRemoteControl(), stopAgentRuntimeGc()]
       },
       // Phase 2: only after request handlers are done may their owned child processes go.
       {

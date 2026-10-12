@@ -58,6 +58,16 @@ export async function readDurable<T>(name: string): Promise<T | null> {
   }
 }
 
+/** Admission fences must fail closed on corruption, rather than treating it as a fresh ledger. */
+export async function readDurableStrict<T>(name: string): Promise<T | null> {
+  if (!root) throw new Error('Durable storage is not initialized');
+  try { return JSON.parse(await fs.readFile(fileFor(name), 'utf8')) as T; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`Cannot read durable ${name} state; remote mutations are disabled until repaired`);
+  }
+}
+
 function nextWrite(value: unknown): PendingWrite {
   return { generation: nextGeneration++, value };
 }

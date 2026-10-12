@@ -128,9 +128,9 @@ afterAll(async () => {
 describe('read routes', () => {
   it('are listed by health and need the token like every other route', async () => {
     const health = await call('/v1/health');
-    expect(health.body.routes).toEqual([
+    expect(health.body.routes).toEqual(expect.arrayContaining([
       '/v1/health', '/v1/status', '/v1/sessions', '/v1/sessions/{id}', '/v1/sessions/{id}/events', '/v1/inputs', '/v1/agents', '/v1/log'
-    ]);
+    ]));
     for (const route of ['/v1/sessions', `/v1/sessions/${sessionId}`, `/v1/sessions/${sessionId}/events`, '/v1/inputs', '/v1/agents', '/v1/log']) {
       expect((await call(route, {})).status).toBe(401);
       expect((await call(route)).status).toBe(200);

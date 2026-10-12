@@ -77,6 +77,20 @@ function request(
 }
 
 describe('local control API listener', () => {
+  it.skipIf(process.platform !== 'linux')('shares only group-readable credentials in an explicitly safe Linux directory', async () => {
+    const shared = path.join(dir, 'shared'); await fs.mkdir(shared, { mode: 0o750 });
+    const previousMask = process.umask(0o077);
+    vi.stubEnv('COS_CONTROL_DIRECTORY', shared); vi.stubEnv('COS_CONTROL_GID', String(process.getgid!()));
+    try {
+      controlApi.initControlApiPath(dir); await controlApi.startControlApi();
+      expect((await fs.stat(path.join(shared, 'token'))).mode & 0o777).toBe(0o640);
+      expect((await fs.stat(path.join(shared, 'endpoint.json'))).mode & 0o777).toBe(0o640);
+      await controlApi.stopControlApi();
+      await fs.chmod(shared, 0o770);
+      await expect(controlApi.startControlApi()).rejects.toThrow('writable only by its owner');
+      expect(controlApi.controlApiPort()).toBeNull();
+    } finally { await controlApi.stopControlApi(); process.umask(previousMask); vi.unstubAllEnvs(); controlApi.initControlApiPath(dir); }
+  });
   it('publishes its port and a per-launch token only while running', async () => {
     await controlApi.startControlApi();
     const first = await readEndpoint();
@@ -108,6 +122,8 @@ describe('local control API listener', () => {
     const auth = { authorization: `Bearer ${token}` };
 
     expect((await request(port, '/v1/health')).status).toBe(401);
+    expect((await request(port, '/v1/remote/settings')).status).toBe(401);
+    expect((await request(port, '/v1/remote/ask', { method: 'POST' })).status).toBe(401);
     expect((await request(port, '/v1/health', { headers: { authorization: `Bearer ${token.slice(1)}x` } })).status).toBe(401);
     expect((await request(port, '/v1/health', { headers: { authorization: token } })).status).toBe(401);
     // An Origin is refused before authentication, so a page learns nothing even with a token.
@@ -145,7 +161,7 @@ describe('local control API listener', () => {
     const health = await request(port, '/v1/health', { headers: auth });
     expect(health.body).toMatchObject({
       protocol: 1,
-      routes: ['/v1/health', '/v1/status', '/v1/sessions', '/v1/sessions/{id}', '/v1/sessions/{id}/events', '/v1/inputs', '/v1/agents', '/v1/log']
+      routes: expect.arrayContaining(['/v1/health', '/v1/status', '/v1/sessions', '/v1/sessions/{id}', '/v1/sessions/{id}/events', '/v1/inputs', '/v1/agents', '/v1/log', '/v1/remote/settings', '/v1/sessions/{id}/taskplan'])
     });
   });
 

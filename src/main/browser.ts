@@ -5,6 +5,13 @@ import { launchCommand, runCommand, runPowerShell } from './exec.js';
 import { getConfig } from './config.js';
 import type { ChatBrowser } from '../shared/types.js';
 import { browserWindowBounds } from './browser-window-layout.js';
+import { runtimeMode } from './runtime-mode.js';
+
+export function serverBrowserArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  if (runtimeMode(env) !== 'headless' && !env.COS_BROWSER_PROFILE) return [];
+  if (!env.COS_BROWSER_PROFILE || !path.isAbsolute(env.COS_BROWSER_PROFILE)) throw new Error('COS_BROWSER_PROFILE must be absolute');
+  return [`--user-data-dir=${env.COS_BROWSER_PROFILE}`, '--disable-renderer-backgrounding', '--disable-background-timer-throttling'];
+}
 
 type Exists = (candidate: string) => boolean;
 type Launch = typeof launchCommand;
@@ -25,13 +32,16 @@ export function installedSignInBrowsers(): Array<{ browser: ExternalChatBrowser;
 export async function openBrowserSignIn(browser: ExternalChatBrowser,
   options: Pick<PreferredBrowserOpenOptions, 'platform' | 'env' | 'home' | 'usable' | 'launch'> = {}): Promise<string> {
   const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
   const usable = options.usable ?? (candidate => isExecutableBrowser(candidate, platform));
-  for (const candidate of new Set(preferredBrowserCandidates(platform, options.env, options.home, browser))) {
+  const candidates = env.COS_BROWSER_PROFILE && env.COS_BROWSER_EXECUTABLE
+    ? [env.COS_BROWSER_EXECUTABLE] : preferredBrowserCandidates(platform, env, options.home, browser);
+  for (const candidate of new Set(candidates)) {
     if (!usable(candidate)) continue;
     // No throwaway profile: it would have neither the person's extension nor their account.
     // Start a fresh ChatGPT login instead of transplanting an embedded OAuth URL/PKCE state.
     await (options.launch ?? launchCommand)(candidate,
-      ['--new-window', '--window-size=520,760', 'https://chatgpt.com/auth/login'],
+      [...serverBrowserArgs(env), '--new-window', '--window-size=520,760', 'https://chatgpt.com/auth/login'],
       (platform === 'win32' ? path.win32 : path.posix).dirname(candidate));
     return candidate;
   }
@@ -263,13 +273,16 @@ export async function openInPreferredBrowser(
   // existing instance cannot change its policy. Memory Saver exclusions alone do not
   // prevent background timer/renderer throttling of long-running orchestration tabs.
   const args = [
+    ...serverBrowserArgs(env),
     ...(platform === 'win32' ? ['--disable-renderer-backgrounding', '--disable-background-timer-throttling'] : []),
     ...(options.backgroundStartup ? [`--window-size=${bounds.width},${bounds.height}`] : []),
     url
   ];
   let lastError: unknown = null;
 
-  for (const browser of new Set(preferredBrowserCandidates(platform, env, options.home, selected))) {
+  const candidates = env.COS_BROWSER_PROFILE && env.COS_BROWSER_EXECUTABLE
+    ? [env.COS_BROWSER_EXECUTABLE] : preferredBrowserCandidates(platform, env, options.home, selected);
+  for (const browser of new Set(candidates)) {
     if (!usable(browser)) continue;
     try {
       // A windowless Chrome exits once extensions load unless the profile has a

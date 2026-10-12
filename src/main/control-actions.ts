@@ -7,6 +7,7 @@ import { deliveryProof, listInputs, sessionInputPolicy } from './session/input.j
 import type { InputArgs, InputEntry } from './session/input.js';
 import { readSession } from './session/read-model.js';
 import { cancelDesktopInput, sendDesktopInput } from './session/start-input.js';
+import { isRemoteActionPath, serveRemoteAction } from './remote-control.js';
 
 /**
  * The action routes of the local control API: send a message to an existing chat, and cancel
@@ -51,7 +52,7 @@ const CANCEL_ROUTE = /^\/v1\/inputs\/([0-9a-f-]{36})\/cancel$/;
 
 /** Every path an action can arrive on, whatever the id, so one gate can refuse them all alike. */
 export function isActionPath(route: string): boolean {
-  return route === '/v1/inputs' || /^\/v1\/inputs\/[^/]+\/cancel$/.test(route);
+  return route === '/v1/inputs' || /^\/v1\/inputs\/[^/]+\/cancel$/.test(route) || isRemoteActionPath(route);
 }
 
 export interface ActionReply {
@@ -195,6 +196,7 @@ async function cancel(id: string, rawBody: unknown): Promise<ActionReply> {
 /** Undefined when the method and path are not an action. */
 export async function serveAction(method: string, route: string, body: unknown): Promise<ActionReply | undefined> {
   if (method !== 'POST') return undefined;
+  if (isRemoteActionPath(route)) return serveRemoteAction(route, body);
   if (route === '/v1/inputs') return send(body);
   const match = CANCEL_ROUTE.exec(route);
   if (match) return cancel(match[1]!, body);

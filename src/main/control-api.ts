@@ -22,6 +22,8 @@ import { inFlightMcpRequests, inFlightToolCalls, runningToolCalls, settlingToolC
 import { pluginManager } from './plugins/manager.js';
 import { updateStatus } from './update.js';
 import { APP_VERSION } from './version.js';
+import { REMOTE_ACTION_ROUTES, REMOTE_READ_ROUTES } from '../shared/remote-control.js';
+import { serveRemoteRead } from './remote-control.js';
 
 /**
  * The local control API: an opt-in loopback listener for a trusted local caller. It reads by
@@ -83,6 +85,7 @@ export function setReadDeadlineForTests(ms?: number): void {
 }
 
 let directory: string | null = null;
+let sharedGroup: number | null = null;
 let server: http.Server | null = null;
 let shutdownRequested = false;
 let lifecycle: Promise<void> = Promise.resolve();
@@ -94,6 +97,13 @@ let pendingActions = 0;
 
 export function initControlApiPath(userDataDir: string): void {
   directory = path.join(userDataDir, DIRECTORY);
+  sharedGroup = null;
+  if (process.env.COS_CONTROL_DIRECTORY) {
+    if (process.platform !== 'linux' || !path.isAbsolute(process.env.COS_CONTROL_DIRECTORY) || !/^\d{1,10}$/.test(process.env.COS_CONTROL_GID ?? ''))
+      throw new Error('A shared control directory requires Linux, an absolute path and an explicit COS_CONTROL_GID');
+    directory = process.env.COS_CONTROL_DIRECTORY;
+    sharedGroup = Number(process.env.COS_CONTROL_GID);
+  }
 }
 
 /** Start and stop run one at a time, in the order they were asked for. */
@@ -125,9 +135,22 @@ export function controlApiPort(): number | null {
 async function writePrivate(name: string, content: string): Promise<void> {
   const target = path.join(directory!, name);
   const temp = `${target}.${process.pid}.tmp`;
-  await fs.mkdir(directory!, { recursive: true });
+  await fs.mkdir(directory!, { recursive: true, mode: sharedGroup === null ? 0o700 : 0o750 });
+  if (sharedGroup !== null) {
+    const stat = await fs.lstat(directory!);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o027) !== 0)
+      throw new Error('Shared control directory must be owned by the backend and writable only by its owner');
+    await fs.chown(directory!, stat.uid, sharedGroup);
+    await fs.chmod(directory!, 0o750);
+  }
   // The mode is advisory on Windows, where userData is already private to the user.
-  await fs.writeFile(temp, content, { mode: 0o600 });
+  await fs.writeFile(temp, content, { mode: sharedGroup === null ? 0o600 : 0o640, flag: 'wx' });
+  if (sharedGroup !== null) {
+    await fs.chown(temp, process.getuid!(), sharedGroup);
+    // The server's 0077 umask initially strips group access; grant only the selected
+    // read-only group explicitly before publishing the credential file.
+    await fs.chmod(temp, 0o640);
+  }
   await fs.rename(temp, target);
 }
 
@@ -403,8 +426,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, token
     const body: ControlApiHealth = {
       ok: true,
       protocol: CONTROL_API_PROTOCOL,
-      routes: [...CONTROL_API_ROUTES],
-      actions: { enabled: actionsAllowed(), routes: [...CONTROL_API_ACTION_ROUTES] },
+      routes: [...CONTROL_API_ROUTES, ...REMOTE_READ_ROUTES],
+      actions: { enabled: actionsAllowed(), routes: [...CONTROL_API_ACTION_ROUTES, ...REMOTE_ACTION_ROUTES] },
       pid: process.pid,
       appVersion: APP_VERSION,
       startedAt: new Date(Date.now() - uptime * 1000).toISOString(),
@@ -424,6 +447,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, token
 
 /** Every read that asks an owner something. `/v1/health` asks nobody and is answered before this. */
 async function read(route: string, params: URLSearchParams): Promise<unknown> {
+  const remote = await serveRemoteRead(route, params);
+  if (remote !== undefined) return remote;
   if (route !== '/v1/status') return serveRead(route, params);
   return projectStatus({
     connection: getStatus(),
