@@ -78,7 +78,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix discord --ignore-scripts
 
       - name: Verify tag matches package version
         if: github.ref_type == 'tag'

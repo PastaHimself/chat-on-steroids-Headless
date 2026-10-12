@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     environment: 'node',
+    // Optional resource bound for an 8 GB deployment/build host; normal CI defaults remain.
+    maxWorkers: process.env.COS_TEST_WORKERS ? Number(process.env.COS_TEST_WORKERS) : undefined,
     // Real filesystem, real child processes and a real HTTP server, so the
     // defaults are too tight.
     testTimeout: 30_000,

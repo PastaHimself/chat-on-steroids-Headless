@@ -38,7 +38,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix discord --ignore-scripts
 
       - name: Verify
         env:
@@ -92,7 +94,9 @@ jobs:
 
       - name: Install dependencies
         if: steps.scope.outputs.run == 'true'
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix discord --ignore-scripts
 
       - name: Build the app
         if: steps.scope.outputs.run == 'true'
@@ -173,7 +177,9 @@ jobs:
 
       - name: Install dependencies
         if: steps.scope.outputs.run == 'true'
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix discord --ignore-scripts
 
       - name: Build the app
         if: steps.scope.outputs.run == 'true'
@@ -196,3 +202,4 @@ jobs:
           path: outputs/
           if-no-files-found: ignore
           retention-days: 7
+
