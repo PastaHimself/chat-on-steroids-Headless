@@ -63,8 +63,9 @@ This implementation is reviewable in a draft PR; it is not production acceptance
 
 ## README follow-up
 
-Updated the README to lead with the headless VPS edition, link deployment and recovery guides,
-explain receipt inspection/upkeep and restored-work holds, and state the pending live gates.
-The existing desktop downloads and demo remain explicitly attributed to upstream. Validated
-all 30 README local links/heading targets and the whitespace check. This follow-up changes
+Rewrote the README as the VPS edition's entry point: server requirements, build/install,
+private bootstrap, Discord controls, operations, recovery and pending live acceptance gates.
+Removed desktop download buttons, screenshots, demo and desktop setup promotion while
+retaining upstream credit. Validated all 19 local links/heading targets, the 25 listed Discord
+commands, syntax of four shell examples and the whitespace check. This follow-up changes
 documentation only; the runtime verification results above still apply.

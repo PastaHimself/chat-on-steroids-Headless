@@ -1,109 +1,157 @@
-# Chat On Steroids — Headless VPS edition
+# Chat On Steroids Headless
 
-Run Chat On Steroids on your own **Ubuntu 24.04 x64 VPS** and control it through an authorized private Discord channel. This fork keeps the desktop app as the default and adds explicit server mode, separate backend and bot service accounts, and managed systemd services. Electron and a dedicated graphical Brave profile run on Xvfb; browser sign-in, keyring provisioning and provider approvals remain interactive setup steps.
+**The VPS edition of Chat On Steroids — run on your Ubuntu server and control your work from Discord.**
 
-[VPS deployment](docs/headless-vps.md) · [Discord commands](docs/discord-commands.md) · [Reliability and recovery](docs/reliability-rollout.md) · [Validation results](docs/headless-validation.md)
+This repository is built for a private, self-hosted VPS installation. The managed backend runs without desktop workspace windows, while a dedicated Brave browser runs on a virtual display. Tasks, project files, worker state and conversation history live on the server. Your personal computer does not host the backend.
 
-## Daily operation and recovery
+Browser sign-in, keyring provisioning and provider approvals require an interactive bootstrap through a private connection. After setup, Discord provides the everyday controls.
 
-- **Understand readiness.** `/monitor` explains service health and recovery actions; `/status` shows the selected project, requested and observed model, delivery proof, automation and workers. Pairing or a healthy process does not prove provider sign-in or task delivery. Operational failure/recovery alerts are opt-in.
-- **Inspect uncertain work.** `/operations` lists current receipts for the selected session; `/operation id:<UUID>` checks an exact hot or archived receipt. Receipt, queue and history inspection never resends a request.
-- **Keep durable records manageable.** Settled receipts older than one hour archive automatically, with permanent private replay fences committed before hot removal. Bulky archived results expire after 30 days; unresolved receipts and replay protection remain.
-- **Recover safely.** Combined Goal controls commit through a recovery journal. Updates stage and verify code and managed units before stopping services. Encrypted local backups preserve matching code, data, browser profile, keyring, bot state, configuration and ownership. Restored work stays held until local reconciliation.
-- **Measure capacity.** Shared resource observations and bounded notification polling support daily monitoring. Start a new VPS trial with two workers and a global cap of two through confirmed setup; preserve existing explicit limits. The read-only benchmark sampler records idle, task and soak measurements.
+[Install on a VPS](docs/headless-vps.md) · [Discord commands](docs/discord-commands.md) · [Recovery guide](docs/reliability-rollout.md) · [Validation status](docs/headless-validation.md)
 
-**Acceptance status:** automated tests, builds, deployment drills and isolated Electron/Xvfb/Brave checks have passed locally. Authenticated VPS tasks, installed update/restore drills, unattended reboot, phone walkthrough, the 24-hour delivery run and seven-day soak remain pending. Review the [acceptance worksheet](docs/reliability-rollout.md#acceptance-worksheet) before treating an installation as ready for unattended daily use.
+## What this edition provides
 
-## Desktop app
+- **Discord control:** start conversations, send tasks, select projects and observed models, inspect results, manage workers and control Goal/Loop.
+- **Persistent server sessions:** retain local session identity, history and worker context through Compact & Resume.
+- **Clear health and delivery status:** distinguish an available service from an authenticated provider or a delivered task. Opt-in alerts report failures and recovery in your configured private channel.
+- **Durable request tracking:** inspect uncertain operations without resending them. Settled receipts archive automatically; permanent replay protection keeps handled identities blocked.
+- **Recoverable maintenance:** verify updates before replacing installed code, preserve previous code and managed units, and recover interrupted replacement.
+- **Encrypted local backups:** preserve matching code, backend data, browser profile, keyring, bot state, configuration, workspaces and ownership. Restored work remains held until local reconciliation.
+- **Resource monitoring:** inspect memory, CPU, swap and storage, and record workload measurements without automatically killing work or changing worker limits.
 
-The downloads and demo below are from the [upstream desktop project](https://github.com/totec448-spec/chat-on-steroids). For this fork's VPS installation, follow the deployment guide above.
+## Server requirements
 
-<p align="center"><img src="docs/images/readme-hero.svg?v=2" width="960" alt="Turn ChatGPT into Codex-style local coding. Chat On Steroids: Your files. Your terminal. Your ChatGPT plan." /></p>
+The managed installer targets **Ubuntu 24.04 LTS, x64/amd64**.
 
-<p align="center">
-  <a href="https://github.com/totec448-spec/chat-on-steroids/releases/latest/download/Chat-On-Steroids-Setup-x64.exe"><img src="docs/images/download-windows.svg" width="208" height="56" alt="Download for Windows x64" /></a>&nbsp;
-  <a href="https://github.com/totec448-spec/chat-on-steroids/releases/latest/download/Chat-On-Steroids-macOS-arm64.dmg"><img src="docs/images/download-macos.svg" width="208" height="56" alt="Download for macOS Apple silicon" /></a>&nbsp;
-  <a href="https://github.com/totec448-spec/chat-on-steroids/releases/latest/download/Chat-On-Steroids-Linux-x64.deb"><img src="docs/images/download-linux.svg" width="208" height="56" alt="Download for Linux x64" /></a>
-</p>
+| Requirement | Purpose |
+| --- | --- |
+| A private VPS and a sudo-capable SSH account | Build, install and administer the services |
+| Node.js 24, available at `/usr/local/bin/node` | Build the project and run the Discord bot |
+| Linux build tools | Compile the native dependencies on the target platform |
+| A ChatGPT account/workspace with the required MCP access | Complete browser sign-in and provider/tool approvals |
+| Your own Discord application and bot | Register commands in an explicitly authorized guild |
+| Private access to the virtual display during bootstrap | Provision the browser profile, extension and secure keyring |
 
-<p align="center"><a href="https://github.com/totec448-spec/chat-on-steroids/releases/latest">All downloads</a></p>
+The installer supplies the managed Xvfb, Brave and Secret Service dependencies. Electron and graphical Brave use Xvfb; this deployment does not use Chromium's native headless mode.
 
-<p align="center"><sub>Independent beta. Use at your own risk and within your provider's rules. <a href="#responsible-use-and-provider-rules">Read the usage notice</a> before connecting.</sub></p>
+Choose VPS memory and CPU capacity from measured workloads. Start a new trial with two workers and a global cap of two through confirmed setup; preserve existing explicit settings. See the [measurement procedure](docs/reliability-rollout.md#measurements-and-soak-runs).
 
-<br />
+## Install and configure
 
-<p align="center"><a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" width="960" alt="Chat On Steroids in action: model selection, task plans, live tool results and reusable workers" /></a></p>
+Follow the [complete deployment guide](docs/headless-vps.md) in order. It covers Node installation, service ownership, protected configuration, keyring unlock, private browser access and Discord registration.
 
-<p align="center"><a href="#get-started">Get started</a> &nbsp;·&nbsp; <a href="docs/images/demo.mp4">Watch the demo</a> &nbsp;·&nbsp; <a href="CHANGELOG.md">What’s new</a></p>
+### 1. Build as your normal SSH login user
 
-<br />
+After preparing Ubuntu, build tools and Node.js 24:
 
-<h2 align="center">Code. Delegate. Keep going.</h2>
+```sh
+git clone https://github.com/PastaHimself/chat-on-steroids-Headless.git
+cd chat-on-steroids-Headless
+npm ci
+npm run discord:install
+COS_TEST_WORKERS=2 npm run verify
+npm run build
+npm run discord:build
+```
 
-**Work on the real project.** Let ChatGPT read and edit files, run tests, keep terminals open and use your desktop. Follow the actual tool results as they arrive.
+Build on Linux amd64 so native dependencies match the VPS. Run the build and runtime as unprivileged users.
 
-**Give it a team.** Split independent jobs across workers, then bring their results back. Workers keep their context, so the next task can pick up where they left off.
+### 2. Install the managed services
 
-**Stay in control of long tasks.** Send a correction while work runs. Goal follows unfinished work; Loop keeps working within your brief. Compact & Resume carries the session and worker history into a fresh chat.
+```sh
+sudo ./deploy/install-ubuntu.sh
+sudoedit /etc/chat-on-steroids/backend.env
+sudoedit /etc/chat-on-steroids/discord.env
+```
 
-<p align="center"><strong>Uses your ChatGPT conversation rather than invoking Codex directly.</strong><br /><sub>ChatGPT Work and Codex share usage limits. Your account’s model availability, usage and context limits still apply. <a href="https://learn.chatgpt.com/docs/pricing">OpenAI usage details →</a></sub></p>
+The installer creates separate backend and bot accounts, private data directories and root-owned code. It preserves existing protected configuration and leaves the stack stopped for bootstrap.
 
-## Responsible use and provider rules
+Configure the bot token, application ID, authorized administrator/guild IDs and optional channel restriction locally. Remote action grants and the application's Allow actions switch are separate local controls; Discord setup cannot bypass them.
 
-Chat On Steroids is an independent, open-source workspace for coding and other authorized tasks with your own files and tools. It is intended to support productive work within the rules of the services you use. **It is not intended to bypass usage limits, account restrictions or safety controls.**
+### 3. Complete the private bootstrap
 
-Use CoS in accordance with OpenAI's applicable [Terms of Use](https://openai.com/policies/terms-of-use/) ([Europe Terms](https://openai.com/policies/eu-terms-of-use/) for the EEA, Switzerland and UK), [Usage Policies](https://openai.com/policies/usage-policies/) and [Service Terms](https://openai.com/policies/service-terms/), plus your workspace's rules and any connected service's terms.
+Use the deployment guide to provision the keyring and connect to the virtual display through an SSH tunnel. In the dedicated Brave profile:
 
-- **Respect limits and access decisions.** Workers, Goal/Loop, Compact & Resume and finish checkpoints organize work; they do not grant extra quota or model access and must not be used to evade rate limits, usage caps or account restrictions. Do not switch accounts, chats, connectors or tunnels to evade a restriction.
-- **Respect safety decisions.** Do not use local tools, browser control, plugins or another worker to carry out an action that the provider blocked for safety. A local permission or an enabled MCP connector is not permission to override a provider refusal.
-- **Understand the integration.** CoS connects local tools through MCP. Its companion also observes and automates the ChatGPT browser UI and records conversation content locally. This browser integration is not a public ChatGPT automation API. MCP availability does not establish permission for every form of browser automation or recording; OpenAI's terms also restrict automated or programmatic extraction of data or output.
-- **Use at your own risk.** Review the rules for your account and intended workflow before connecting, supervise automation and review tool actions and outputs. CoS cannot guarantee policy compliance, continued service access or protection from account warnings, restrictions or suspension. If a workflow is restricted or receives a policy warning, stop that workflow and seek clarification through the provider's support or appeal process.
+1. Load and pair the companion extension, then sign in to ChatGPT interactively.
+2. Approve the intended server project folders and tool capabilities.
+3. Configure the MCP connection and complete provider approvals.
+4. Review the Local Control API and remote action permissions.
+5. Run a supervised task and inspect its exact delivery and recorded result.
 
-This notice states the project's intended use; it does not certify compliance or change provider rules. CoS is not affiliated with, endorsed by or approved by OpenAI. The software is provided as-is under the [MIT license](LICENSE); applicable statutory rights remain unaffected. See [Security](SECURITY.md) for local permissions and risks.
+The temporary bootstrap interface and managed backend must not run against the same data directory at the same time. Close bootstrap before starting the backend.
 
-<br />
+### 4. Register Discord commands and start the stack
 
-## Get started
+Register commands using the protected service environment as described in the deployment guide. After bootstrap and registration:
 
-**Ubuntu VPS:** use the [deployment guide](docs/headless-vps.md) for build, private bootstrap and service setup. Read the [recovery procedures](docs/reliability-rollout.md#local-update-backup-and-restore) before updating or restoring, and complete the live acceptance gates. The [command reference](docs/discord-commands.md) covers staged setup, permissions, receipt inspection and opt-in alerts.
+```sh
+sudo systemctl enable --now cos-headless.target
+```
 
-**Desktop:** follow the original setup flow below.
+In your authorized private Discord channel, open `/help` and `/setup`. Review the staged settings, permissions, worker limits and notification choices before confirming Save. Notifications and operational alerts are opt-in.
 
-1. **Install CoS** and approve your project folder in **Settings → Workspace**.
-2. **Connect Core** through **Settings → Setup** and add it in ChatGPT under **Plugins → Add → Add custom MCP server**. [Tunnel setup →](docs/setup.md#tunnel-setup)
-3. **Load the companion extension.** Click **Open extension folder**, then **Load unpacked** in Chrome’s extension settings. Pairing is automatic.
-4. **Choose a model, write your task and send.**
+## Everyday Discord controls
 
-<details>
-<summary>Requirements &amp; installation notes</summary>
+| Commands | Use |
+| --- | --- |
+| `/new`, `/ask` | Start a conversation or send/queue a task |
+| `/sessions`, `/select` | Find and select a saved local session |
+| `/status`, `/monitor` | Inspect the active session, delivery evidence and service health |
+| `/models`, `/model`, `/reasoning` | Inspect observed model availability and request the next prompt's settings |
+| `/goal`, `/loop` | Control automation within your saved objective or brief |
+| `/plan`, `/taskplan` | Review a proposed workflow or inspect recorded task progress |
+| `/workers`, `/delegate` | Inspect workers or delegate an independent task |
+| `/compact` | Compact and resume while retaining the local session identity |
+| `/queue`, `/history`, `/chat` | Inspect queued inputs and recorded conversation evidence |
+| `/operations`, `/operation` | Inspect request receipts, including an archived identity by its exact ID |
+| `/stop`, `/cancel` | Request Stop for the exact live turn or withdraw a provably unsent input |
+| `/setup`, `/help` | Configure authorized controls and discover available commands |
 
-Windows 10/11, **macOS 13 Ventura or newer**, or a current desktop Linux. Chrome 125+, current Edge or Brave, plus a ChatGPT account/workspace that can create custom MCP apps (availability depends on your plan and workspace policy). [Check account availability](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
+Buttons and dropdowns support phone use. Every command and component action retains permission checks. The [full command reference](docs/discord-commands.md) explains arguments and required grants.
 
-- **Unsigned beta:** Windows is not publisher-signed; macOS is unsigned and unnotarized. Verify the package against the release checksums. Because of that, macOS asks once after each update for your login password so the new version can open its saved keys ("chat-on-steroids Safe Storage"); choose **Always Allow**. Until you answer, chats and the browser connection wait, and the app says so.
-- **Linux:** a Secret Service keyring is required. Prefer the DEB; when unprivileged user namespaces are disabled, the AppImage launcher can fall back to <code>--no-sandbox</code>.
-- **Permissions:** choose your approved folders and review capabilities before connecting. Fresh installs enable Core capabilities and two workers; Windows also enables Desktop permissions. Shell commands run with your normal user privileges.
-- **Languages:** English, German, Spanish, French, Korean, Portuguese (Brazil and Portugal), Russian, Turkish, Vietnamese, Japanese, and Simplified and Traditional Chinese. Choose one in **Appearance → Language**.
-- **After updating:** the companion extension updates itself once no chat is busy. If CoS asks you to refresh its apps in ChatGPT, do so; **Automatic plugin refresh** in Settings can do it for you.
+Admission is not proof of delivery or task completion. If a request is uncertain, inspect its receipt, queue and history before composing another request. Checking a receipt never resends it.
 
-</details>
+## Operations, updates and backups
 
-<details>
-<summary>More screenshots</summary>
+Check or stop the managed stack locally:
 
-![Conversation, workers and task plan](docs/images/workspace.png)
+```sh
+sudo systemctl status cos-headless.target cos-backend.service cos-browser.service cos-discord.service
+sudo journalctl -u cos-backend -u cos-browser -u cos-discord --since '20 minutes ago'
+sudo systemctl stop cos-headless.target
+```
 
-![Model and reasoning selection](docs/images/model-picker.png)
+Use the [local maintenance workflow](docs/reliability-rollout.md#local-update-backup-and-restore) for encrypted backups, verified updates, interrupted-install recovery and restoration. The independent maintenance guard runs before runtime services and retains a local review requirement after an interrupted boot rollback.
 
-![Folder and capability settings](docs/images/settings.png)
+Restoration verifies checksums and ownership, restores matching code/data, and holds delivery, automation, model tools, notifications and worker revival. Review potentially repeated work locally, retain a reconciliation record, then release the hold while the stack is stopped. Starting services remains an explicit local step.
 
-</details>
+Settled receipts older than one hour archive hourly and before admission at 80% hot capacity. Bulky archived results expire after 30 days; permanent replay fences and unresolved receipts remain protected. Do not remove replay protection to free capacity. Incompatible code-only rollbacks are refused; use the matching encrypted backup and recovery procedure.
 
-<br />
+## Validation and readiness
 
----
+Automated regression checks, both builds, deployment fault drills and isolated Electron/Xvfb/Brave checks have passed locally. Detailed results, skipped checks and observed native UI flakiness are recorded in the [validation report](docs/headless-validation.md).
 
-<p align="center"><a href="docs/setup.md">Setup &amp; help</a> &nbsp;·&nbsp; <a href="docs/plugins.md">Plugins</a> &nbsp;·&nbsp; <a href="CONTRIBUTING.md">Contribute</a> &nbsp;·&nbsp; <a href="SECURITY.md">Security</a> &nbsp;·&nbsp; <a href="LICENSE">MIT license</a></p>
+The following live gates are still **pending**:
 
-<p align="center">Built with our <a href="CONTRIBUTORS.md">community contributors</a>. Thank you to the people behind the code, designs, bug reports and testing.</p>
+- Authenticated task delivery, zero/one/two-worker workloads, compaction and component restarts on a disposable VPS.
+- Expired-login handling, privileged update/restore drills and unattended reboot/keyring recovery.
+- A phone walkthrough and 24 hours without unexplained lost or duplicated work.
+- A seven-day resource and notification soak.
 
-<p align="center"><sub>Not affiliated with or endorsed by OpenAI. ChatGPT and Codex are OpenAI trademarks.</sub></p>
+Complete the [acceptance worksheet](docs/reliability-rollout.md#acceptance-worksheet) before treating an installation as ready for unattended daily use. A paired extension or healthy service cannot establish provider sign-in or whole-task correctness.
+
+## Security and responsible use
+
+Keep the display, browser bootstrap and Control API private; use authenticated SSH access and explicitly authorized Discord channels. Store credentials in the protected local configuration, never in Discord, source control or command arguments. Approved folders constrain file tools; shell commands still run with the backend account's normal privileges.
+
+Use only authorized accounts and workspaces, respect provider rules, usage limits and safety decisions, and review automated actions and results. This independent project does not grant extra quota or model access and is not affiliated with or endorsed by OpenAI.
+
+## Documentation and credits
+
+- [VPS deployment and troubleshooting](docs/headless-vps.md)
+- [Discord command reference](docs/discord-commands.md)
+- [Reliability, recovery and acceptance](docs/reliability-rollout.md)
+- [Headless architecture](docs/headless-architecture.md)
+- [Validation results](docs/headless-validation.md)
+- [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE)
+
+Based on [Chat On Steroids](https://github.com/totec448-spec/chat-on-steroids), with credit to its [contributors](CONTRIBUTORS.md).
