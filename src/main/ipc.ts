@@ -1,3 +1,4 @@
+import { operationalHealth } from './operational-health.js';
 import { registerWorkspaceTerminalIpc } from './workspace-terminal-ipc.js';
 import { registerDictationIpc } from './dictation.js';
 import { CONNECTOR_SUFFIX_MAX, CONNECTOR_SUFFIX_PATTERN } from '../shared/connector-names.js';
@@ -66,7 +67,7 @@ import { effectiveCapabilities, getConfig, updateConfig, MAX_MCP_INSTRUCTIONS_CH
 import { UI_LANGUAGES } from '../shared/ui-language.js';
 import { PROJECT_COLORS } from '../shared/projects.js';
 import { bridgePortSelection } from './bridge-ports.js';
-import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
+import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, saveCombinedGoalControlsNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
 import { runningToolActivity } from './mcp/call-context.js';
 import { onBackgroundExecChange, runningExecProcesses, stopExecProcess } from './codex/ownership.js';
@@ -1118,7 +1119,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     const workers = swarmState().agents;
     const text = renderDiagnosticsReport({
       app: systemFacts(app), home: app.getPath('home'),
-      bridge: await bridgeStatus(), extension: await companionDiagnostics().catch(() => null),
+      health: await operationalHealth().catch(() => null), bridge: await bridgeStatus(), extension: await companionDiagnostics().catch(() => null),
       selfTest: selfTest && { summary: selfTest.summary, checks: selfTest.checks.map(({ name, status, detail }) => ({ name, status, detail })) },
       commands: pendingCommands().map(({ id, what, lastError }) => ({ command: id, what, lastError })),
       workers: workers.map(({ id, role, state, model, reasoningEffort, createdAt, activatedAt, finishedAt, pending, delivered, conversationId, revivable }) =>
@@ -1824,18 +1825,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
       // This message supersedes the old final; never pick that old final up merely
       // because the composer enabled Goal for the next turn.
       const mode = automation === 'off' ? goalSwitchFor(conversationId).mode : automation;
-      // Reserve switch ordering immediately, before awaiting another ledger write.
-      // A user Off arriving during persistence must remain later than this attempt.
-      const switchWrite = setGoalSwitchNow(conversationId, mode, automation !== 'off', loopAfterTurn);
-      const [held] = await Promise.all([switchWrite, setGoalReplyActiveNow(conversationId, false)]);
-      // A fresh chat can finish before its send ACK arrives. Its newest final is
-      // this message's own response, so it may be picked up after binding.
-      // Objective ownership transfers with delivery even if the user switched Off
-      // before the fresh chat acquired its identity. The saved Off row remains the
-      // execution authority; retaining authored text must never imply reactivation.
-      if (objective !== undefined) await setGoalObjectiveNow(conversationId, objective);
-      const live = goalSwitchFor(conversationId);
-      if (phase === 'after-send' && held.enabled && live.enabled && live.mode === held.mode) await setGoalReplyActiveNow(conversationId, true);
+      await saveCombinedGoalControlsNow(null, conversationId, { mode, enabled: automation !== 'off',
+        afterTurn: loopAfterTurn, objective, active: phase === 'after-send' && automation !== 'off' }, async () => undefined);
     }
   });
 

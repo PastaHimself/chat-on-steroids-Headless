@@ -1,3 +1,4 @@
+import { recoveryHeld } from './recovery-hold.js';
 /**
  * Independent prime-owned worker families. Each active incarnation has its own maxWorkers
  * admission limit. Conversation identity resolves an owner; local names such as worker-1
@@ -1989,6 +1990,7 @@ export function workerBootstrapWorktreeIdentity(runId: string, agentId: string):
  * A retry after a failed disk barrier is safe because already-running workers are ignored.
  */
 export function requestWorkerBootstraps(ids: readonly string[], runId?: string): number {
+  if (recoveryHeld()) return 0;
   const run = scopedRun(runId);
   if (!run || ids.length === 0) return 0;
   const wanted = new Set(ids);
@@ -3650,6 +3652,7 @@ export function stageQueuedWorkerRevivals(ids: readonly string[], runId?: string
  * already awake is skipped.
  */
 export function requestWorkerRevivals(ids: readonly string[], runId?: string): number {
+  if (recoveryHeld()) return 0;
   const run = scopedRun(runId);
   if (!run || ids.length === 0) return 0;
   const wanted = new Set(ids);

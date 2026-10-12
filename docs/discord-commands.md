@@ -276,6 +276,22 @@ Inspect VPS resources and backend connection health
 
 Permission: **read**. Example: `/monitor`.
 
+### /operations
+
+Inspect recent operation receipts without resending
+
+Permission: **read**. Example: `/operations`.
+
+- `session` (optional): Local session; defaults to your selected session.
+
+### /operation
+
+Check an exact operation receipt without resending
+
+Permission: **read**. Example: `/operation id:…`.
+
+- `id` (required): Exact operation UUID.
+
 ## Configuration
 
 ### /setup

@@ -3596,7 +3596,34 @@ preserves published state on a failed file write. Backend/bot writes are separat
 partial cross-service saves must remain uncertain. Notification polling uses the API's exact
 event sequence, confirmed input/turn evidence, bounded pages and persisted message/nonce fences.
 Recorded turn completion is not whole-task success. No automatic retries of mutations, uncertain
-notification creation, or historical receipt eviction. Capacity requires reviewed local maintenance.
+notification creation, or unresolved receipt eviction. Settled receipts older than one hour archive
+hourly and at 80% hot capacity. `runtime/receipt-archive.mjs` is only the shared storage primitive;
+each adapter retains admission/serialization ownership. Payload and permanent private identity /
+fingerprint / outcome fence commit before hot removal. Bulky payloads expire after 30 days; replay
+fences never expire. Version 2 migrations preserve version 1 originals. Confirmed rejection needs
+proof that no owning mutation began; transport failure remains uncertain.
+
+`operational-health.ts` projects service, connection, companion, resource and recovery owners with
+per-component observation times/actions. Provider eligibility remains unknown. `/monitor`, local
+healthcheck, Activity checks and Diagnostics share it. `health-alerts.ts` has opt-in 30-second
+polling, two-observation failure/recovery thresholds and durable episode/message intent. Backend
+outage and bot observation gaps are observable without executing instructions. Notifications use
+two concurrent read monitors, bounded event-page draining and per-monitor outage backoff.
+
+`goal-control-journal.ts` owns combined Goal transaction intent only; Goal's existing queue/maps
+still own accepted controls. Commit three owner ledgers before publication, rebase concurrent
+replies, reject changed session ownership, repair from current accepted owners and hold Goal on
+unrepaired uncertainty. Recover before browser traffic. Preserve provisional pre-recording
+conversation controls, inherited switches and the existing exact idle/silence activation policy.
+
+`recovery-hold.ts` reads a local restore latch before runtime traffic. Input admission/browser
+claims, model-tool dispatch, automatic Goal, worker boot/revival and notifications honor it.
+Only stopped-stack local reconciliation releases the hold. `deploy/maintenance.py` stages and
+verifies complete code/units before stopping, retains previous contents and journals replacement.
+Its independent root recovery helper/unit precedes runtime units and rolls back an interrupted
+boot while requiring local review. Local GPG backup/restore includes matching code, data, profile,
+keyring, bot/config/project state, units and ownership; checksum verification precedes replacement.
+Data format floors refuse incompatible code-only rollback. Live gates: `docs/reliability-rollout.md`.
 Tests: `headless`, `remote-control`, `discord`, `control-api*`, `mcp-worktree-spawn`, lifecycle/shutdown.
 
 Dark is the default theme. Theme selection belongs in Appearance settings; the main header

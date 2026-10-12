@@ -437,3 +437,85 @@ it('leaves only accepted objective state retryable when the corrective write als
   expect((await storedControls()).objectives).toEqual([{ conversationId: SOURCE, objective: 'Accepted objective' }]);
   expect(proposed).toEqual(['Rejected replacement', 'Accepted objective', 'Accepted objective']);
 });
+
+it('publishes combined objective, mode and reply rows only after all three durable commits', async () => {
+  const { createSession } = await import('../src/main/session/store.js');
+  const session = await createSession({ conversationId: SOURCE });
+  const gate = delayedWrite('goal-replies');
+  const saved = observe(goal.saveCombinedGoalControlsNow(session.id, SOURCE,
+    { mode: 'loop', enabled: true, objective: 'Whole objective', active: true }, async () => undefined));
+  await gate.entered;
+  expect(goal.goalObjectiveFor(SOURCE)).toBe(''); expect(goal.goalSwitchFor(SOURCE).enabled).toBe(false);
+  gate.release(); expect((await saved).error).toBeUndefined();
+  expect(goal.goalObjectiveFor(SOURCE)).toBe('Whole objective'); expect(goal.goalSwitchFor(SOURCE).mode).toBe('loop');
+  expect(await readDurable('goal-control-journal')).toMatchObject({ state: 'committed' });
+});
+
+it('repairs a combined save from current accepted owners after concurrent compaction', async () => {
+  const { createSession } = await import('../src/main/session/store.js');
+  const session = await createSession({ conversationId: SOURCE });
+  await goal.setGoalObjectiveNow(SOURCE, 'Accepted objective');
+  const gate = delayedWrite('goal-objectives');
+  const saved = observe(goal.saveCombinedGoalControlsNow(session.id, SOURCE,
+    { mode: 'loop', enabled: true, objective: 'Stale new objective', active: false }, async () => undefined));
+  await gate.entered; goal.moveGoalObjective(SOURCE, TARGET); goal.moveGoalSwitch(SOURCE, TARGET); gate.release();
+  expect((await saved).error).toBeDefined();
+  expect(goal.goalObjectiveFor(SOURCE)).toBe(''); expect(goal.goalObjectiveFor(TARGET)).toBe('Accepted objective');
+  expect(await readDurable('goal-control-journal')).toMatchObject({ state: 'superseded' });
+  expect((await storedControls()).objectives).toEqual([{ conversationId: TARGET, objective: 'Accepted objective' }]);
+});
+
+it('restores an interrupted combined transaction before traffic and preserves unrelated owners', async () => {
+  const { createSession } = await import('../src/main/session/store.js');
+  const { stageGoalControlJournal, recoverGoalControlJournal } = await import('../src/main/goal-control-journal.js');
+  const session = await createSession({ conversationId: SOURCE });
+  const next = { conversationId: SOURCE, enabled: true, mode: 'loop', afterTurn: false, at: 1 };
+  await stageGoalControlJournal(session.id, SOURCE, [null, null, null], [next, { conversationId: SOURCE, objective: 'Restored intent' }, null]);
+  await writeDurableNow(goal.GOAL_SWITCHES_STATE, { version: 1, switches: [next] });
+  await writeDurableNow(goal.GOAL_OBJECTIVES_STATE, { version: 1, objectives: [{ conversationId: TARGET, objective: 'Unrelated accepted work' }] });
+  await recoverGoalControlJournal();
+  expect(await readDurable(goal.GOAL_OBJECTIVES_STATE)).toMatchObject({ objectives: [
+    { conversationId: TARGET, objective: 'Unrelated accepted work' }, { conversationId: SOURCE, objective: 'Restored intent' }
+  ] });
+  expect(await readDurable('goal-control-journal')).toMatchObject({ state: 'committed' });
+});
+
+it('refuses ambiguous recovery rather than overriding newer accepted Goal state', async () => {
+  const { createSession } = await import('../src/main/session/store.js');
+  const { stageGoalControlJournal, recoverGoalControlJournal } = await import('../src/main/goal-control-journal.js');
+  const session = await createSession({ conversationId: SOURCE });
+  await stageGoalControlJournal(session.id, SOURCE, [null, null, null], [null, { conversationId: SOURCE, objective: 'Old pending intent' }, null]);
+  await writeDurableNow(goal.GOAL_OBJECTIVES_STATE, { version: 1, objectives: [{ conversationId: SOURCE, objective: 'Newer accepted intent' }] });
+  await expect(recoverGoalControlJournal()).rejects.toThrow('newer change');
+  expect(await readDurable(goal.GOAL_OBJECTIVES_STATE)).toMatchObject({ objectives: [{ conversationId: SOURCE, objective: 'Newer accepted intent' }] });
+});
+
+it('supersedes a failed initial journal write so its background retry cannot revive rejected intent', async () => {
+  const { createSession } = await import('../src/main/session/store.js');
+  const session = await createSession({ conversationId: SOURCE });
+  const gate = delayedWrite('goal-control-journal', true);
+  const saved = observe(goal.saveCombinedGoalControlsNow(session.id, SOURCE,
+    { mode: 'loop', enabled: true, objective: 'Never accepted', active: false }, async () => undefined));
+  await gate.entered; gate.release(); expect((await saved).error).toBeDefined();
+  await flushDurable();
+  expect(goal.goalObjectiveFor(SOURCE)).toBe(''); expect(goal.goalSwitchFor(SOURCE).enabled).toBe(false);
+  expect(await readDurable('goal-control-journal')).toMatchObject({ state: 'superseded' });
+  expect(goal.goalControlRecoveryNeeded()).toBe(false);
+});
+
+it.each(['worker', 'helper'] as const)('permits durable Off recovery for a %s while refusing activation and preserving helper identity', async kind => {
+  const { createSession, setSessionOrigin } = await import('../src/main/session/store.js');
+  const { recoverGoalControlJournal } = await import('../src/main/goal-control-journal.js');
+  const session = await createSession({ conversationId: SOURCE });
+  await setSessionOrigin(session.id, { kind, fromSessionId: null, agentId: kind === 'worker' ? 'worker-1' : null, task: '' }, kind);
+  if (kind === 'helper') await goal.registerGoalDecisionChat(SOURCE);
+  await goal.saveCombinedGoalControlsNow(session.id, SOURCE, { mode: 'goal', enabled: false, active: false }, async () => undefined);
+  const journal = await readDurable<Record<string, unknown>>('goal-control-journal');
+  await writeDurableNow('goal-control-journal', { ...journal, state: 'pending' });
+  await recoverGoalControlJournal();
+  expect(await readDurable('goal-control-journal')).toMatchObject({ state: 'committed' });
+  expect((await storedControls()).switches).toContainEqual(expect.objectContaining({ conversationId: SOURCE, enabled: false,
+    ...(kind === 'helper' ? { role: 'decision' } : {}) }));
+  expect(goal.isGoalDecisionChat(SOURCE)).toBe(kind === 'helper');
+  await expect(goal.saveCombinedGoalControlsNow(session.id, SOURCE, { mode: 'loop', enabled: true, active: true }, async () => undefined)).rejects.toThrow('conversation_changed');
+});

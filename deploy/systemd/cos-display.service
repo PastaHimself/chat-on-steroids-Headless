@@ -1,5 +1,7 @@
 # Managed by Chat On Steroids headless deployment
 [Unit]
+Requires=cos-maintenance-recovery.service
+After=cos-maintenance-recovery.service
 Description=Chat On Steroids private virtual display
 Before=cos-session.service cos-browser.service cos-backend.service
 PartOf=cos-headless.target

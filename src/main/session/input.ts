@@ -1,3 +1,4 @@
+import { recoveryHeld } from '../recovery-hold.js';
 import { REASONING_EFFORTS, workSequence } from '../../shared/session.js';
 /** User-authored input has one durable owner across browser and MCP delivery.
  * A claimed browser send is never automatically retried: losing the ACK is ambiguous.
@@ -166,6 +167,7 @@ let deliveryHooks: InputDeliveryHooks | null = null;
 export function configureInputDelivery(hooks: InputDeliveryHooks): void { deliveryHooks = hooks; }
 /** One delivery policy for composer presentation, admission and the final send fence. */
 export async function sessionInputPolicy(sessionId: string, observedActivity?: InputActivity): Promise<{ queueAtFinish: boolean; canInject: boolean; injectionTurnId: string | null; directTurn: InputEntry['directTurn'] | null; browserAllowed: boolean; settled: boolean }> {
+  if (recoveryHeld()) return { queueAtFinish: false, canInject: false, injectionTurnId: null, directTurn: null, browserAllowed: false, settled: false };
   const [end] = await readRecentEvents(sessionId, 1, { kinds: ['turn_start', 'turn_end'] });
   const session = await getSession(sessionId);
   if (!session?.conversationId || isChatBlocked(session.conversationId)) return { queueAtFinish: false, canInject: false, injectionTurnId: null, directTurn: null, browserAllowed: false, settled: false };
@@ -715,6 +717,7 @@ async function materializeOpening(entry: InputEntry): Promise<void> {
   if (entry.projectId && session.projectId !== entry.projectId) await assignSessionProject(session.id, entry.projectId);
 }
 export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwner']): Promise<InputEntry> {
+  if (recoveryHeld()) return Promise.reject(new Error('restore_held: reconcile locally before admitting instructions'));
   return serial(async () => {
     const input = inputArgs.parse(raw);
     if (input.stages !== undefined && JSON.stringify([input.text, ...input.stages]).length > 12000)
@@ -1504,6 +1507,7 @@ export function pendingBrowserInputs(): Promise<Array<{ id: string; conversation
 }
 export function claimBrowserInput(id: string, owner: string, conversationId: string | null, requiresAuthorization = false): Promise<InputEntry | null> {
   return serial(async () => {
+    if (recoveryHeld()) return null;
     const current = await load();
     const entry = current.find((row) => row.id === id);
     if (!entry || !preparable(entry) || (entry.state === 'browser' && !requiresAuthorization) || entry.dueAt > Date.now() || !owner) return null;
@@ -1965,6 +1969,7 @@ export async function requestBrowserDecision(text: string, signal: AbortSignal, 
   reasoningEffort?: InputArgs['reasoningEffort'] | null;
   publish?: (text: string) => void;
 } = {}): Promise<string> {
+  if (recoveryHeld()) throw new Error('restore_held');
   if (!text.trim() || text.length > MAX_CHATGPT_MESSAGE_CHARS) throw new Error('goal_context_too_large');
   signal.throwIfAborted();
   const id = randomUUID();

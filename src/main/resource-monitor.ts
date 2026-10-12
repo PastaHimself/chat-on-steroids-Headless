@@ -35,8 +35,17 @@ export function parseMeminfo(text: string): Record<string, number> {
   }));
 }
 
+let cached: { directory: string; until: number; value: Promise<Awaited<ReturnType<typeof collectResources>>> } | null = null;
+/** Single-flight diagnostics with a five-second observation lifetime. Never execution authority. */
+export function resourceSnapshot(directory: string) {
+  if (cached?.directory === directory && cached.until > Date.now()) return cached.value;
+  const value = collectResources(directory);
+  cached = { directory, until: Date.now() + 5000, value };
+  void value.catch(() => { if (cached?.value === value) cached = null; });
+  return value;
+}
 /** Diagnostics only. No threshold here terminates work or changes worker admission. */
-export async function resourceSnapshot(directory: string) {
+async function collectResources(directory: string) {
   const mem = process.platform === 'linux' ? parseMeminfo(await fs.readFile('/proc/meminfo', 'utf8')) : {};
   const disk = await fs.statfs(directory);
   const processes: Array<{ pid: number; kind: 'browser' | 'terminal'; rssBytes: number; parent: number }> = [];
@@ -64,7 +73,10 @@ export async function resourceSnapshot(directory: string) {
         bytes: Number(row[2]) * 1024, usedBytes: Number(row[3]) * 1024, priority: Number(row[4]) };
     });
   }
-  return { platform: process.platform, cpuCount: os.cpus().length, loadAverage: os.loadavg(),
+  const swapActivity = process.platform === 'linux' ? await fs.readFile('/proc/vmstat', 'utf8').then(text => ({
+    inPages: Number(/^pswpin (\d+)$/m.exec(text)?.[1] ?? 0), outPages: Number(/^pswpout (\d+)$/m.exec(text)?.[1] ?? 0)
+  })).catch(() => null) : null;
+  return { observedAt: Date.now(), platform: process.platform, cpuCount: os.cpus().length, cpuUsage: process.cpuUsage(), loadAverage: os.loadavg(), swapActivity,
     memory: { totalBytes: mem.MemTotal ?? os.totalmem(), availableBytes: mem.MemAvailable ?? os.freemem(),
       swapTotalBytes: mem.SwapTotal ?? 0, swapFreeBytes: mem.SwapFree ?? 0, app: process.memoryUsage() },
     pressure: (mem.MemAvailable ?? os.freemem()) / (mem.MemTotal ?? os.totalmem()) < 0.1 ? 'high' : 'normal',

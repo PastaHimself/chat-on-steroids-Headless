@@ -1,5 +1,7 @@
 # Managed by Chat On Steroids headless deployment
 [Unit]
+Requires=cos-maintenance-recovery.service
+After=cos-maintenance-recovery.service
 Description=Chat On Steroids complete headless stack
 Wants=network-online.target cos-display.service cos-session.service cos-browser.service cos-backend.service cos-discord.service
 Upholds=cos-display.service cos-session.service cos-browser.service cos-backend.service cos-discord.service

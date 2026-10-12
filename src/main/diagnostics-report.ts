@@ -25,6 +25,7 @@ export interface DiagnosticsReportSources {
   home: string;
   extension: unknown;
   bridge: unknown;
+  health?: unknown;
   selfTest: { summary: string; checks: Array<{ name: string; status: string; detail: string }> } | null;
   commands: Array<Record<string, unknown>>;
   workers: Array<Record<string, unknown>>;
@@ -97,6 +98,7 @@ export function renderDiagnosticsReport(sources: DiagnosticsReportSources): stri
       `Electron ${sources.app.electron}, Chrome ${sources.app.chrome}`
     ]),
     section('Browser connection', [...json(scrubValue(sources.bridge)), ...json(scrubValue(sources.extension))]),
+    section('Operational health', json(scrubValue(sources.health))),
     section('Connection self-test', sources.selfTest
       ? [sources.selfTest.summary, ...sources.selfTest.checks.map(check => `- ${check.name}: ${check.status} — ${check.detail}`)].map(scrub)
       : ['(not available)']),

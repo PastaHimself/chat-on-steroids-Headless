@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { MessageFlags, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder,
   type Interaction, type RepliableInteraction } from 'discord.js';
-import { ControlClient } from './api.js';
+import { ApiError, ControlClient } from './api.js';
 import { authorized, safeText, rememberSecret, type Bootstrap } from './config.js';
 import { definitions, helpDescription } from './commands.js';
 import { StateStore, snowflake, type Permission, type View } from './state.js';
@@ -36,20 +36,28 @@ export class DiscordController {
     const selected = state.selection[`${interaction.user.id}:${id}`];
     return { model: selected?.model ?? state.settings.defaultModel, reasoningEffort: selected?.reasoning ?? state.settings.defaultReasoning };
   }
-  private async operation(interaction: any, work: (id: string) => Promise<any>): Promise<any> {
+  private async operation(interaction: any, work: (id: string) => Promise<any>, requestIdentity?: unknown): Promise<any> {
+    if (await this.store.archive.get(interaction.id)) throw new Error('This archived interaction was already handled and cannot run again.');
     const prior = this.store.snapshot().interactions[interaction.id];
-    if (prior) throw new Error(prior.state === 'done' ? 'This interaction was already handled.' : `This interaction has an uncertain operation ${prior.operationId}. Inspect its state before trying again.`);
+    if (prior) throw new Error(prior.state !== 'started' ? 'This interaction was already handled.' : `This interaction has an uncertain operation ${prior.operationId}. Inspect its state before trying again.`);
+    await this.store.archive.assertSpace();
     const id = randomUUID();
     await this.store.update(state => {
       if (state.interactions[interaction.id]) throw new Error('Interaction already claimed');
-      if (Object.keys(state.interactions).length >= 2000) throw new Error('Interaction receipt capacity reached; archive receipts locally after inspecting uncertain operations');
-      state.interactions[interaction.id] = { operationId: id, createdAt: Date.now(), state: 'started' };
+      if (Object.keys(state.interactions).length >= 2000) throw new Error('Interaction receipt capacity reached; completed receipts archive automatically; inspect unresolved operations locally');
+      state.interactions[interaction.id] = { operationId: id, createdAt: Date.now(), state: 'started', fingerprint: createHash('sha256')
+        .update(JSON.stringify([interaction.id, interaction.user.id, interaction.guildId, interaction.channelId, interaction.commandName ?? interaction.customId,
+          requestIdentity ?? interaction.options?.data ?? interaction.values ?? null])).digest('hex') };
     });
     try {
       const result = await work(id);
-      await this.store.update(state => { state.interactions[interaction.id]!.state = 'done'; });
+      await this.store.update(state => { state.interactions[interaction.id]!.state = 'done'; state.interactions[interaction.id]!.settledAt = Date.now(); });
       return result;
     } catch (error) {
+      if (error instanceof ApiError && error.outcome === 'rejected' && error.operationId === id) {
+        await this.store.update(state => { state.interactions[interaction.id]!.state = 'rejected'; state.interactions[interaction.id]!.settledAt = Date.now(); });
+        throw new Error(`Request rejected before effects: ${error.code}. No instruction was sent.`);
+      }
       throw new Error(`${safeText(error instanceof Error ? error.message : 'Operation failed')}\nOperation ${id} has no confirmed bot receipt. Inspect application state before another request.`);
     }
   }
@@ -90,7 +98,7 @@ export class DiscordController {
     const name: string = interaction.commandName;
     const string = (key: string) => interaction.options.getString(key);
     const boolean = (key: string) => interaction.options.getBoolean(key);
-    const act = (action: string, args: Record<string, unknown>) => this.operation(interaction, id => this.api.action(action, id, args));
+    const act = (action: string, args: Record<string, unknown>) => this.operation(interaction, id => this.api.action(action, id, args), [action, args]);
     switch (name) {
       case 'help': return this.helpPanel(interaction, string('command'));
       case 'setup': return this.setupPanel(interaction);
@@ -239,9 +247,12 @@ export class DiscordController {
         return panel('Redacted application activity', result.entries.map((row: any) => `${new Date(row.time).toISOString()} · ${row.level}\n${row.message}`).join('\n\n'), [], [this.config.token]);
       }
       case 'monitor': {
-        const resource = await this.api.request('/v1/remote/resources'), status = await this.api.request('/v1/status');
-        return panel('VPS and service health', `${resourceDescription(resource)}\n\nBridge: ${status.bridge.present ? 'extension present' : 'disconnected'} · ${status.bridge.paired ? 'paired' : 'not paired'}\nMCP: ${status.connection.state}`);
+        const health = await this.api.request('/v1/remote/health');
+        const resource = await this.api.request('/v1/remote/resources');
+        return panel('VPS and service health', `${health.components.map((row: any) => `${row.label}: ${row.state}\n${row.detail}${row.state === 'available' ? '' : `\n${row.action}`}`).join('\n\n')}\n\n${resourceDescription(resource)}`);
       }
+      case 'operations': return this.operationListPanel(interaction, this.session(interaction));
+      case 'operation': return this.operationPanel(interaction, string('id'));
       default: throw new Error('Command unavailable');
     }
   }
@@ -262,7 +273,33 @@ export class DiscordController {
   private async statusPanel(interaction: any, id: string) {
     const detail = await this.api.request(`${sessionPath(id)}?live=1`);
     const view = await this.makeView(interaction, { kind: 'status', sessionId: id });
-    return panel('Session status', sessionDescription(detail), [buttons(view, [['refresh', 'Refresh'], ['taskplan', 'View Plan'], ['logs', 'View Logs'], ['workers', 'Workers'], ['stop', 'Stop', ButtonStyle.Danger]])]);
+    const requested = this.selection(interaction, id);
+    const workers = await this.api.request(`${sessionPath(id)}/workers`);
+    const workerSummary = Object.entries((workers.agents ?? []).reduce((counts: Record<string, number>, row: any) => { counts[row.state] = (counts[row.state] ?? 0) + 1; return counts; }, {})).map(([state, count]) => `${count} ${state}`).join(', ') || 'None';
+    const queue = await this.api.request('/v1/inputs?limit=100');
+    const input = queue.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id).at(-1);
+    const projects = await this.api.request('/v1/remote/projects');
+    const project = projects.projects.find((row: any) => row.id === detail.session.projectId);
+    return panel('Session status', `${sessionDescription(detail)}\nProject: ${project?.name ?? 'Unfiled or unavailable'}\nNext prompt model: ${requested.model ?? 'Current provider selection'}\nDelivery: ${input?.delivery ?? 'No recent input proof'}\nWorkers: ${workerSummary}\nRecovery: ${detail.live?.blocked ? 'Review the session block in Details.' : detail.live?.recovery?.length ? 'The backend is recovering this session. Review Details and inspect its receipt before requesting more work.' : input?.delivery === 'unconfirmed' ? 'Inspect queue and history before submitting another request.' : 'No current recovery action reported.'}`,
+      [buttons(view, [['refresh', 'Refresh'], ['taskplan', 'View Plan'], ['queue', 'View queue'], ['history', 'View history'], ['details', 'Details']])]);
+  }
+  private async operationListPanel(interaction: any, sessionId: string, cursor?: string) {
+    const receipts = await this.api.request(`/v1/remote/operations?session=${encode(sessionId)}&limit=10${cursor ? `&cursor=${encode(cursor)}` : ''}`);
+    const view = await this.makeView(interaction, { kind: 'operation', sessionId, cursor: receipts.nextCursor });
+    const components: any[] = [];
+    if (receipts.operations.length) components.push(select(view, 'choose', 'Inspect a receipt', receipts.operations.map((row: any) => ({
+      label: `${row.action} · ${row.state}`, value: row.id, description: new Date(row.createdAt).toISOString()
+    }))));
+    components.push(buttons(view, [...(receipts.nextCursor ? [['next', 'Next page'] as [string, string]] : []), ['first', 'First page']]));
+    return panel('Operation receipts', receipts.operations.length ? 'Choose an operation to inspect its outcome. Checking a receipt never sends an instruction.' : 'No hot receipts for this session. An archived operation remains inspectable by its exact ID.', components);
+  }
+  private async operationPanel(interaction: any, operationId: string) {
+    if (!/^[0-9a-f-]{36}$/.test(operationId ?? '')) throw new Error('Use the exact operation ID shown with the request.');
+    const receipt = await this.api.request(`/v1/remote/operations/${operationId}`);
+    const view = await this.makeView(interaction, { kind: 'operation', action: operationId, sessionId: receipt.sessionId });
+    const actions: Array<[string, string]> = [['receipt', 'Check receipt']];
+    if (receipt.sessionId) actions.push(['queue', 'View queue'], ['history', 'View history']);
+    return panel('Operation receipt', `Operation: ${receipt.action}\nOutcome: ${receipt.state}${receipt.outcome ? ` (${receipt.outcome})` : ''}\n${receipt.state === 'unconfirmed' ? 'Inspect queue and history before composing another request.' : 'Checking this receipt never sends an instruction.'}\n${receipt.error?.code ?? ''}`, [buttons(view, actions)]);
   }
   private async historyPanel(interaction: any, id: string, before?: number, recent = false) {
     const result = await this.api.request(`${sessionPath(id)}/events?limit=6${before !== undefined ? `&before=${before}` : ''}${recent ? '&kinds=user_message,assistant_message' : ''}`);
@@ -330,6 +367,15 @@ export class DiscordController {
   }
 
   private async component(interaction: any, id: string, action: string, view: View): Promise<any> {
+    if (view.kind === 'operation') {
+      if (action === 'choose') return this.operationPanel(interaction, interaction.values?.[0]);
+      if (view.sessionId && ['next', 'first'].includes(action)) return this.operationListPanel(interaction, view.sessionId, action === 'next' ? view.cursor ?? undefined : undefined);
+      this.require(interaction, 'read');
+      if (action === 'receipt') return this.operationPanel(interaction, view.action!);
+      if (action === 'history' && view.sessionId) return this.historyPanel(interaction, view.sessionId);
+      if (action === 'queue' && view.sessionId) return panel('Input delivery', (await this.api.request('/v1/inputs?limit=100')).inputs.filter((row: any) => row.sessionId === view.sessionId));
+      throw new Error('Receipt action unavailable');
+    }
     const value = interaction.values?.[0];
     if (view.kind === 'sessions') {
       if (action === 'select') {
@@ -351,6 +397,10 @@ export class DiscordController {
       }
     }
     if (view.kind === 'status') {
+      if (action === 'history') return this.historyPanel(interaction, view.sessionId!);
+      if (action === 'queue') return panel('Input delivery', (await this.api.request('/v1/inputs?limit=100')).inputs.filter((row: any) => row.sessionId === view.sessionId));
+      if (action === 'details') return panel('Session details', await this.api.request(`${sessionPath(view.sessionId!)}?live=1`),
+        [buttons(id, [['refresh', 'Refresh'], ['workers', 'Workers'], ['logs', 'View Logs'], ['stop', 'Stop', ButtonStyle.Danger]])]);
       if (action === 'refresh') return this.statusPanel(interaction, view.sessionId!);
       if (action === 'taskplan') return panel('Executor task plan', taskPlanDescription((await this.api.request(`${sessionPath(view.sessionId!)}/taskplan`)).plan));
       if (action === 'workers') return panel('Owned workers', await this.api.request(`${sessionPath(view.sessionId!)}/workers`));
@@ -461,7 +511,7 @@ export class DiscordController {
     }
     if (section === 'discord') {
       text = { authorizedUsers: Object.keys(draft.settings.users), allowedChannels: draft.settings.channels,
-        notificationChannel: draft.settings.notificationChannel, progress: draft.settings.progress, finalResults: draft.settings.finalResults,
+        notificationChannel: draft.settings.notificationChannel, progress: draft.settings.progress, finalResults: draft.settings.finalResults, operationalAlerts: draft.settings.operationalAlerts,
         frequencySeconds: draft.settings.frequencySeconds, note: 'Bootstrap guild/channel restrictions remain authoritative. Discord administrator roles confer no access.' };
       components.push(buttons(view, [['setup-access', 'User and channel grants'], ['setup-notifications', 'Notifications']]));
     }
@@ -579,7 +629,8 @@ export class DiscordController {
       if (!draft || draft.revision !== view.revision) throw new Error('Stale setup panel');
       if (action === 'setup-notifications') modal.addComponents(field('channel', 'Notification channel ID (blank disables)', draft.settings.notificationChannel ?? ''),
         field('frequency', 'Frequency in seconds (15–3600)', String(draft.settings.frequencySeconds)), field('progress', 'Progress updates: on / off', draft.settings.progress ? 'on' : 'off'),
-        field('final', 'Final recorded response notifications: on / off', draft.settings.finalResults ? 'on' : 'off'));
+        field('final', 'Final recorded response notifications: on / off', draft.settings.finalResults ? 'on' : 'off'),
+        field('health', 'Failure and recovery alerts: on / off', draft.settings.operationalAlerts ? 'on' : 'off'));
       else if (action === 'setup-access') modal.addComponents(field('users', 'User IDs: read / send / configure / plan / workers',
         Object.entries(draft.settings.users).map(([user, grants]) => `${user}:${grants.join(',')}`).join('\n'), true), field('channels', 'Allowed channel IDs, comma-separated', draft.settings.channels.join(',')));
       else if (action === 'setup-workers') modal.addComponents(field('family', 'Workers per family (1–8; initial default 2)', String(draft.backend.maxWorkers ?? 2)),
@@ -604,8 +655,9 @@ export class DiscordController {
       if (action === 'setup-notifications') {
         draft.settings.notificationChannel = text('channel') ? snowflake.parse(text('channel')) : null;
         const frequency = Number(text('frequency')); if (!Number.isInteger(frequency) || frequency < 15 || frequency > 3600) throw new Error('Frequency must be 15–3600 seconds');
-        if (![text('progress'), text('final')].every(value => value === 'on' || value === 'off')) throw new Error('Use on or off for notification switches');
+        if (![text('progress'), text('final'), text('health')].every(value => value === 'on' || value === 'off')) throw new Error('Use on or off for notification switches');
         draft.settings.frequencySeconds = frequency; draft.settings.progress = text('progress') === 'on'; draft.settings.finalResults = text('final') === 'on';
+        draft.settings.operationalAlerts = text('health') === 'on';
       } else if (action === 'setup-access') {
         const users: Record<string, Permission[]> = {};
         for (const row of text('users').split('\n').filter(Boolean)) {

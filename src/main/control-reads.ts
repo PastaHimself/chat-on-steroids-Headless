@@ -37,7 +37,8 @@ import { readSession, readSessionEvents, readSessionList, sessionListCursorSchem
  */
 
 export class RequestError extends Error {
-  constructor(readonly status: number, readonly code: string, readonly detail?: string) {
+  constructor(readonly status: number, readonly code: string, readonly detail?: string,
+    readonly outcome?: 'rejected' | 'unconfirmed', readonly operationId?: string) {
     super(code);
   }
 }

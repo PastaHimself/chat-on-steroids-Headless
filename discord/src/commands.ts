@@ -51,6 +51,9 @@ export const definitions: Definition[] = [
     options: [{ ...project, required: true }, { name: 'directory', description: 'Relative directory; no traversal or symlink escapes' }, { name: 'page', description: 'Page number', type: 'integer' }] },
   { name: 'logs', description: 'Read bounded redacted application diagnostics privately', category: 'System monitoring', permission: 'read', example: '/logs' },
   { name: 'monitor', description: 'Inspect VPS resources and backend connection health', category: 'System monitoring', permission: 'read', example: '/monitor' },
+  { name: 'operations', description: 'Inspect recent operation receipts without resending', category: 'System monitoring', permission: 'read', example: '/operations', options: [session] },
+  { name: 'operation', description: 'Check an exact operation receipt without resending', category: 'System monitoring', permission: 'read', example: '/operation id:…',
+    options: [{ name: 'id', description: 'Exact operation UUID', required: true }] },
   { name: 'setup', description: 'Configure and validate the integration in an administrator wizard', category: 'Configuration', permission: 'admin', example: '/setup' },
   { name: 'help', description: 'Browse registered commands, permissions and availability', category: 'Configuration', permission: 'read', example: '/help command:plan',
     options: [{ name: 'command', description: 'Registered command', autocomplete: true }] }
