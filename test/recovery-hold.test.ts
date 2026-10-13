@@ -42,4 +42,9 @@ it('separates service availability from task readiness and preserves per-owner o
   const blocked = projectOperationalHealth({ ...healthy, held: true, storage: false });
   expect(blocked.taskReadiness).toBe('blocked');
   expect(blocked.components.find(row => row.id === 'storage')?.action).toContain('preserve uncertain records');
+  for (const recording of [null, { usedBytes: 91, limitBytes: 100, incompleteSessions: 0 },
+    { usedBytes: 1, limitBytes: 100, incompleteSessions: 1 }]) {
+    const health = projectOperationalHealth({ ...healthy, recording });
+    expect(health.components.find(row => row.id === 'recording')?.state).toBe(recording ? 'attention' : 'unknown');
+  }
 });

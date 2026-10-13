@@ -20,6 +20,47 @@ on Xvfb. This is not a claim of display-independent or native Chromium headless 
 
 ## Reliability roadmap follow-up
 
+The 2026-10-13 [long-session reliability implementation](long-session-reliability.md) adds
+same-question recovery proof, reconstruction of unfinished watches after restart, fresh exact
+native reasoning evidence, authorized transport-error preservation, and durable recording-loss
+blockers. It retains the existing outbox, continuation, request, worker and Goal owners.
+Timed turn rotation remains disabled pending server-side cancellation and worker/compaction
+collision evidence. Authenticated 4/8/12/24-hour VPS acceptance remains pending.
+
+Local follow-up validation used Node.js 24.19.0, npm 11.6.2, two test workers, Electron 44.3.0,
+an extracted official Ubuntu Xvfb package and an isolated graphical Brave profile. The smoke
+used the checkout's Electron and final compiled source; it did not use a signed-in account.
+
+| Long-session check | Result |
+| --- | --- |
+| `COS_TEST_WORKERS=2 GITHUB_ACTIONS=true npm run verify` | Exit 0: 8,436 passed, 162 skipped; no test retries enabled |
+| Final full-suite phases | 321 passed/14 skipped files and 8,430 passed/140 skipped tests; serialized shutdown/computer phase: six passed/22 skipped |
+| Root/Discord type checks, public-history privacy and notices | Passed in final verification |
+| Initial focused clean-code baseline | 948 passed across continuation, resume, Goal, bridge, response identity and history-loading suites |
+| Fail-first bridge regressions | Four failures reproduced; fixed cases now pass |
+| Combined 4/8/12/24-hour simulation | Passed: 96 confirmed input receipts, 24 running resets, 12 compactions, same session/objective and one history row per input |
+| Native reasoning/content/background boundary | Seven focused cases passed, including Pro stream-loss revocation and pending tool stall veto |
+| Recording-loss decision/Send boundary | Seven focused cases passed, including loss after queue/claim and a late provider completion decision |
+| Root and Discord production builds | Passed |
+| Generated Discord command reference | Passed: 34 actual command definitions |
+| `npm run verify:deployment` | Passed: 11 filesystem/restart/GPG drills, shell/unit checks, privilege refusal and read-only swap checks |
+| `npm run verify:headless` | Passed on final build: authenticated loopback API, no BrowserWindows, SIGTERM drain/credential removal, isolated Brave profile handoff and restart |
+
+An earlier complete verification run passed 8,419 tests and failed three bridge cases before
+fixture isolation was corrected. Startup legitimately restored other unfinished fixture tasks;
+the history-backoff test now checks its exact conversation. The two Goal cases reused a
+permanently retired worker conversation; they now use a fresh conversation. The complete
+bridge suite then passed all 684 tests; the final complete run passed all 685 with an additional
+Pro-duration case. Assertions on Retry-After, Goal authority and Send receipts were retained.
+
+An initial smoke attempt using an installed packaged application exited before the temporary
+bootstrap was ready. The smoke was rerun successfully with the checkout's Electron, and again
+after the final production build. No installed application, service or sandbox setting changed.
+
+These checks do not prove live Discord delivery, provider cancellation, native-page compatibility
+on the operator's account, VPS reboot behavior or an authenticated 24-hour task. Use the separate
+[soak procedure](long-session-reliability.md#real-vps-soak-and-acceptance-gates) for those gates.
+
 The [implementation record](reliability-implementation.md) and
 [rollout worksheet](reliability-rollout.md) cover this PR's durable controls, receipt upkeep,
 health, recoverable updates, encrypted backups and operator workflow changes.

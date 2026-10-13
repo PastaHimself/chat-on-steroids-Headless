@@ -688,6 +688,47 @@ describe('the reply', () => {
     return session.id;
   };
 
+  it.each(['goal', 'loop'] as const)('blocks %s decisions on incomplete recording without losing the objective or calling a provider', async mode => {
+    const id = `incomplete-recording-${mode}`;
+    const sessionId = await seed(id);
+    await goal.setGoalSwitchNow(id, mode, true);
+    await goal.setGoalObjectiveNow(id, 'Verify the saved task before continuing');
+    await appendEvent(sessionId, { source: 'extension', kind: 'assistant_message', time: 2000, final: false,
+      message: { text: 'Incomplete preview', chars: 300_000, truncated: true } });
+    const fetch = vi.fn(async () => decision('continue', 'Unsafe continuation'));
+    globalThis.fetch = fetch;
+    goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'missing-history-turn' });
+    const view = await settled(id);
+    expect(view).toMatchObject({ stage: 'failed', retryable: false, reply: '' });
+    expect(view.error).toContain('Recording history is incomplete');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(goal.goalObjectiveFor(id)).toBe('Verify the saved task before continuing');
+    expect(goal.goalSwitchFor(id)).toMatchObject({ enabled: true, mode });
+    await expect(goal.draftFastFollowup(sessionId)).rejects.toThrow('Recording history is incomplete');
+  });
+
+  it.each([['goal', 'continue'], ['goal', 'stop'], ['loop', 'continue']] as const)(
+    'rejects a pending %s/%s decision if its recording becomes incomplete', async (mode, action) => {
+      const id = `pending-incomplete-${mode}-${action}`;
+      const sessionId = await seed(id);
+      await goal.setGoalSwitchNow(id, mode, true);
+      if (mode === 'loop') await recordLoopMcpProof(sessionId, 'pending-source');
+      let release!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      const fetch = vi.fn(async () => { await pending; return decision(action, 'Continue safely'); });
+      globalThis.fetch = fetch;
+      goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'pending-source' });
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      await appendEvent(sessionId, { source: 'extension', kind: 'chat_error', time: 2000, recoverable: true,
+        message: { text: 'Missing overflow', chars: 300_000, truncated: true } });
+      release();
+      const result = await settled(id);
+      expect(result).toMatchObject({ stage: 'failed', retryable: false, reply: '' });
+      expect(result.error).toContain('Recording history is incomplete');
+      expect(await goal.loopReplyHasAuthority(sessionId, id, 'pending-source')).toBe(false);
+      expect(goal.goalSwitchFor(id)).toMatchObject({ enabled: true, mode });
+    });
+
   /**
    * A chunk can split an SSE line anywhere. The version that assumed chunk boundaries were
    * line boundaries dropped whichever token happened to straddle one — which is invisible

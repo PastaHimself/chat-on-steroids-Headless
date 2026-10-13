@@ -173,7 +173,8 @@ const REQUEST_TIMEOUT_MS = 180_000;
  * belongs to the page's Goal loop, which is the only place that can tell whether the turn is
  * still the one being answered. This is what that loop reads, published as `retryable`.
  */
-const SETTLED_FAILURE = /^(?:auth_rejected|out_of_credit|unknown_model|no_api_key|no_conversation|no_objective|invalid_provider|goal_marker_missing|goal_browser_cancelled|goal_browser_send_unconfirmed|goal_browser_send_failed)(?:$|:)/;
+const SETTLED_FAILURE = /^(?:recording_incomplete|auth_rejected|out_of_credit|unknown_model|no_api_key|no_conversation|no_objective|invalid_provider|goal_marker_missing|goal_browser_cancelled|goal_browser_send_unconfirmed|goal_browser_send_failed)(?:$|:)/;
+const RECORDING_FAILURE = 'recording_incomplete: Recording history is incomplete. Inspect and reconcile the missing history locally before starting a new task.';
 
 /** One failure classification shared by ordinary drafts and the conversation-less opening request. */
 function retryableGoalFailure(error: string): boolean {
@@ -756,6 +757,7 @@ export async function automaticLoopHasMcpWork(sessionId: string, conversationId:
 
 /** Older restored automatic debt has no exemption; URL/reply-id prefixes grant none. */
 export async function loopReplyHasAuthority(sessionId: string, conversationId: string, turnId: string): Promise<boolean> {
+  if ((await getSession(sessionId))?.recordingIncompleteAt !== undefined) return false;
   if (goalSwitchFor(conversationId).mode !== 'loop') return true;
   const reply = goalReplies.get(conversationId);
   if (reply?.sessionId === sessionId && reply.turnId === turnId && reply.state === 'pending' && reply.explicitActivation) return true;
@@ -2026,6 +2028,8 @@ async function requestDrivingDecision(
 }
 
 async function run(draft: GoalDraft): Promise<void> {
+  if ((await getSession(draft.sessionId))?.recordingIncompleteAt !== undefined)
+    return settle(draft, 'failed', RECORDING_FAILURE);
   if (await astraFinishOnly(draft.sessionId, draft.conversationId)) return settle(draft, 'no-reply');
   if (draft.mode === 'loop' && !await loopReplyHasAuthority(draft.sessionId, draft.conversationId, draft.turnId)) return settle(draft, 'no-reply');
   const { endpoint, reasoning } = draft;
@@ -2087,6 +2091,7 @@ async function run(draft: GoalDraft): Promise<void> {
       }
     });
     if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
+    if ((await getSession(draft.sessionId))?.recordingIncompleteAt !== undefined) return settle(draft, 'failed', RECORDING_FAILURE);
     if (await astraFinishOnly(draft.sessionId, draft.conversationId)) return settle(draft, 'no-reply');
     // Logged like the exception path below. Ten rate limits in a row on 2026-09-02 left no
     // trace in app.log because a provider's refusal is an answer, not an exception.
@@ -2154,6 +2159,8 @@ async function run(draft: GoalDraft): Promise<void> {
  */
 /** Finish uses the selected Goal/Loop driver; its caller owns delivery and hold release. */
 export async function draftFastFollowup(sessionId: string, signal: AbortSignal = AbortSignal.timeout(180000), preparedMessages?: ChatMessage[], publish?: GoalRequest['publish'], mode: GoalMode = 'loop'): Promise<string | null> {
+  if ((await getSession(sessionId))?.recordingIncompleteAt !== undefined)
+    throw nativeGoalFailure(RECORDING_FAILURE, goalBackendFor(mode));
   const backend = goalBackendFor(mode);
   const settings = getConfig().goal;
   const endpoint = goalEndpoint();
@@ -2186,6 +2193,7 @@ export async function draftFastFollowup(sessionId: string, signal: AbortSignal =
         signal.throwIfAborted();
         throw nativeGoalFailure(`request_failed: ${error instanceof Error ? error.message : error}`, backend);
       });
+  if ((await getSession(sessionId))?.recordingIncompleteAt !== undefined) throw nativeGoalFailure(RECORDING_FAILURE, backend);
   if (decision.action === 'stop') {
     if (mode === 'loop') throw new Error('loop_stop_refused');
     return null;

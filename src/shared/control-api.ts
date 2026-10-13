@@ -176,6 +176,8 @@ export interface ControlApiRecovery {
 }
 
 export interface ControlApiLive {
+  /** Automation cannot safely reconstruct missing recorded work. */
+  recordingIncompleteAt?: number;
   /** The turn ChatGPT is running now, if the app judges it still running. */
   activeTurnId: string | null;
   stopPending: boolean;

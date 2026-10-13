@@ -208,6 +208,8 @@ function assertSessionId(id: string): void {
 // ------------------------------------------------------------------ state
 
 interface OpenSession {
+  /** Diagnostic deduplication only; committed shortfalls live in the summary/history. */
+  overflowWarning?: boolean;
   summary: SessionSummary;
   nextSeq: number;
   /** Highest durable journal/message seq already reflected by `summary`. */
@@ -877,6 +879,7 @@ async function rebuildSummaryFromHistory(
         userMessages: rebuilt.userMessages,
         toolCalls: rebuilt.toolCalls,
         lastToolCallAt: rebuilt.lastToolCallAt,
+        ...(rebuilt.recordingIncompleteAt !== undefined ? { recordingIncompleteAt: rebuilt.recordingIncompleteAt } : {}),
         lastToolActivity: rebuilt.lastToolActivity,
         lastAssistantFinalAt: rebuilt.lastAssistantFinalAt,
         lastTurnEndAt: rebuilt.lastTurnEndAt,
@@ -1045,6 +1048,11 @@ function applyToSummary(summary: SessionSummary, event: SessionEvent): void {
   // the call carries the time it started. Taking that literally would age a session back
   // to before its own last event and drop it down a list sorted by recency.
   summary.updatedAt = Math.max(summary.updatedAt, event.time);
+  const texts = event.kind === 'tool_call' ? [event.call.args, event.call.result] :
+    event.kind === 'user_message' || event.kind === 'assistant_message' || event.kind === 'chat_error' ? [event.message] : [];
+  if (texts.some(text => text.truncated && !text.assetId) ||
+      (event.kind === 'native_image' && event.previewError === 'quota'))
+    summary.recordingIncompleteAt ??= event.time;
   const tokens = eventTokens(event);
   summary.estimatedTokens += tokens;
   // What the attached chat is carrying. Reset by a compaction rebind; see rebindSession.
@@ -1966,6 +1974,24 @@ export async function readHandoffResponse(sessionId: string, conversationId: str
 
 /** Recorded local execution, not a native tool label or a request-id sighting alone. */
 export async function turnHasMcpCall(sessionId: string, conversationId: string, turnId: string): Promise<boolean> {
+  return turnsHaveMcpCall(sessionId, conversationId, new Set([turnId]));
+}
+
+/** Recovery of one unanswered question can span document-local generations after a reload.
+ * This is execution evidence only, never response identity or Goal/Loop completion proof.
+ * New questions, unknown anchors and later generations cannot lend their calls backwards. */
+export async function questionHasMcpCall(sessionId: string, conversationId: string, turnId: string): Promise<boolean> {
+  const summary = await getSession(sessionId);
+  if (summary?.conversationId !== conversationId) return false;
+  const source = summary.timelineTurns?.[turnId];
+  const turns = new Set([turnId]);
+  if (source?.questionId) for (const [id, turn] of Object.entries(summary.timelineTurns ?? {})) {
+    if (turn.questionId === source.questionId && turn.origin < source.origin) turns.add(id);
+  }
+  return turnsHaveMcpCall(sessionId, conversationId, turns);
+}
+
+async function turnsHaveMcpCall(sessionId: string, conversationId: string, turns: ReadonlySet<string>): Promise<boolean> {
   assertSessionId(sessionId);
   await flushSession(sessionId);
   // Attribution repair appends historical calls, often without a known turn. Such a tail
@@ -1973,7 +1999,7 @@ export async function turnHasMcpCall(sessionId: string, conversationId: string, 
   // missing proof does not repeatedly rescan the journal for each presentation page.
   const calls = await readRecentEventsFromDisk(sessionId, 1, {
     kinds: ['tool_call'], before: Number.POSITIVE_INFINITY,
-    acceptEvent: call => call.kind === 'tool_call' && call.turnId === turnId && call.source === 'mcp' &&
+    acceptEvent: call => call.kind === 'tool_call' && !!call.turnId && turns.has(call.turnId) && call.source === 'mcp' &&
       call.call?.conversationId === conversationId && call.call.attribution === 'request_id'
   });
   return calls.length > 0;
@@ -2029,29 +2055,6 @@ export async function turnEndedDurably(
   // The terminal boundary must itself still be the newest durable work. This rejects an old
   // replayed end when a newer response exists but never published a local turn_start.
   return Boolean(latest?.kind === 'turn_end' && sameTurn(latest.turnId));
-}
-
-/**
- * Recorded local execution by any turn that answered the same question as `turnId`.
- *
- * A reload can reopen a question as a new local turn with no work of its own — measured
- * 2026-09-26, three such turns followed a prime whose real turn had run tools for an hour — and
- * judging only the newest turn refused that chat's automatic restart as "no confirmed local tool
- * call". The question the turns share is what the restart continues.
- */
-export async function questionHasMcpCall(sessionId: string, conversationId: string, turnId: string): Promise<boolean> {
-  if (await turnHasMcpCall(sessionId, conversationId, turnId)) return true;
-  const turns = (await getSession(sessionId))?.timelineTurns ?? {};
-  const question = turns[turnId]?.questionId;
-  if (!question) return false;
-  const siblings = new Set(Object.entries(turns).filter(([id, turn]) => id !== turnId && turn.questionId === question).map(([id]) => id));
-  if (!siblings.size) return false;
-  const calls = await readRecentEventsFromDisk(sessionId, 1, {
-    kinds: ['tool_call'], before: Number.POSITIVE_INFINITY,
-    acceptEvent: call => call.kind === 'tool_call' && !!call.turnId && siblings.has(call.turnId) && call.source === 'mcp' &&
-      call.call?.conversationId === conversationId && call.call.attribution === 'request_id'
-  });
-  return calls.length > 0;
 }
 
 /** Late exact attribution can prove chat health without pretending historical work is new. */
@@ -2428,6 +2431,9 @@ function normalizeSummary(id: string, raw: string): MetaCheckpoint | null {
         : null;
     const { [META_HISTORY_SEQ]: _historySeq, [META_CANONICAL_PROJECTION]: canonicalProjection, [META_TOKEN_ESTIMATE]: tokenEstimate, ...publicFields } = parsed;
     const publicSummary = publicFields as SessionSummary;
+    if (publicSummary.recordingIncompleteAt !== undefined &&
+        (!Number.isFinite(publicSummary.recordingIncompleteAt) || publicSummary.recordingIncompleteAt < 0))
+      delete publicSummary.recordingIncompleteAt;
     if (publicSummary.retiredChatAt !== undefined) {
       const retired = publicSummary.retiredChatAt;
       publicSummary.retiredChatAt = retired && typeof retired === 'object' && !Array.isArray(retired)
@@ -4022,7 +4028,11 @@ export async function writeOverflowText(sessionId: string, text: string): Promis
     const asset = await writeAsset(sessionId, Buffer.from(text, 'utf8'), 'text/plain');
     return asset.id;
   } catch (err) {
-    logWarn(`session ${sessionId}: overflow text not stored: ${(err as Error).message}`);
+    const entry = open.get(sessionId);
+    if (!entry || (!entry.overflowWarning && entry.summary.recordingIncompleteAt === undefined)) {
+      if (entry) entry.overflowWarning = true;
+      logWarn(`session ${sessionId}: recording is incomplete; overflow text not stored: ${(err as Error).message}`);
+    }
     return null;
   }
 }

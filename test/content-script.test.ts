@@ -9369,6 +9369,9 @@ describe('a stop button that goes missing while the turn is still running', () =
     live!.hook.observe();
     await settle();
     expect(stalls(live!), `a live ${effort} turn was reported stalled`).toBe(0);
+    await live!.hook.pullActivity();
+    const owner = emitted(live!.sent, 'turn_start')[0]!.event.turnId;
+    expect(live!.sent.filter(message => message.type === 'activity').at(-1)).toMatchObject({ generating: true, reasoningTurn: owner });
 
     // The page model no longer holds this turn: the exact proof is gone and the stall is due now.
     section.removeAttribute('data-clf-fiber-turn');
@@ -9376,6 +9379,32 @@ describe('a stop button that goes missing while the turn is still running', () =
     live!.hook.observe();
     await settle();
     expect(stalls(live!)).toBe(1);
+    await live!.hook.pullActivity();
+    expect(live!.sent.filter(message => message.type === 'activity').at(-1)?.reasoningTurn).toBeUndefined();
+  });
+
+  it('does not report a generic stall while a page tool is still running', async () => {
+    let pendingTools = 1;
+    live = await harness(undefined, { activity: () => ({ ok: true, data: { entries: [], stream: [], nextSince: 0, pendingTools } }) });
+    startGenerating(live.document); assistantTurn(live.document, 'long-running-tool', []);
+    live.hook.observe(); await settle(); await live.hook.pullActivity();
+    live.advance(live.hook.STALL_MS + 1); live.hook.observe(); await settle();
+    expect(stalls(live)).toBe(0);
+    pendingTools = 0; await live.hook.pullActivity(); live.hook.observe(); await settle();
+    expect(stalls(live)).toBe(1);
+  });
+
+  it('reports exact Pro reasoning liveness and revokes it on a confirmed stream interruption', async () => {
+    await liveReasoningTurn('pro', 'pro-native-reasoning');
+    live!.advance(live!.hook.STALL_MS + 1); live!.hook.observe(); await settle();
+    await live!.hook.pullActivity();
+    expect(stalls(live!)).toBe(0);
+    expect(live!.sent.filter(message => message.type === 'activity').at(-1)?.reasoningTurn).toBeTruthy();
+    resumeSignal(live!, 'cos-resume-request'); resumeSignal(live!, 'cos-resume-response');
+    await settle(); await live!.hook.pullActivity(); await live!.hook.flush();
+    expect(live!.sent.filter(message => message.type === 'activity').at(-1)?.reasoningTurn).toBeUndefined();
+    expect(emitted(live!.sent, 'chat_error').some(row => row.event.reason === 'stream_gone')).toBe(true);
+    expect(emitted(live!.sent, 'turn_end')).toHaveLength(0);
   });
 
   it('still reports a live high turn stalled at ten minutes, even after the picker moves to xhigh', async () => {

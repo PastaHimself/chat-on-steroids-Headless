@@ -14,7 +14,7 @@ import {
 import type { InputArgs, InputEntry } from '../src/main/session/input.js';
 import { noteChatOrigin } from '../src/main/session/recorder.js';
 import { stageInputAttachment } from '../src/main/session/input-attachments.js';
-import { listUsageSessions, turnHasMcpCall } from '../src/main/session/store.js';
+import { listUsageSessions, questionHasMcpCall } from '../src/main/session/store.js';
 import { trackInFlight, emptyEvidence, type CallContext } from '../src/main/mcp/call-context.js';
 // Ownership tests inspect messages; batch-specific assertions use the complete delivery below.
 const offerToolInput = async (...args: Parameters<typeof offerToolInputBatch>) => (await offerToolInputBatch(...args)).messages;
@@ -30,7 +30,7 @@ vi.mock('../src/main/session/store.js', () => ({
   readCompletedFinal: vi.fn(async () => null),
   conversationWasSuperseded: vi.fn(async () => false),
   readRecentEvents: vi.fn(async () => binding.end ? [binding.end] : []),
-  turnHasMcpCall: vi.fn(async () => true),
+  questionHasMcpCall: vi.fn(async () => true),
   createSession: vi.fn(async (options: { reservedId: string; origin: { kind: string } }) => { const row = openings.get(options.reservedId) ?? { id: options.reservedId, conversationId: null, origin: options.origin, chatIds: [], events: 0 }; openings.set(row.id, row); return row; }),
   rebindSession: vi.fn(async (id: string, from: string | null, to: string) => { const row = openings.get(id); if (!row || row.conversationId !== from) return false; row.conversationId = to; return true; }),
   getSession: vi.fn(async (id: string) => openings.get(id) ?? ({ id, conversationId: id === 'session-two' ? 'conversation-b' : binding.conversationId, activeTurnId: binding.activeTurnId,
@@ -2081,7 +2081,7 @@ describe('one silence delivery for a correction and its next checkpoint', () => 
     binding.model = 'gpt-6-pro'; binding.finishEnabled = false;
     binding.activeTurnId = null;
     binding.end = { kind: 'turn_end', outcome: 'failed', reason: 'thinking_failed', turnId: 'failed-before-refresh', time: now, seq: 12 };
-    vi.mocked(turnHasMcpCall).mockResolvedValue(false);
+    vi.mocked(questionHasMcpCall).mockResolvedValue(false);
     try {
       const checkpoint = await enqueueInput(input({ mode: 'after-turn', text: 'Automatic checkpoint' }));
       const correction = await enqueueInput(input({ text: 'Immediate correction' }));
@@ -2100,6 +2100,6 @@ describe('one silence delivery for a correction and its next checkpoint', () => 
       expect(claim?.text).toBe(correction.text);
       expect(claim?.companionInputId).toBeUndefined();
       expect((await listInputs()).find(row => row.id === checkpoint.id)?.state).toBe('queued');
-    } finally { vi.mocked(turnHasMcpCall).mockResolvedValue(true); }
+    } finally { vi.mocked(questionHasMcpCall).mockResolvedValue(true); }
   });
 });

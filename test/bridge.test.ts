@@ -8114,6 +8114,151 @@ describe('unattributed activity recovery', () => {
   /** The chat a pass was told to repair. */
   const chatOf = (repair: { conversationId: string } | null): string | null => repair?.conversationId ?? null;
 
+  it.each(['goal', 'loop'] as const)('restores the %s silence owner on a normal page return after backend restart', async mode => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await pair();
+      const chat = randomUUID();
+      await events(chat, [{ kind: 'user_message', messageId: `restart-${mode}`, text: 'Keep the original task', time: Date.now() }, openTurn('restart-work')]);
+      await attributed(chat, false, Date.now());
+      const session = (await findSessionByConversation(chat))!;
+      await setSessionObjective(session.id, 'Complete and verify the original task', mode);
+      resetRecorderForTests(); resetBridgeForTests();
+      vi.setSystemTime(Date.now() + 4 * 60 * 60_000);
+      // A service being up proves no generation. Only this exact page return reattaches it.
+      expect((await sessionControlsFor(session.id)).activeTurnId).toBeNull();
+      await request('GET', `/activity?conversationId=${chat}`);
+      await sweepStaleSwarm(Date.now());
+      expect(await maintenance()).toMatchObject({ conversationId: chat, reason: 'silence' });
+      expect((await sessionControlsFor(session.id)).objective).toBe('Complete and verify the original task');
+      await events(chat, [endTurn('restart-work', 'stopped')]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('recovers a reminted turn for the same question without borrowing proof for a new question', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await pair(); const chat = randomUUID();
+      await events(chat, [{ kind: 'user_message', messageId: 'same-question', text: 'Keep working', time: Date.now() }, openTurn('before-reload')]);
+      await attributed(chat, false, Date.now());
+      await events(chat, [endTurn('before-reload', 'unknown'), openTurn('after-reload')]);
+      vi.setSystemTime(Date.now() + CHAT_SILENCE_MS + 1); await sweepStaleSwarm(Date.now());
+      expect(await maintenance()).toMatchObject({ conversationId: chat, reason: 'silence' });
+      await events(chat, [{ kind: 'user_message', messageId: 'different-question', text: 'New work', time: Date.now() }, openTurn('new-question-turn')]);
+      vi.setSystemTime(Date.now() + CHAT_SILENCE_MS + 1); await sweepStaleSwarm(Date.now());
+      expect(await maintenance()).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['goal', 'loop'] as const)('restores unfinished %s recovery at service startup before a page poll', async mode => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await pair(); const chat = randomUUID();
+      await events(chat, [{ kind: 'user_message', messageId: `startup-${mode}`, text: 'Keep working', time: Date.now() }, openTurn('startup-work')]);
+      await attributed(chat, false, Date.now());
+      const sessionId = (await findSessionByConversation(chat))!.id;
+      await setSessionObjective(sessionId, 'Keep the saved objective', mode);
+      await stopBridge(); resetRecorderForTests(); resetBridgeForTests();
+      vi.setSystemTime(Date.now() + 4 * 60 * 60_000);
+      const port = await startBridge(); expect(port).not.toBeNull();
+      base = `http://127.0.0.1:${port}`; await pair();
+      await sweepStaleSwarm(Date.now());
+      expect(await maintenanceBatch()).toContainEqual(expect.objectContaining({ conversationId: chat, reason: 'silence' }));
+      expect((await sessionControlsFor(sessionId)).objective).toBe('Keep the saved objective');
+      await events(chat, [endTurn('startup-work', 'stopped')]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['ultra', 'pro'])('keeps exact native long reasoning (%s) live for 24 simulated hours and expires only its liveness proof', async effort => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await pair(); const chat = randomUUID();
+      await events(chat, [{ kind: 'model_selection', model: 'gpt-6', reasoningEffort: effort, time: Date.now() }, openTurn('long-reasoning')]);
+      const session = (await findSessionByConversation(chat))!;
+      const began = Date.now();
+      for (let minute = 0; minute < 24 * 60; minute++) {
+        vi.setSystemTime(began + minute * 60_000);
+        await request('GET', `/activity?conversationId=${chat}&generating=1&reasoningTurn=long-reasoning`);
+        await sweepStaleSwarm(Date.now());
+        expect((await sessionControlsFor(session.id)).activeTurnId).toBe('long-reasoning');
+        expect(await maintenance()).toBeNull();
+      }
+      vi.setSystemTime(Date.now() + 90_001);
+      expect((await sessionControlsFor(session.id)).activeTurnId).toBeNull();
+      // Silence and stale liveness do not establish a provider completion or authorize Send.
+      expect((await getSession(session.id))?.activeTurnId).toBe('long-reasoning');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([4, 8, 12, 24])('preserves one task through %i simulated hours of receipts, restarts, transport loss and compactions', async hours => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const input = await import('../src/main/session/input.js');
+    const continuation = await import('../src/main/session/continuation.js');
+    const { recordDeliveredInput } = await import('../src/main/session/input-history.js');
+    input.configureInputDelivery({ recordDelivered: recordDeliveredInput, changed: () => {}, applyAutomation: async () => {} });
+    try {
+      await pair(); let chat = randomUUID(); let turn = `soak-${hours}-0`;
+      await events(chat, [{ kind: 'user_message', messageId: `soak-question-${hours}`, text: 'Implement and verify the saved objective', time: Date.now() }, openTurn(`soak-${hours}-0`)]);
+      const sessionId = (await findSessionByConversation(chat))!.id;
+      await setSessionObjective(sessionId, 'Implement and verify the saved objective', 'goal');
+      const receipts = new Set<string>();
+      for (let index = 0; index < hours * 2; index++) {
+        const row = await input.enqueueInput({ id: randomUUID(), sessionId, text: `Continue checkpoint ${index + 1}; inspect existing work before repeating it.`,
+          mode: 'after-turn', dueAt: Date.now(), model: null, reasoningEffort: null });
+        input.resetInputForTests(); // queued restoration
+        await attributed(chat, false, Date.now());
+        // A lost stream is a transport observation, never a provider completion.
+        if (index % 3 === 0) {
+          await events(chat, [{ kind: 'chat_error', time: Date.now(), turnId: turn,
+            recoverable: true, reason: 'stream_gone', text: 'Response stream unavailable' }]);
+          await attributed(chat, false, Date.now());
+          expect((await getSession(sessionId))?.activeTurnId).toBe(turn);
+        }
+        vi.setSystemTime(Date.now() + 30 * 60_000);
+        // Delayed exact terminal observation is stronger than the preceding lost stream.
+        await recordFinalForTest(chat, turn); await events(chat, [endTurn(turn, 'completed')]);
+        const staleOwner = `soak-page-${hours}-${index}`;
+        expect(await input.claimBrowserInput(row.id, staleOwner, chat, true)).not.toBeNull();
+        input.resetInputForTests(); // undispatched claims can be reclaimed, fencing the old document
+        const owner = `${staleOwner}-restored`;
+        expect(await input.claimBrowserInput(row.id, owner, chat, true)).not.toBeNull();
+        expect(await input.authorizeBrowserInput(row.id, staleOwner, chat)).toBe(false);
+        expect(await input.authorizeBrowserInput(row.id, owner, chat)).toBe(true);
+        input.resetInputForTests(); // dispatched restoration; no second Send is authorized
+        expect(await input.authorizeBrowserInput(row.id, owner, chat)).toBe(false);
+        const question = `soak-native-${hours}-${index}`;
+        expect(await input.acknowledgeBrowserInput(row.id, owner, chat, question)).toBe(true);
+        receipts.add(row.id);
+        turn = `soak-${hours}-${index + 1}`;
+        await events(chat, [{ kind: 'user_message', time: Date.now(), messageId: question, text: row.text }, openTurn(turn)]);
+        if (index % 4 === 3) {
+          // Running restoration keeps this exact local identity and pending task.
+          resetRecorderForTests(); resetBridgeForTests();
+          await request('GET', `/activity?conversationId=${chat}`);
+        }
+        if (index % 8 === 7) {
+          await recordFinalForTest(chat, turn);
+          await events(chat, [endTurn(turn, 'completed')]);
+          const ticket = await openContinuationNow(sessionId, chat);
+          expect(await attachSummary(ticket.token, SAMPLE_BRIEF)).not.toBeNull();
+          await claimContinuationNow(ticket.token, `soak-destination-${hours}-${index}`);
+          await restoreContinuations(continuation.snapshotContinuations());
+          const next = randomUUID(); expect(await commitContinuation(ticket.token, next)).toBe(true);
+          chat = next;
+          turn = `soak-${hours}-${index + 1}-resumed`;
+          await events(chat, [{ kind: 'user_message', time: Date.now(), messageId: `soak-resume-${hours}-${index}`, text: 'Resume the same saved work' }, openTurn(turn)]);
+        }
+        expect((await getSession(sessionId))?.conversationId).toBe(chat);
+        expect((await sessionControlsFor(sessionId)).objective).toBe('Implement and verify the saved objective');
+      }
+      const delivered = (await input.listInputs()).filter(row => receipts.has(row.id));
+      expect(delivered).toHaveLength(hours * 2);
+      expect(delivered.every(row => row.state === 'sent' && row.deliveredAt !== undefined)).toBe(true);
+      const history = await readEvents(sessionId, { kinds: ['user_message'] });
+      for (const receipt of receipts) expect(history.filter(row => row.kind === 'user_message' && row.inputId === receipt)).toHaveLength(1);
+    } finally { await writeDurableNow('session-input', []); input.resetInputForTests(); input.configureInputDelivery(null as never); vi.useRealTimers(); }
+  });
+
   it('H2 records the machine reason and immediately offers the existing assistant-error episode', async () => {
     await pair();
     await events(OTHER, [{ kind: 'user_message', time: Date.now(), messageId: 'h2-question', text: 'Trabaja en esta tarea.' }, openTurn('h2-turn')]);
@@ -10171,11 +10316,13 @@ describe('unattributed activity recovery', () => {
 
       await vi.advanceTimersByTimeAsync(CHAT_SILENCE_MS + 1);
       await sweepStaleSwarm(Date.now());
-      expect(await maintenance()).toBeNull();
+      // Startup can also restore other unfinished tasks retained by this shared store.
+      // This conversation's exact Retry-After must still fence its own repair.
+      expect((await maintenanceBatch()).filter(repair => repair.conversationId === PRIME)).toEqual([]);
 
       await vi.advanceTimersByTimeAsync(60_000);
       await sweepStaleSwarm(Date.now());
-      expect(await maintenance()).toMatchObject({ conversationId: PRIME, reason: 'silence' });
+      expect(await maintenanceBatch()).toContainEqual(expect.objectContaining({ conversationId: PRIME, reason: 'silence' }));
     } finally { vi.useRealTimers(); }
   });
 
@@ -13892,7 +14039,8 @@ describe('the goal loop over the bridge', () => {
 
   it.each(['normal', 'pro'])('defers an exact ready continuation after renewed work without disabling %s Goal', async model => {
     await pair();
-    const chat = 'cafe0094-0000-4000-8000-000000000094';
+    // Worker identity is permanently fenced; do not reuse the preceding worker fixture's chat.
+    const chat = randomUUID();
     const goal = await import('../src/main/goal.js');
     await request('POST', '/events', { body: { conversationId: chat, events: [
       { kind: 'model_selection', time: Date.now(), model: model === 'pro' ? 'gpt-5-pro' : 'GPT-5.6 Sol', reasoningEffort: model === 'pro' ? 'pro' : 'high' },

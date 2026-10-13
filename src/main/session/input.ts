@@ -11,7 +11,7 @@ import { getConfig } from '../config.js';
 import { randomUUID } from 'node:crypto';
 import { userTitle } from './title.js';
 import { readDurable, writeDurableNow, writeDurableSoon } from '../durable.js';
-import { getSession, findSessionByConversation, createSession, deleteSession, rebindSession, conversationWasSuperseded, readRecentEvents, listUsageSessions, turnHasMcpCall, questionHasMcpCall, sessionDirectoryMissing, readCompletedFinal, readLatestUserMessage } from './store.js';
+import { getSession, findSessionByConversation, createSession, deleteSession, rebindSession, conversationWasSuperseded, readRecentEvents, listUsageSessions, questionHasMcpCall, sessionDirectoryMissing, readCompletedFinal, readLatestUserMessage } from './store.js';
 import { assignSessionProject, getProject, projectWorkspace, getSessionProject } from '../projects.js';
 import { isChatBlocked } from './blocked-chats.js';
 import { wakeBrowserWork } from '../browser-wake.js';
@@ -1138,7 +1138,7 @@ async function eligibleStageEnd(entry: InputEntry): Promise<string | null> {
         (session.activeTurnId && session.activeTurnId !== boundary.turnId) || inFlightToolCalls(boundary.conversationId) > 0) return null;
     if (end?.turnId !== boundary.turnId) return null;
     if (!(end.kind === 'turn_end' && end.outcome === 'completed') &&
-        !await turnHasMcpCall(entry.sessionId, boundary.conversationId, boundary.turnId)) return null;
+        !await questionHasMcpCall(entry.sessionId, boundary.conversationId, boundary.turnId)) return null;
     if (end.kind !== 'turn_end' || end.outcome !== 'completed') {
       if ((boundary.listenUntil ?? 0) > Date.now() ||
           (end.kind === 'turn_end' && (session.lastToolCallAt ?? 0) > end.time)) return null;
@@ -1279,6 +1279,7 @@ async function recoveryInvalidReason(row: InputEntry): Promise<string | null> {
   if (reason) return reason;
   const session = await getSession(row.sessionId);
   if (!session || session.conversationId !== boundary.conversationId) return 'the session moved to another chat';
+  if (session.recordingIncompleteAt !== undefined) return 'recording history is incomplete; local reconciliation is required';
   if (session.browserRecoveryDismissedAt !== undefined) return 'the browser chat was closed';
   if (session.origin?.kind === 'worker' || session.origin?.kind === 'helper') return 'this task has a separate recovery owner';
   if (session.activeTurnId && session.activeTurnId !== boundary.turnId) return 'another turn started';
@@ -1294,7 +1295,9 @@ async function recoveryInvalidReason(row: InputEntry): Promise<string | null> {
   if (!work || workSequence(work) !== boundary.workSeq) return 'the source received new work';
   const changed = unavailable();
   if (changed) return changed;
-  return (await getSession(row.sessionId))?.conversationId === boundary.conversationId ? null : 'the session moved to another chat';
+  const latest = await getSession(row.sessionId);
+  if (latest?.conversationId !== boundary.conversationId) return 'the session moved to another chat';
+  return latest.recordingIncompleteAt === undefined ? null : 'recording history is incomplete; local reconciliation is required';
 }
 
 const recoveryRefusalsTold = new Set<string>();
@@ -1390,7 +1393,7 @@ export function fileSilenceInput(sessionId: string, conversationId: string, turn
     // The producer's exact MCP grant and elapsed silence window own this pickup;
     // a provider-authored end may already have closed the recorder's projection.
     if (!boundary || boundary.turnId !== turnId || (boundary.kind !== 'turn_start' && boundary.kind !== 'turn_end')) return false;
-    if (!await turnHasMcpCall(sessionId, conversationId, turnId) || !currentOwner()) return false;
+    if (!await questionHasMcpCall(sessionId, conversationId, turnId) || !currentOwner()) return false;
     if (current.some(row => row.sessionId === sessionId &&
       (consumedTurn(row, turnId) || (row.silenceBoundary?.turnId === turnId && row.state === 'browser')))) return true;
     if (current.some(row => row.sessionId === sessionId && (row.state === 'browser' || row.state === 'tool'))) return false;
@@ -1534,7 +1537,7 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
     // Freeze at most the visible next checkpoint into the same exclusive browser
     // claim. Both authored rows remain intact and share one acceptance receipt.
     const queueHead = session && manualInput(entry) && entry.silenceBoundary && (entry.silenceBoundary.listenUntil ?? 0) <= Date.now() && entry.state === 'queued' &&
-      await turnHasMcpCall(session.id, entry.silenceBoundary.conversationId, entry.silenceBoundary.turnId)
+      await questionHasMcpCall(session.id, entry.silenceBoundary.conversationId, entry.silenceBoundary.turnId)
       ? ordered(current).find(row => row.sessionId === entry.sessionId && queuedFollowup(row) && row.state === 'queued') : undefined;
     let companion = entry.companionInputId ? current.find(row => row.id === entry.companionInputId)
       : queueHead && session && queuedAfterTurn(queueHead, session) && !queueHead.finishOwner && queueHead.purpose !== 'decision' && queueHead.attachmentDelivery !== 'tool' ? queueHead : undefined;

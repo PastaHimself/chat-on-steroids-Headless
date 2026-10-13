@@ -3394,6 +3394,7 @@ async function performBrowserRepairs(repairs, policy) {
     const [target] = (owned.length > 0 ? owned : candidates).sort((a, b) => a.id - b.id);
     const repairAction = target ? 'reloaded' : 'reopened';
     try {
+      let continueAfterRepair = false;
       const documentId = target ? tabDocuments[String(target.id)] : null;
       // Suspension grants a reload of a still-suspended shell, never a new tab.
       if (suspended) {
@@ -3432,6 +3433,7 @@ async function performBrowserRepairs(repairs, policy) {
         }
         const claim = await call('/repairs/claim', { method: 'POST', body: JSON.stringify({ token }) });
         if (!claim.ok || claim.data?.allowed !== true) continue;
+        continueAfterRepair = claim.data.continueAfterRepair === true;
         if (target && !suspended) {
           const latest = inspectTurn ? await tabReply(target.id, { type: 'clf-repair-check', conversationId, draftOnly,
             ...(check?.safe === true ? { expected: { revision: check.revision, turnId: check.turnId, questionId: check.questionId } } : {}) },
@@ -3473,6 +3475,17 @@ async function performBrowserRepairs(repairs, policy) {
           { type: 'clf-resume-compaction', conversationId }, documentId ? { documentId } : undefined);
         if (resumed?.accepted === true) {
           await call(`/status?repaired=${encodeURIComponent(token)}&repairAction=resumed`);
+          continue;
+        }
+      }
+      if (target && reason === 'silence' && continueAfterRepair) {
+        // An unchanged transport-error page already has the history needed by Continue.
+        // Keeping it is useful only when the app's exact claim authorizes that next input.
+        // With recovery Off, retain the existing one-reload behavior (#1399 review).
+        const status = await tabReply(target.id, { type: 'clf-page-status' },
+          documentId ? { documentId } : undefined);
+        if (status?.ok === true && status.assistantError === true) {
+          await call(`/status?repaired=${encodeURIComponent(token)}&repairAction=preserved`);
           continue;
         }
       }
@@ -4292,6 +4305,7 @@ const HANDLERS = {
       // Forward only the helper states this document may report; these are diagnostics.
       (['absent', 'empty', 'ok'].includes(message.fiber) ? `&fiber=${message.fiber}` : '') +
       (typeof message.generating === 'boolean' ? `&generating=${message.generating ? 1 : 0}` : '') +
+      (typeof message.reasoningTurn === 'string' && message.reasoningTurn.length <= 200 ? `&reasoningTurn=${encodeURIComponent(message.reasoningTurn)}` : '') +
       (typeof message.approval === 'boolean' ? `&approval=${message.approval ? 1 : 0}` : '');
     const result = await call(`/activity${query}`);
     if (ownsDocument(source) && result.ok && result.data && await acceptBrowserRevivals(result.data)) {

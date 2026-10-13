@@ -5884,6 +5884,42 @@ it.each([
   }
 });
 
+it.each([true, false])('preserves a transport-error silence page only when the exact claim authorizes Continue (%s)', async enabled => {
+  const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const tab = { id: 76, url: `https://chatgpt.com/c/${conversationId}` };
+  const reload = vi.fn();
+  const call = vi.fn(async (url: string) => ({ ok: true, data: url === '/repairs/claim'
+    ? { allowed: true, ...(enabled ? { continueAfterRepair: true } : {}) } : {} }));
+  const source = backgroundSource.slice(backgroundSource.indexOf('async function performBrowserRepairs('),
+    backgroundSource.indexOf('\nfunction conversationStillOpen('));
+  const repair = vm.runInNewContext(`${source}\nperformBrowserRepairs`, {
+    tabConversations: { '76': conversationId }, tabDocuments: { '76': 'live-document' },
+    conversationForTab: (value: { url?: string }) => value.url?.split('/c/')[1] ?? null,
+    createChatTab: vi.fn(), call, repairChangeDetail: vi.fn(),
+    tabReply: async (_id: number, message: { type: string }) => message.type === 'clf-page-status'
+      ? { ok: true, assistantError: true } : { safe: true, revision: 1, turnId: 'source', questionId: 'question' },
+    chrome: { tabs: { query: async () => [tab], reload, get: async () => tab } },
+    CHATGPT_TAB_URLS: ['https://chatgpt.com/*']
+  });
+  await repair([{ conversationId, token: 'owned-silence', reason: 'silence', requiresClaim: true }], {});
+  expect(reload).toHaveBeenCalledTimes(enabled ? 0 : 1);
+  expect(call.mock.calls.map(args => args[0])).toContain(`/status?repaired=owned-silence&repairAction=${enabled ? 'preserved' : 'reloaded'}`);
+});
+
+it.each(['exact-turn', 'x'.repeat(201)])('forwards bounded native reasoning identity through the owned activity request (%s)', async turn => {
+  const start = backgroundSource.indexOf('  async activity(message, _sender, source) {');
+  const end = backgroundSource.indexOf('  /** Reads one already-recorded call', start);
+  const call = vi.fn(async (_url: string) => ({ ok: true, data: {} }));
+  const activity = vm.runInNewContext(`({${backgroundSource.slice(start, end)}}).activity`, {
+    load: async () => {}, ownsDocument: () => true, noteTabConversation: async () => {},
+    call, acceptBrowserRevivals: async () => false
+  });
+  await activity({ conversationId: 'owned-chat', generating: true, reasoningTurn: turn }, {}, { tab: 7 });
+  const query = new URL(call.mock.calls[0]![0] as string, 'http://localhost').searchParams;
+  expect(query.get('reasoningTurn')).toBe(turn.length <= 200 ? turn : null);
+  expect(query.get('generating')).toBe('1');
+});
+
 /**
  * 2026-09-26: after an extension update, open tabs kept the old MAIN-world usage observer. The
  * worker asks usage.js to replace itself, and only while the page says it is not streaming.

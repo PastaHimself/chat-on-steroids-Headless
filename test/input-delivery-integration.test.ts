@@ -192,6 +192,35 @@ it('keeps the reason a recovery claim was released, and says it once', async () 
   } finally { clock.mockRestore(); }
 });
 
+it.each([false, true])('vetoes an existing Continue when history becomes incomplete before Send (claimed: %s)', async claimed => {
+  let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  try {
+    const bridge = await import('../src/main/bridge.js');
+    const store = await import('../src/main/session/store.js');
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, autoContinue: true }, goal: { ...defaultConfig().goal, enabled: false } });
+    const conversationId = randomUUID(), turnId = randomUUID();
+    const session = await createSession({ title: 'Incomplete recovery', conversationId });
+    await post('/events', { conversationId, events: [
+      { kind: 'model_selection', model: 'gpt-5.6-sol', time: now },
+      { kind: 'user_message', messageId: randomUUID(), text: 'Finish the saved task', time: now },
+      { kind: 'turn_start', turnId, time: now }
+    ] });
+    await attributedMcp(conversationId); now += 120_000; await bridge.sweepStaleSwarm(now);
+    const repair = (await post('/status', { openConversations: [conversationId] })).body.repairs.find((row: any) => row.conversationId === conversationId);
+    expect((await post('/repairs/claim', { token: repair.token })).body.allowed).toBe(true);
+    await post(`/status?repaired=${repair.token}&repairAction=reloaded`, { openConversations: [conversationId] });
+    const row = (await input.listInputs()).find(item => item.sessionId === session.id && item.recovery)!;
+    expect(row).toBeTruthy();
+    if (claimed) expect(await input.claimBrowserInput(row.id, 'exact-document', conversationId, true)).not.toBeNull();
+    await store.appendEvent(session.id, { source: 'extension', kind: 'chat_error', time: ++now, turnId, recoverable: true,
+      message: { text: 'Lost overflow', chars: 300_000, truncated: true } });
+    if (claimed) expect(await input.authorizeBrowserInput(row.id, 'exact-document', conversationId)).toBe(false);
+    else expect(await input.claimBrowserInput(row.id, 'exact-document', conversationId, true)).toBeNull();
+    expect((await input.listInputs()).find(item => item.id === row.id)?.sendAuthorizedAt).toBeUndefined();
+    expect((await getSession(session.id))?.recordingIncompleteAt).toBe(now);
+  } finally { clock.mockRestore(); }
+});
+
 it('says why a page withdrew a Continue and ends it after three minutes of withdrawals (#820)', async () => {
   // Measured in #820: a page released the same automatic Continue about once a second for many
   // minutes, its text left in the composer, and the log never said why after the first time.
