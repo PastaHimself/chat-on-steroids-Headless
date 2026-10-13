@@ -10187,9 +10187,9 @@
       // a human took over the composer. Keep the automatic ticket for bounded recovery.
       // A changed human draft or attachment, on the other hand, must never be overwritten.
       const sourceChanged = !sameSource();
-      const userDraft = Boolean(sendComposer &&
-        ((sendComposer.textContent || '').trim() || CLF_DOM.hasComposerAttachments()));
-      if (sourceChanged || !sendComposer || squeeze(sendComposer.textContent) !== squeeze(prompt)) {
+      const hasAttachments = Boolean(sendComposer && CLF_DOM.hasComposerAttachments());
+      const userDraft = Boolean(sendComposer && ((sendComposer.textContent || '').trim() || hasAttachments));
+      if (sourceChanged || !sendComposer || squeeze(sendComposer.textContent) !== squeeze(prompt) || hasAttachments) {
         CLF_DOM.clearPromptExact(prompt);
         return void (await abandonBeforeSend(
           t(
