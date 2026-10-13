@@ -9346,9 +9346,9 @@ describe('a stop button that goes missing while the turn is still running', () =
   const stallText = 'No visible progress for ten minutes. The app could not confirm that this turn finished.';
   const stalls = (harnessed: Harness): number =>
     emitted(harnessed.sent, 'chat_error').filter(entry => entry.event.text === stallText).length;
-  async function liveReasoningTurn(effort: string, id: string): Promise<HTMLElement> {
+  async function liveReasoningTurn(effort: string, id: string, model = 'GPT-5.6 Sol'): Promise<HTMLElement> {
     live = await harness();
-    let selected = { model: 'GPT-5.6 Sol', reasoningEffort: effort };
+    let selected = { model, reasoningEffort: effort };
     (live.window as any).CLF_DOM.visibleModelSelection = () => selected;
     userTurn(live.document, `${id}-user`, 'think about this for a long time');
     startGenerating(live.document, { send: false });
@@ -9381,6 +9381,17 @@ describe('a stop button that goes missing while the turn is still running', () =
     expect(stalls(live!)).toBe(1);
     await live!.hook.pullActivity();
     expect(live!.sent.filter(message => message.type === 'activity').at(-1)?.reasoningTurn).toBeUndefined();
+  });
+
+  it('keeps exact GPT-6 Thinking High live beyond ten minutes and revokes missing native evidence', async () => {
+    const section = await liveReasoningTurn('high', 'gpt6-high', 'gpt-6-thinking');
+    live!.advance(live!.hook.STALL_MS + 1); live!.hook.observe(); await settle();
+    expect(stalls(live!)).toBe(0);
+    await live!.hook.pullActivity();
+    expect(live!.sent.filter(message => message.type === 'activity').at(-1)?.reasoningTurn).toBeTruthy();
+    section.removeAttribute('data-clf-fiber-turn'); await replyFiber([], []);
+    live!.hook.observe(); await settle();
+    expect(stalls(live!)).toBe(1);
   });
 
   it('does not report a generic stall while a page tool is still running', async () => {

@@ -3051,3 +3051,259 @@ describe('this install\'s connector names', () => {
     await saveConfig(defaultConfig());
   });
 });
+
+describe('Plan + Goal interrupted checkpoint ownership', () => {
+  it.each(['gpt-6-thinking', 'gpt-6-pro'])('recovers the existing finish checkpoint after 200 calls and a stalled turn (%s)', async model => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const bridge = await import('../src/main/bridge.js');
+    try {
+      await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, autoContinue: false } });
+      const conversationId = randomUUID(), turnId = randomUUID(), questionId = randomUUID();
+      const session = await createSession({ title: 'Plan and Goal stall', conversationId });
+      await goal.setGoalObjectiveNow(conversationId, 'Implement and verify the complete Minecraft plugin');
+      await goal.setGoalSwitchNow(conversationId, 'goal', true);
+      await post('/events', { conversationId, events: [
+        { kind: 'model_selection', model, reasoningEffort: model === 'gpt-6-pro' ? 'pro' : 'high', time: now },
+        { kind: 'user_message', messageId: questionId, text: 'Implement the full task', time: now },
+        { kind: 'turn_start', turnId, time: now }
+      ] });
+      const first = await input.enqueueInput({ ...message(session.id, 'off'), automation: undefined,
+        mode: 'finish', authoredSource: 'none', text: 'Verify implementation', stages: ['Run integration checks', 'Review all requirements'] });
+      const checkpoints = (await input.listInputs()).filter(row => row.sessionId === session.id);
+      expect(checkpoints).toHaveLength(3);
+      for (let call = 0; call < 200; call++) { now += 1000; await attributedMcp(conversationId); }
+      now += 600_001;
+      await post('/events', { conversationId, events: [{ kind: 'turn_end', turnId, outcome: 'stalled',
+        detail: 'no visible output and no progress for ten minutes', time: now }] });
+      await bridge.sweepStaleSwarm(now);
+      const repair = (await post('/status', { openConversations: [conversationId] })).body.repairs
+        .find((row: any) => row.conversationId === conversationId);
+      expect(repair?.reason).toBe('silence');
+      expect((await post('/repairs/claim', { token: repair.token })).body.allowed).toBe(true);
+      await post(`/status?repaired=${repair.token}&repairAction=reloaded`, { openConversations: [conversationId] });
+      const recovered = (await input.listInputs()).find(row => row.id === first.id)!;
+      expect(recovered).toMatchObject({ state: 'queued', mode: 'finish', text: first.text,
+        recovery: { queuedInput: true, questionId, phase: 'ready' } });
+      now = Math.max(now, recovered.silenceBoundary?.listenUntil ?? 0);
+      expect(await input.deferSilenceInput(first.id, conversationId, turnId)).toBe(true);
+      const deadline = (await input.listInputs()).find(row => row.id === first.id)!.silenceBoundary!.listenUntil!;
+      now = deadline;
+      expect(await input.deferSilenceInput(first.id, conversationId, turnId)).toBe(false);
+      expect((await bridge.sessionControlsFor(session.id)).recovery).toContainEqual(expect.objectContaining({ next: 'queue' }));
+      await stopBridge();
+      (await import('../src/main/session/recorder.js')).resetRecorderForTests(); bridge.resetBridgeForTests();
+      input.resetInputForTests(); await startBridge(); bearer = (await post('/pair', {})).body.token;
+      await bridge.sweepStaleSwarm(now);
+      expect((await post('/status', { openConversations: [conversationId] })).body.repairs
+        .filter((row: any) => row.conversationId === conversationId)).toEqual([]);
+      input.resetInputForTests();
+      expect((await input.pendingBrowserInputs()).find(row => row.id === first.id)).toMatchObject({ recovery: { questionId, stop: true } });
+      expect((await input.offerToolInput(session.id, conversationId, randomUUID(), now, true)).messages).toEqual([]);
+      expect(await input.claimBrowserInput(checkpoints[1]!.id, 'next-page', conversationId, true)).toBeNull();
+      expect(await input.claimBrowserInput(first.id, 'recovered-page', conversationId, true)).not.toBeNull();
+      expect(await input.advanceRecoveryInput(first.id, 'recovered-page', conversationId, 'stop')).toBe(true);
+      input.resetInputForTests();
+      expect(await input.advanceRecoveryInput(first.id, 'recovered-page', conversationId, 'stop')).toBe(false);
+      expect(await input.advanceRecoveryInput(first.id, 'recovered-page', conversationId, 'stopped')).toBe(true);
+      expect(await input.authorizeBrowserInput(first.id, 'recovered-page', conversationId)).toBe(true);
+      input.resetInputForTests();
+      expect(await input.claimBrowserInput(first.id, 'replacement-page', conversationId, true)).toBeNull();
+      expect(await input.authorizeBrowserInput(first.id, 'recovered-page', conversationId)).toBe(false);
+      expect(await input.acknowledgeBrowserInput(first.id, 'recovered-page', conversationId, 'accepted-checkpoint')).toBe(true);
+      expect(await input.pendingBrowserInputs()).toEqual([]);
+      const retained = (await input.listInputs()).filter(row => row.sessionId === session.id);
+      expect(retained.map(row => [row.id, row.text, row.mode])).toEqual(checkpoints.map(row => [row.id, row.text, row.mode]));
+      expect(retained.map(row => row.state)).toEqual(['sent', 'queued', 'queued']);
+      expect(goal.goalObjectiveFor(conversationId)).toBe('Implement and verify the complete Minecraft plugin');
+      expect(goal.goalSwitchFor(conversationId).enabled).toBe(true);
+      const { readRecentEvents } = await import('../src/main/session/store.js');
+      expect((await readRecentEvents(session.id, 250, { kinds: ['tool_call'] })).filter(row => row.kind === 'tool_call')).toHaveLength(200);
+    } finally { clock.mockRestore(); }
+  });
+});
+
+describe('checkpoint recovery fences', () => {
+  async function checkpoint(advance: (ms: number) => void, outcome?: 'stalled') {
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, autoContinue: false } });
+    const bridge = await import('../src/main/bridge.js');
+    bridge.resetBridgeForTests();
+    const conversationId = randomUUID(), turnId = randomUUID();
+    const session = await createSession({ title: 'Checkpoint recovery fence', conversationId });
+    await goal.setGoalObjectiveNow(conversationId, 'Complete the saved task');
+    await goal.setGoalSwitchNow(conversationId, 'goal', true);
+    await post('/events', { conversationId, events: [
+      { kind: 'model_selection', model: 'gpt-6-thinking', reasoningEffort: 'high', time: Date.now() },
+      { kind: 'user_message', messageId: randomUUID(), text: 'Complete the task', time: Date.now() },
+      { kind: 'turn_start', turnId, time: Date.now() }
+    ] });
+    const row = await input.enqueueInput({ ...message(session.id, 'off'), automation: undefined,
+      mode: 'finish', authoredSource: 'none', text: 'Verify the existing work', stages: ['Final review'] });
+    await attributedMcp(conversationId); advance(120_001);
+    if (outcome) await post('/events', { conversationId, events: [{ kind: 'turn_end', turnId, outcome, time: Date.now() }] });
+    await bridge.sweepStaleSwarm(Date.now());
+    const repair = (await post('/status', { openConversations: [conversationId] })).body.repairs
+      .find((item: any) => item.conversationId === conversationId);
+    expect(repair?.reason).toBe('silence');
+    expect((await post('/repairs/claim', { token: repair.token })).body.allowed).toBe(true);
+    await post(`/status?repaired=${repair.token}&repairAction=reloaded`, { openConversations: [conversationId] });
+    advance(60_000);
+    return { row, session, turnId, conversationId, bridge };
+  }
+
+  it.each(['final', 'tool', 'stop', 'off', 'block', 'question', 'rebind'] as const)('retains checkpoint identity and text when recovery is revoked by %s', async cause => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const { row, session, turnId, conversationId } = await checkpoint(ms => { now += ms; });
+      const original = (await input.listInputs()).filter(item => item.sessionId === session.id);
+      expect(await input.claimBrowserInput(row.id, 'fenced-page', conversationId, true)).not.toBeNull();
+      now++;
+      if (cause === 'final') await post('/events', { conversationId, events: [
+        { kind: 'assistant_message', messageId: randomUUID(), turnId, text: 'Completed the original work.', state: 'final', final: true, time: now },
+        { kind: 'turn_end', turnId, outcome: 'completed', time: now }
+      ] });
+      if (cause === 'tool') await attributedMcp(conversationId);
+      if (cause === 'stop') await post('/events', { conversationId, events: [{ kind: 'turn_end', turnId, outcome: 'stopped', time: now }] });
+      if (cause === 'off') await goal.setGoalSwitchNow(conversationId, 'goal', false);
+      if (cause === 'block') (await import('../src/main/session/blocked-chats.js')).setChatBlocked(conversationId, true);
+      if (cause === 'question') await post('/events', { conversationId, events: [{ kind: 'user_message', messageId: randomUUID(), text: 'New instruction', authoredNow: true, time: now }] });
+      if (cause === 'rebind') await rebindSession(session.id, conversationId, randomUUID());
+      expect(await input.authorizeBrowserInput(row.id, 'fenced-page', conversationId)).toBe(false);
+      input.resetInputForTests();
+      const retained = (await input.listInputs()).filter(item => item.sessionId === session.id);
+      expect(retained.map(item => [item.id, item.text, item.mode])).toEqual(original.map(item => [item.id, item.text, item.mode]));
+      expect(retained.every(item => item.state === 'queued')).toBe(true);
+      expect(retained[0]?.recovery).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('releases a pre-Send browser pickup timeout without losing the checkpoint or repeating Stop', async () => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const { row, conversationId, turnId } = await checkpoint(ms => { now += ms; });
+      expect(await input.deferSilenceInput(row.id, conversationId, turnId)).toBe(true);
+      expect(await input.claimBrowserInput(row.id, 'lost-page', conversationId, true)).not.toBeNull();
+      expect(await input.advanceRecoveryInput(row.id, 'lost-page', conversationId, 'stop')).toBe(true);
+      now += 60_001; input.resetInputForTests();
+      expect((await input.listInputs()).find(item => item.id === row.id)).toMatchObject({ state: 'queued', text: row.text,
+        recovery: { queuedInput: true, phase: 'resumed' } });
+      expect(await input.claimBrowserInput(row.id, 'returned-page', conversationId, true)).not.toBeNull();
+      expect(await input.advanceRecoveryInput(row.id, 'returned-page', conversationId, 'stop')).toBe(false);
+      expect(await input.authorizeBrowserInput(row.id, 'lost-page', conversationId)).toBe(false);
+      expect(await input.authorizeBrowserInput(row.id, 'returned-page', conversationId)).toBe(true);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('retains a page-final veto on the checkpoint until canonical final evidence arrives', async () => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const { row, conversationId, turnId } = await checkpoint(ms => { now += ms; });
+      expect(await input.endRecoveryInput(row.id, conversationId)).toBe(true);
+      input.resetInputForTests();
+      expect((await input.listInputs()).find(item => item.id === row.id)).toMatchObject({ state: 'queued', text: row.text,
+        recovery: { queuedInput: true, ended: 'page-final' } });
+      expect(await input.pendingBrowserInputs()).toEqual([]);
+      expect(await input.claimBrowserInput(row.id, 'page-final-doc', conversationId, true)).toBeNull();
+      await post('/events', { conversationId, events: [
+        { kind: 'assistant_message', messageId: randomUUID(), turnId, text: 'Done.', state: 'final', final: true, time: ++now },
+        { kind: 'turn_end', turnId, outcome: 'completed', time: now }
+      ] });
+      expect((await input.pendingBrowserInputs()).map(item => item.id)).toEqual([row.id]);
+      expect((await input.listInputs()).find(item => item.id === row.id)?.recovery).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('blocks checkpoint Stop and Send for a 45-minute exact tool execution and invokes the action once', async () => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const calls = await import('../src/main/mcp/call-context.js');
+    let release!: () => void; let running: Promise<void> | undefined;
+    try {
+      const { row, conversationId, turnId } = await checkpoint(ms => { now += ms; });
+      expect(await input.deferSilenceInput(row.id, conversationId, turnId)).toBe(true);
+      expect(await input.claimBrowserInput(row.id, 'tool-page', conversationId, true)).not.toBeNull();
+      let executions = 0;
+      running = calls.trackInFlight({ startedAt: now, transportKey: null, agent: null, outcome: null,
+        evidence: calls.emptyEvidence(), caller: { conversationId, requestId: randomUUID(), transportKey: null } }, async () => {
+        executions++; await new Promise<void>(resolve => { release = resolve; });
+      });
+      for (let minute = 0; minute < 45; minute++) {
+        now += 60_000;
+        expect(await input.advanceRecoveryInput(row.id, 'tool-page', conversationId, 'stop')).toBe(false);
+        expect(await input.authorizeBrowserInput(row.id, 'tool-page', conversationId)).toBe(false);
+      }
+      expect(executions).toBe(1);
+      expect((await input.listInputs()).find(item => item.id === row.id)?.text).toBe(row.text);
+    } finally { release?.(); await running; clock.mockRestore(); }
+  });
+
+  it('holds checkpoint recovery on fresh exact reasoning and expires that evidence without renewing its busy deadline', async () => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const { row, conversationId, turnId, bridge } = await checkpoint(ms => { now += ms; });
+      expect(await input.deferSilenceInput(row.id, conversationId, turnId)).toBe(true);
+      const deadline = (await input.listInputs()).find(item => item.id === row.id)!.silenceBoundary!.listenUntil;
+      await stopBridge(); bridge.resetBridgeForTests();
+      (await import('../src/main/session/recorder.js')).resetRecorderForTests(); input.resetInputForTests();
+      await startBridge(); bearer = (await post('/pair', {})).body.token;
+      const response = await fetch(`http://127.0.0.1:${bridgePort()}/activity?conversationId=${conversationId}&generating=1&reasoningTurn=${turnId}`, {
+        headers: { authorization: `Bearer ${bearer}`, 'x-extension-version': APP_VERSION, 'x-extension-protocol': String(BRIDGE_PROTOCOL) }
+      });
+      expect(response.status).toBe(200);
+      expect(await input.claimBrowserInput(row.id, 'reasoning-page', conversationId, true)).toBeNull();
+      now += 90_001;
+      await bridge.sweepStaleSwarm(now);
+      expect((await post('/status', { openConversations: [conversationId] })).body.repairs
+        .filter((item: any) => item.conversationId === conversationId)).toEqual([]);
+      expect((await input.listInputs()).find(item => item.id === row.id)!.silenceBoundary!.listenUntil).toBe(deadline);
+      expect(await input.claimBrowserInput(row.id, 'reasoning-page', conversationId, true)).not.toBeNull();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('stops checkpoint pickup at the durable three-reload budget and preserves its queued work after restart', async () => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const { row, session, conversationId, bridge } = await checkpoint(ms => { now += ms; }, 'stalled');
+      for (const minutes of [2, 5, 10]) {
+        now += minutes * 60_000; input.resetInputForTests(); await bridge.sweepStaleSwarm(now);
+        const repair = (await post('/status', { openConversations: [conversationId] })).body.repairs
+          .find((item: any) => item.conversationId === conversationId);
+        expect(repair?.reason).toBe('goal');
+        expect((await post('/repairs/claim', { token: repair.token })).body.allowed).toBe(true);
+        await post(`/status?repaired=${repair.token}&repairAction=reloaded`, { openConversations: [conversationId] });
+      }
+      await stopBridge(); bridge.resetBridgeForTests(); input.resetInputForTests();
+      await startBridge(); bearer = (await post('/pair', {})).body.token;
+      now += 30 * 60_000; await bridge.sweepStaleSwarm(now);
+      expect((await post('/status', { openConversations: [conversationId] })).body.repairs
+        .filter((item: any) => item.conversationId === conversationId)).toEqual([]);
+      expect((await input.listInputs()).find(item => item.id === row.id)).toMatchObject({ state: 'queued', text: row.text,
+        pickupRecovery: { attempts: 3, stoppedAt: expect.any(Number) } });
+      expect((await bridge.sessionControlsFor(session.id)).recovery).toContainEqual(expect.objectContaining({ kind: 'pickup-stopped', attempts: 3 }));
+    } finally { clock.mockRestore(); }
+  });
+
+  it('retries an exact never-picked-up user input once while older Plan checkpoints remain queued', async () => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const conversationId = randomUUID(), turnId = randomUUID();
+      const session = await createSession({ title: 'Pickup with Plan', conversationId });
+      await goal.setGoalSwitchNow(conversationId, 'goal', true);
+      await post('/events', { conversationId, events: [
+        { kind: 'model_selection', model: 'gpt-6-thinking', time: now },
+        { kind: 'turn_start', turnId, time: now },
+        { kind: 'assistant_message', messageId: randomUUID(), turnId, text: 'Done.', state: 'final', final: true, time: ++now },
+        { kind: 'turn_end', turnId, outcome: 'completed', time: ++now }
+      ] });
+      const plan = await input.enqueueInput({ ...message(session.id, 'off'), automation: undefined, mode: 'finish', text: 'Review checkpoint' });
+      now++;
+      const missing = await input.enqueueInput({ ...message(session.id, 'off'), automation: undefined, mode: 'auto', text: 'Continue the original task' });
+      now += 60_001;
+      const failed = (await input.listInputs()).find(item => item.id === missing.id)!;
+      expect(failed.state).toBe('failed'); expect(failed.sendAuthorizedAt).toBeUndefined();
+      now += 120_001; input.resetInputForTests();
+      expect(await input.retryUnclaimedInput(missing.id)).toMatchObject({ id: missing.id, state: 'queued', pickupRetryCount: 1 });
+      expect((await input.listInputs()).find(item => item.id === plan.id)).toMatchObject({ state: 'queued', text: plan.text });
+      now += 60_001; await input.listInputs(); now += 120_001;
+      expect(await input.retryUnclaimedInput(missing.id)).toBeNull();
+    } finally { clock.mockRestore(); }
+  });
+});

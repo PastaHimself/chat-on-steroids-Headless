@@ -2171,5 +2171,6 @@
   "This chat was deleted in ChatGPT. Start a new chat to continue.": "このチャットは ChatGPT で削除されました。続けるには新しいチャットを開始してください。",
   "Chat deleted in ChatGPT": "ChatGPT で削除されたチャット",
   "ChatGPT no longer has this chat, so nothing more can be sent to it.": "ChatGPT にこのチャットはもうないため、これ以上送信できません。",
-  "Start a new chat to continue. This history stays in the app.": "続けるには新しいチャットを開始してください。この履歴はアプリに残ります。"
+  "Start a new chat to continue. This history stays in the app.": "続けるには新しいチャットを開始してください。この履歴はアプリに残ります。",
+  "Checkpoint retained: waiting for the final answer to be recorded.": "チェックポイントは保持されています。最終回答が記録されるまで待機しています。"
 }

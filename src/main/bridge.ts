@@ -3171,7 +3171,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const reasoningGrant = activeUntil.get(id);
     if (reasoningGrant) {
       if (pageGenerating === '1' && reasoningTurn === reasoningGrant.turnId &&
-          live?.activeTurnId === reasoningTurn && (reasoningGrant.deliberate || reasoningGrant.model === 'pro') &&
+          live?.activeTurnId === reasoningTurn &&
           !reasoningGrant.thinkingFailed && !stopRequestedFor(id)) reasoningGrant.reasoningObservedAt = receivedAt;
       else if (pageGenerating !== null) delete reasoningGrant.reasoningObservedAt;
     }
@@ -5476,7 +5476,7 @@ async function startBridgeOnce(epoch: number, prepared?: PreparedBridge): Promis
     // No repair token, Send lease or live-provider verdict survives a process restart.
     for (const session of await listUsageSessions()) {
       if (epoch !== bridgeLifecycleEpoch) return closeCancelledBridgeStart(instance, actual);
-      if (session.conversationId && goalActiveFor(session.conversationId) && session.activeTurnId &&
+      if (session.conversationId && goalActiveFor(session.conversationId) &&
           session.endedAt === null && session.lastToolCallAt !== null && session.browserRecoveryDismissedAt === undefined)
         await restoreReturnedPageActivity(session.conversationId, session.id);
     }
@@ -6708,7 +6708,7 @@ const awaitingReturn = new Set<string>();
 
 /** A semantic turn start arms the silence deadline; later evidence of work pushes it forward. */
 function grantActivity(conversationId: string, sessionId: string, at = Date.now(), window = CHAT_SILENCE_MS,
-  turn?: Pick<ActivityGrant, 'turnId' | 'model' | 'mcpBacked' | 'deliberate'>): void {
+  turn?: Pick<ActivityGrant, 'turnId' | 'model' | 'mcpBacked' | 'deliberate' | 'thinkingFailed'>): void {
   if (!sessionId) return;
   const previous = activeUntil.get(conversationId);
   const ownership = turn ?? (previous?.sessionId === sessionId ? previous : { turnId: null, model: 'unknown' as const });
@@ -6719,8 +6719,10 @@ function grantActivity(conversationId: string, sessionId: string, at = Date.now(
   // this is a thinking turn, or the window would snap back to two minutes mid-thought.
   const deliberate = ownership.deliberate || (previous?.sessionId === sessionId && previous.turnId === ownership.turnId && previous.deliberate);
   activeUntil.set(conversationId, { sessionId, evidenceAt,
-    until: evidenceAt + (ownership.model === 'pro' ? PRO_SILENCE_MS : deliberate ? DELIBERATE_SILENCE_MS : window),
+    until: evidenceAt + (turn?.thinkingFailed ? silenceWindowMs({ model: ownership.model, thinkingFailed: true }) :
+      ownership.model === 'pro' ? PRO_SILENCE_MS : deliberate ? DELIBERATE_SILENCE_MS : window),
     turnId: ownership.turnId, model: ownership.model,
+    ...(turn?.thinkingFailed ? { thinkingFailed: true as const } : {}),
     ...(mcpBacked ? { mcpBacked: true } : {}), ...(deliberate ? { deliberate: true as const } : {}),
     ...(previous?.turnId === ownership.turnId && previous.sessionId === sessionId && previous.reasoningObservedAt !== undefined
       ? { reasoningObservedAt: previous.reasoningObservedAt } : {}) });
@@ -6792,6 +6794,10 @@ function silenceHeldByCalls(conversationId: string, grant: ActivityGrant | undef
 
 /** The input outbox's check for an automatic Continue: the same bounded hold, over settling calls too. */
 export function recoveryHeldByCalls(conversationId: string): boolean {
+  // A returning exact native reasoning observation holds the same recovery ticket as live
+  // tool work. It is temporary evidence, not a renewed work stamp or a consumed instruction.
+  const liveGrant = activeUntil.get(conversationId);
+  if (liveGrant && reasoningIsLive(liveGrant)) return true;
   if (approvalCardWaiting(conversationId)) return true;
   if (inFlightToolCalls(conversationId) === 0) return false;
   if (runningToolProgress(conversationId)) return true;
@@ -7111,7 +7117,10 @@ async function fileSilenceInputTicket(conversationId: string, now: number, liste
     // grant identity and the outbox's source/work checks still fence renewed work.
     (observationWritesInFlight === 0 || (grant.thinkingFailed === true && repair.progress?.turnId === grant.turnId));
   if (await fileSilenceInput(grant.sessionId, conversationId, grant.turnId, current,
-    grant.thinkingFailed || grant.model !== 'pro' ? grant.until : listenUntil)) return true;
+    grant.thinkingFailed || grant.model !== 'pro' ? grant.until : listenUntil,
+    recoveryInputAllowed(grant.sessionId, conversationId) ? { pro: grant.model === 'pro',
+      busyUntil: (repair.confirmedAt ?? lastBrowserRecoveryAt.get(conversationId) ?? now) + recoveryBusyMs(grant.model === 'pro'),
+      episode: repair.progressId } : undefined)) return true;
   return recoveryInputAllowed(grant.sessionId, conversationId) &&
     fileRecoveryInput(grant.sessionId, conversationId, grant.turnId, grant.model === 'pro', current,
       (repair.confirmedAt ?? lastBrowserRecoveryAt.get(conversationId) ?? now) + recoveryBusyMs(grant.model === 'pro'), repair.progressId);
@@ -7134,26 +7143,43 @@ function armResumedChat(sessionId: string, conversationId: string): void {
   logInfo(`bridge: resumed chat ${conversationId} armed — expecting its first attributed call`);
 }
 
+async function outboxOwnsRecoverySource(sessionId: string, conversationId: string, turnId: string): Promise<boolean> {
+  return (await listInputs()).some(row => row.sessionId === sessionId && row.silenceBoundary?.conversationId === conversationId &&
+    row.silenceBoundary.turnId === turnId && (row.sendAuthorizedAt !== undefined ||
+      row.pickupRecovery?.stoppedAt !== undefined || ['queued', 'browser', 'tool'].includes(row.state)));
+}
+
 /** A real return lifts the persisted dismissal. Reuse the unfinished turn's last
  * exact work timestamp, never treat polling/replayed history as fresh model work. */
 async function restoreReturnedPageActivity(conversationId: string, sessionId: string, nativeReasoning = false): Promise<void> {
   const session = await getSession(sessionId);
   if (session?.conversationId !== conversationId || session.browserRecoveryDismissedAt !== undefined ||
-      !session.activeTurnId || activeUntil.has(conversationId)) return;
+      session.endedAt !== null || activeUntil.has(conversationId)) return;
   const boundary = await readRecoveryBoundary(sessionId, session.activeTurnId);
-  if (!boundary || boundary.turnId !== session.activeTurnId || boundary.kind === 'user_message' ||
+  if (!boundary || boundary.kind === 'user_message' || !boundary.turnId ||
+      (session.activeTurnId && boundary.turnId !== session.activeTurnId) ||
       (boundary.kind === 'turn_end' && boundary.outcome === 'stopped') || isChatBlocked(conversationId) ||
-      stopRequestedFor(conversationId) || await readCompletedFinal(sessionId, conversationId, session.activeTurnId)) return;
-  const mcpBacked = await questionHasMcpCall(sessionId, conversationId, session.activeTurnId);
+      stopRequestedFor(conversationId) || await readCompletedFinal(sessionId, conversationId, boundary.turnId)) return;
+  // Stalled/interrupted is an observation ending, not completed work. A restart must retain
+  // that source even with no active recorder turn, while Stop and old unrelated history stay vetoes.
+  if (!session.activeTurnId && (boundary.kind !== 'turn_end' ||
+      !['stalled', 'interrupted', 'failed', 'unknown'].includes(boundary.outcome) ||
+      !goalActiveFor(conversationId) || Date.now() - (session.lastToolCallAt ?? 0) >= PICKUP_WATCH_LIFETIME_MS)) return;
+  // Once the outbox owns this source, its persisted Stop/Send and pickup budget survive
+  // restart. Reconstructing an initial silence reload would bypass that bounded schedule.
+  if (!nativeReasoning && await outboxOwnsRecoverySource(sessionId, conversationId, boundary.turnId)) return;
+  const mcpBacked = await questionHasMcpCall(sessionId, conversationId, boundary.turnId);
   if (!mcpBacked && !nativeReasoning) return;
   const selected = session.selectedModel;
-  const grant: ActivityGrant = { sessionId, turnId: session.activeTurnId,
+  const grant: ActivityGrant = { sessionId, turnId: boundary.turnId,
     evidenceAt: mcpBacked ? session.lastToolCallAt ?? boundary.time : boundary.time, until: boundary.time,
     model: selected?.conversationId === conversationId ? isProModel(selected.model, selected.reasoningEffort) ? 'pro' : 'other' : 'unknown',
     ...(selected?.conversationId === conversationId && isDeliberateEffort(selected.reasoningEffort) ? { deliberate: true as const } : {}),
-    ...(mcpBacked ? { mcpBacked: true } : {}) };
+    ...(mcpBacked ? { mcpBacked: true } : {}),
+    ...(boundary.kind === 'turn_end' && boundary.reason === 'thinking_failed' ? { thinkingFailed: true as const } : {}) };
   const current = await getSession(sessionId);
-  if (current?.conversationId !== conversationId || current.activeTurnId !== grant.turnId ||
+  const currentBoundary = await readRecoveryBoundary(sessionId, grant.turnId);
+  if (current?.conversationId !== conversationId || current.activeTurnId !== session.activeTurnId || currentBoundary?.seq !== boundary.seq ||
       current.browserRecoveryDismissedAt !== undefined || activeUntil.has(conversationId) ||
       stopRequestedFor(conversationId) || isChatBlocked(conversationId)) return;
   grantActivity(conversationId, sessionId, Math.min(Date.now(), grant.evidenceAt), CHAT_SILENCE_MS, grant);
@@ -7303,16 +7329,17 @@ async function sessionRecoveryCountdowns(sessionId: string, conversationId: stri
   }
   const recovery = rows.find(row => row.sessionId === sessionId && row.recovery &&
     (row.state === 'queued' || row.state === 'browser') && row.silenceBoundary);
+  const recoveryNext = recovery?.recovery?.queuedInput ? 'queue' as const : 'continue' as const;
   if (recovery?.silenceBoundary && recoveryInputAllowed(sessionId, conversationId)) {
     const stoppedAt = recovery.pickupRecovery?.stoppedAt ??
       (stoppedQueued?.inputId === recovery.id ? stoppedQueued.pickupStoppedAt : undefined);
     if (stoppedAt) return [{ kind: 'pickup-stopped', deadline: stoppedAt,
-      attempts: recovery.pickupRecovery?.attempts ?? BROWSER_PICKUP_MAX_ATTEMPTS, next: 'continue' }];
+      attempts: recovery.pickupRecovery?.attempts ?? BROWSER_PICKUP_MAX_ATTEMPTS, next: recoveryNext }];
   }
   if (stoppedQueued) {
     const queuedRow = rows.find(row => row.id === stoppedQueued.inputId);
     return [{ kind: 'pickup-stopped', deadline: stoppedQueued.pickupStoppedAt!,
-      attempts: stoppedQueued.pickupAttempts, next: queuedRow?.recovery ? 'continue' : 'queue' }];
+      attempts: stoppedQueued.pickupAttempts, next: queuedRow?.recovery && !queuedRow.recovery.queuedInput ? 'continue' : 'queue' }];
   }
   const pendingGoal = goalActiveFor(conversationId) ? goalPendingReplyFor(conversationId) : null;
   if (pendingGoal?.pickupStoppedAt && runningToolCalls(conversationId) === 0) {
@@ -7334,8 +7361,8 @@ async function sessionRecoveryCountdowns(sessionId: string, conversationId: stri
     const pickup = pickupWatch.get(conversationId);
     result.push(wait > Date.now() || !pickup ? {
       kind: recovery.silenceBoundary.nativeBusy ? 'native-busy' : 'post-reload',
-      deadline: wait || Date.now(), next: 'continue'
-    } : { kind: 'pickup', deadline: pickup.dueAt, visibleAt: pickup.dueAt - 30_000, next: 'continue' });
+      deadline: wait || Date.now(), next: recoveryNext
+    } : { kind: 'pickup', deadline: pickup.dueAt, visibleAt: pickup.dueAt - 30_000, next: recoveryNext });
     return result;
   }
   if (pendingGoal && !pendingGoal.silenceSourceTurnId && runningToolCalls(conversationId) === 0 &&
@@ -8591,6 +8618,13 @@ async function inspectSilentChats(now: number): Promise<{ queued: boolean; spent
           spent.push(conversationId);
         }
       }
+      continue;
+    }
+    if (activeUntil.get(conversationId) !== grant) continue;
+    // A grant reconstructed for fresh native reasoning can outlive that observation. Once
+    // it expires, the outbox keeps its already-earned recovery budget; no new initial reload.
+    if (await outboxOwnsRecoverySource(grant.sessionId, conversationId, grant.turnId!)) {
+      if (activeUntil.get(conversationId) === grant) spent.push(conversationId);
       continue;
     }
     if (activeUntil.get(conversationId) !== grant) continue;

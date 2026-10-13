@@ -2171,5 +2171,6 @@
   "This chat was deleted in ChatGPT. Start a new chat to continue.": "이 채팅은 ChatGPT에서 삭제되었습니다. 계속하려면 새 채팅을 시작하세요.",
   "Chat deleted in ChatGPT": "ChatGPT에서 삭제된 채팅",
   "ChatGPT no longer has this chat, so nothing more can be sent to it.": "ChatGPT에 이 채팅이 더 이상 없으므로 더는 보낼 수 없습니다.",
-  "Start a new chat to continue. This history stays in the app.": "계속하려면 새 채팅을 시작하세요. 이 기록은 앱에 남아 있습니다."
+  "Start a new chat to continue. This history stays in the app.": "계속하려면 새 채팅을 시작하세요. 이 기록은 앱에 남아 있습니다.",
+  "Checkpoint retained: waiting for the final answer to be recorded.": "체크포인트가 유지됩니다. 최종 답변이 기록될 때까지 기다립니다."
 }

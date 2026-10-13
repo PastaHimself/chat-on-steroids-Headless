@@ -5812,7 +5812,7 @@ function scheduleReload(change?: SessionChange): void {
 
 /** Retired automatic drafts belong to their creation time, never the live composer queue. */
 function historicalAutomaticInput(entry: InputEntry): boolean {
-  return (!!entry.recovery || (!!entry.finishOwner && !entry.finishOwner.userRequested)) &&
+  return ((!!entry.recovery && !entry.recovery.queuedInput) || (!!entry.finishOwner && !entry.finishOwner.userRequested)) &&
     entry.state === 'cancelled' && !!entry.error;
 }
 
@@ -5992,17 +5992,19 @@ async function refreshInputQueue(): Promise<void> {
     if (dragging && existing) return existing;
     if (entry.state === 'queued' && existing?.classList.contains('is-editing')) return existing;
     const card = el('div', 'queued-input'); card.dataset.inputId = entry.id;
+    const automaticContinue = !!entry.recovery && !entry.recovery.queuedInput;
     if (projectedIds.has(entry.id)) ui(card, 'aria-label', () => t("Plan stage · waiting for the first message to be sent"));
-    if (entry.recovery) ui(card, 'aria-label', () => t('Automatic Continue'));
-    const label = el('span', 'queue-label', entry.recovery ? () => `${t('Automatic Continue')} · ${entry.text}` : entry.text);
-    ui(label, 'title', () => `${entry.recovery
-      ? t('Resumes without a final answer. If ChatGPT is still generating, the silent turn is stopped before Continue is sent.')
+    if (entry.recovery) ui(card, 'aria-label', () => automaticContinue ? t('Automatic Continue') : t('Queued message'));
+    const label = el('span', 'queue-label', automaticContinue ? () => `${t('Automatic Continue')} · ${entry.text}` :
+      entry.error ? () => `${t(entry.error!)} · ${entry.text}` : entry.text);
+    ui(label, 'title', () => `${entry.error ? t(entry.error) : entry.recovery
+      ? automaticContinue ? t('Resumes without a final answer. If ChatGPT is still generating, the silent turn is stopped before Continue is sent.') : t('Queued message')
       : entry.state === 'queued' ? (entry.mode === 'after-turn' ? t("After the next completed answer") : t("At Session finish or after a completed answer")) : t("Awaiting receipt")} · ${entry.text}`);
     label.dir = 'auto';
     card.append(icon(entry.recovery ? 'i-pulse' : 'i-clock'), label);
     if (entry.state === 'queued') {
       const retireCard = () => { card.remove(); taskList.hidden = taskList.childElementCount === 0; };
-      const cancel = dockAction(() => entry.recovery ? t('Cancel automatic Continue') : t("Remove queued task"), 'i-trash', () => {});
+      const cancel = dockAction(() => automaticContinue ? t('Cancel automatic Continue') : t("Remove queued task"), 'i-trash', () => {});
       cancel.onclick = async () => {
         if (cancel.disabled || !card.isConnected || selection !== selectionGeneration) return;
         cancel.disabled = true;

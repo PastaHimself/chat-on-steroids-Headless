@@ -2171,5 +2171,6 @@
   "This chat was deleted in ChatGPT. Start a new chat to continue.": "Este chat se eliminó en ChatGPT. Inicia un chat nuevo para continuar.",
   "Chat deleted in ChatGPT": "Chat eliminado en ChatGPT",
   "ChatGPT no longer has this chat, so nothing more can be sent to it.": "ChatGPT ya no tiene este chat, así que no se le puede enviar nada más.",
-  "Start a new chat to continue. This history stays in the app.": "Inicia un chat nuevo para continuar. Este historial se queda en la app."
+  "Start a new chat to continue. This history stays in the app.": "Inicia un chat nuevo para continuar. Este historial se queda en la app.",
+  "Checkpoint retained: waiting for the final answer to be recorded.": "Punto de control conservado: esperando a que se registre la respuesta final."
 }
