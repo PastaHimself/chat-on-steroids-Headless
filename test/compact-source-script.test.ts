@@ -32,6 +32,7 @@ function page(options: {
   const retired = vi.fn(async (_id: string, _token: string, _reason: string, _current: () => boolean) => undefined);
   const messages = vi.fn(() => [{ role: 'user', id: 'question-before' }]);
   const ask = vi.fn(async (body: Record<string, unknown>) => {
+    if (body.sourceAttempt === true) return { ok: true, data: { allowed: true } };
     if (body.sourceDispatch === true) return { ok: true, data: { armed: true } };
     throw new Error('unexpected backend request');
   });
@@ -111,7 +112,8 @@ describe('automatic Compact & Resume native pre-Send recovery (PR #5 follow-up)'
     expect(f.reported).toHaveBeenCalledOnce();
     expect(f.reported.mock.calls[0]?.[2]).toContain('Send button or message box was not ready');
     expect(f.retired).not.toHaveBeenCalled();
-    expect(f.ask).not.toHaveBeenCalled();
+    expect(f.ask).toHaveBeenCalledWith(expect.objectContaining({ sourceAttempt: true, token: TOKEN }));
+    expect(f.ask.mock.calls.some(([request]) => request.sourceDispatch === true)).toBe(false);
   });
 
   it('retains the existing draft and safely abandons automatic pre-Send custody', async () => {
