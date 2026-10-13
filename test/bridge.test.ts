@@ -3381,7 +3381,10 @@ describe('automatic compaction', () => {
       // Half an hour of work: no pickup, no reload, and the ticket is still the same one.
       for (let minute = 0; minute < 30; minute += 2) {
         await vi.advanceTimersByTimeAsync(2 * 60_000);
-        await request('POST', '/events', { body: { conversationId, events: [{ kind: 'turn_start', time: Date.now(), turnId: 'long-turn' }] } });
+        await request('POST', '/events', { body: { conversationId, events: [{
+          kind: 'assistant_message', time: Date.now(), turnId: 'long-turn', messageId: `work-${minute}`,
+          text: `Completed step ${minute}; continuing the task`, state: 'streaming', activeNow: true
+        }] } });
         expect(await takeRepair(), `minute ${minute + 2}`).toBeNull();
       }
       expect(continuationForSession(filed.body.sessionId as string)?.token).toBe(token);
@@ -3392,6 +3395,66 @@ describe('automatic compaction', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it.each([false, true])('recovers an unsent compaction after a completed tool and delivery timeout with a stale open turn (restart: %s)', async restarted => {
+    vi.useFakeTimers();
+    try {
+      await pair();
+      const conversationId = randomUUID();
+      const sourceTime = Date.now();
+      const created = await request('POST', '/events', { body: { conversationId, events: [
+        { kind: 'user_message', time: sourceTime - 60_000, text: 'Earlier completed step', messageId: 'earlier-question' },
+        { kind: 'turn_start', time: sourceTime - 60_000, turnId: 'earlier-completed-turn' },
+        { kind: 'assistant_message', time: sourceTime - 50_000, turnId: 'earlier-completed-turn',
+          messageId: 'earlier-final', text: 'Earlier step completed.', state: 'final', final: true },
+        { kind: 'turn_end', time: sourceTime - 50_000, turnId: 'earlier-completed-turn', outcome: 'completed' },
+        { kind: 'user_message', time: sourceTime, text: 'Complete the synthetic task', messageId: 'timeout-question' },
+        { kind: 'model_selection', time: sourceTime, model: 'gpt-6-thinking', reasoningEffort: 'high' },
+        { kind: 'turn_start', time: sourceTime, turnId: 'timeout-turn' }
+      ] } });
+      const sessionId = created.body.sessionId as string;
+      setGoalObjective(conversationId, 'Complete the synthetic task');
+      await request('POST', '/settings', { body: { conversationId, goal: true } });
+      await recordToolCall({ tool: 'exec_command', args: { cmd: 'synthetic completed command' },
+        content: [{ type: 'text', text: 'Process exited with code 0' }], outcome: 'ok', durationMs: 1,
+        startedAt: sourceTime, requestId: 'wfr_compaction_timeout', conversationId });
+      const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+      const ticket = filed.body.token as string;
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      if (restarted) {
+        await flushDurable();
+        const snapshot = await readDurable<ContinuationSnapshot>(CONTINUATIONS_STATE);
+        resetBridgeForTests();
+        resetRecorderForTests();
+        resetSessionStoreForTests();
+        initSessionStore(dir);
+        await restoreContinuations(snapshot);
+        await pair();
+        // The returning document adopts the same unresolved generation. Its historical
+        // start is not fresh work and must not grant an unlimited pickup veto.
+        await request('POST', '/events', { body: { conversationId, events: [
+          { kind: 'turn_start', time: sourceTime, turnId: 'timeout-turn', historical: true }
+        ] } });
+      }
+      await request('POST', '/events', { body: { conversationId, events: [
+        { kind: 'chat_error', time: Date.now(), turnId: 'timeout-turn', recoverable: true,
+          text: 'Message delivery timed out. Please try again. Retry' }
+      ] } });
+      const activity = (await request('GET', `/activity?conversationId=${conversationId}`)).body;
+      expect(activity.pendingTools).toBe(0);
+      expect((await getSession(sessionId))?.lastTurnOutcome).toBe('completed');
+      expect((await sessionControlsFor(sessionId)).activeTurnId).toBeNull();
+      expect(activity.job).toMatchObject({ token: ticket, stage: 'handoff-pending', sourceSend: { state: 'not-attempted' } });
+      await sweepStaleSwarm(Date.now());
+      const repair = (await request('GET', '/status')).body.repairs?.[0];
+      expect(repair).toMatchObject({ conversationId, reason: 'compaction' });
+      expect((await getSession(sessionId))?.conversationId).toBe(conversationId);
+      expect(goalObjectiveFor(conversationId)).toBe('Complete the synthetic task');
+      expect(goalSwitchFor(conversationId).enabled).toBe(true);
+      expect(continuationByToken(ticket)?.sourceSend.state).toBe('not-attempted');
+      expect(pendingCommands().filter(command => command.what === 'resume')).toHaveLength(0);
+    } finally { vi.useRealTimers(); }
   });
 
   it('abandons an automatic ticket that never reaches Send after its bounded retry bursts', async () => {
@@ -3430,6 +3493,178 @@ describe('automatic compaction', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('reports the exact pre-Send source blocker durably without aborting or spending delivery custody', async () => {
+    await pair();
+    const conversationId = randomUUID();
+    await createSession({ conversationId });
+    const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+    const token = filed.body.token as string;
+    const sourceError = 'ChatGPT has not confirmed receiving the latest tool results. Nothing was compacted.';
+    const reply = await request('POST', '/compact', { body: { conversationId, token, sourcePending: true, sourceError } });
+    expect(reply.status).toBe(200);
+    expect(reply.body.job).toMatchObject({ stage: 'handoff-pending', needsAttention: true, error: sourceError });
+    await flushDurable();
+    const snapshot = await readDurable<ContinuationSnapshot>(CONTINUATIONS_STATE);
+    resetBridgeForTests();
+    await restoreContinuations(snapshot);
+    await pair();
+    expect(resumeJobFor(filed.body.sessionId)).toMatchObject({ needsAttention: true, error: sourceError });
+    expect(continuationByToken(token)?.sourceSend.state).toBe('not-attempted');
+    await request('POST', '/compact', { body: { conversationId, token, sourceAttempt: true } });
+    expect(resumeJobFor(filed.body.sessionId)?.error).toBeNull();
+    await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } });
+    expect((await request('POST', '/compact', { body: { conversationId, token, sourcePending: true, sourceError } })).status).toBe(409);
+    expect(continuationByToken(token)?.sourceSend.state).toBe('dispatched-unresolved');
+  });
+
+  it('does not roll another continuation back across the dispatch fence when persisting pickup custody', async () => {
+    await pair();
+    const continuation = await import('../src/main/session/continuation.js');
+    const durable = await import('../src/main/durable.js');
+    const sources = [randomUUID(), randomUUID()];
+    const tickets: Array<Awaited<ReturnType<typeof openContinuationNow>>> = [];
+    for (const conversationId of sources) {
+      const session = await createSession({ conversationId });
+      tickets.push(await openContinuationNow(session.id, conversationId, true));
+    }
+    await continuation.beginContinuationSourceSendNow(tickets[0]!.token);
+    const gate = faultGate();
+    const real = durable.writeDurableNow;
+    const spy = vi.spyOn(durable, 'writeDurableNow').mockImplementationOnce(async (...args) => {
+      await real(...args);
+      // A's write is durable but not published. B must construct its snapshot only
+      // after A publishes, or B overwrites the disk with A's old reversible checkpoint.
+      await gate.hold();
+    });
+    let a: Promise<boolean> | undefined, b: Promise<boolean> | undefined;
+    try {
+      a = continuation.dispatchContinuationSourceSendNow(tickets[0]!.token);
+      await gate.entered;
+      b = continuation.saveContinuationPickupNow(tickets[1]!.token, null,
+        { phase: 'asking', attempts: 1, nextAt: Date.now() + 120_000 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      gate.release();
+      expect(await a).toBe(true);
+      expect(await b).toBe(true);
+      const saved = await readDurable<ContinuationSnapshot>(CONTINUATIONS_STATE);
+      expect(saved!.entries.find(entry => entry.token === tickets[0]!.token)?.sourceSend?.state).toBe('dispatched-unresolved');
+      expect(saved!.entries.find(entry => entry.token === tickets[1]!.token)?.pickup?.attempts).toBe(1);
+      await restoreContinuations(saved);
+      expect((await continuation.beginContinuationSourceSendNow(tickets[0]!.token))?.allowed).toBe(false);
+    } finally { gate.release(); await Promise.allSettled([a, b]); spy.mockRestore(); }
+  });
+
+  it('withdraws a reserved pre-Send pickup when exact local work starts during its durable write', async () => {
+    vi.useFakeTimers();
+    const continuation = await import('../src/main/session/continuation.js');
+    const { trackInFlight, emptyEvidence } = await import('../src/main/mcp/call-context.js');
+    const gate = faultGate();
+    let release = () => {};
+    let call: Promise<void> | undefined;
+    const real = continuation.saveContinuationPickupNow;
+    try {
+      await pair();
+      const conversationId = randomUUID();
+      await request('POST', '/events', { body: { conversationId, events: [
+        { kind: 'user_message', time: Date.now(), text: 'Synthetic handoff race', messageId: 'pickup-race-question' }
+      ] } });
+      const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      const spy = vi.spyOn(continuation, 'saveContinuationPickupNow').mockImplementationOnce(async (...args) => {
+        const saved = await real(...args);
+        await gate.hold();
+        return saved;
+      });
+      const sweep = sweepStaleSwarm(Date.now());
+      await gate.entered;
+      call = trackInFlight({ startedAt: Date.now(), transportKey: null, agent: null, outcome: null,
+        evidence: emptyEvidence(), caller: { conversationId, requestId: 'wfr_pickup_race', transportKey: null } },
+        () => new Promise<void>(resolve => { release = resolve; }));
+      gate.release();
+      await sweep;
+      expect((await request('GET', '/status')).body.repairs ?? []).toEqual([]);
+      expect(continuationByToken(filed.body.token)?.sourceSend.state).toBe('not-attempted');
+      spy.mockRestore();
+    } finally { gate.release(); release(); await call; vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+
+  it.each([false, true])('reports an unresolved destination receipt and clears the blocker after an exact late commit (restart: %s)', async restarted => {
+    vi.useFakeTimers();
+    try {
+      await pair();
+      const conversationId = randomUUID(), destination = randomUUID();
+      const session = await createSession({ conversationId });
+      const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+      const ticket = continuationByToken(filed.body.token)!;
+      expect(await attachSummary(ticket.token, SAMPLE_BRIEF)).not.toBeNull();
+      const { beginContinuationDestinationSendNow, dispatchContinuationDestinationSendNow, bindContinuationDestinationMessageNow } =
+        await import('../src/main/session/continuation.js');
+      await beginContinuationDestinationSendNow(ticket.token);
+      await dispatchContinuationDestinationSendNow(ticket.token);
+      await sweepStaleSwarm(Date.now());
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      await sweepStaleSwarm(Date.now());
+      expect(resumeJobFor(session.id)?.error).toMatch(/verify sign-in.*not sent again/s);
+      if (restarted) {
+        await flushDurable();
+        const snapshot = await readDurable<ContinuationSnapshot>(CONTINUATIONS_STATE);
+        resetBridgeForTests();
+        await restoreContinuations(snapshot);
+        await pair();
+      }
+      expect(resumeJobFor(session.id)?.error).toMatch(/verify sign-in.*not sent again/s);
+      expect((await beginContinuationDestinationSendNow(ticket.token))?.allowed).toBe(false);
+      expect(await dispatchContinuationDestinationSendNow(ticket.token)).toBe(false);
+      expect(await bindContinuationDestinationMessageNow(ticket.token, destination, 'late-bootstrap-receipt')).toBe(true);
+      expect(await commitContinuation(ticket.token, destination)).toBe(true);
+      expect(continuationByToken(ticket.token)?.state).toBe('committed');
+      if (restarted) expect(resumeJobFor(session.id)?.error ?? null).toBeNull();
+      else expect(resumeJobFor(session.id)).toMatchObject({ stage: 'done', error: null });
+      expect((await getSession(session.id))?.conversationId).toBe(destination);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps the exhausted writing pickup budget and actionable blocker across backend restart without replaying Send', async () => {
+    vi.useFakeTimers();
+    try {
+      await pair();
+      const conversationId = randomUUID();
+      await request('POST', '/events', { body: { conversationId, events: [
+        { kind: 'user_message', time: Date.now(), text: 'Synthetic pending handoff', messageId: 'restart-budget-question' }
+      ] } });
+      const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+      const ticket = filed.body.token as string;
+      const sessionId = filed.body.sessionId as string;
+      await request('POST', '/compact', { body: { conversationId, token: ticket, sourceAttempt: true } });
+      await request('POST', '/compact', { body: { conversationId, token: ticket, sourceDispatch: true } });
+      const takeRepair = async () => {
+        await sweepStaleSwarm(Date.now());
+        return (await request('GET', '/status')).body.repairs?.[0] ?? null;
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+        const repair = await takeRepair();
+        expect(repair).toMatchObject({ conversationId, reason: 'compaction' });
+        await request('GET', `/status?repaired=${repair!.token}&repairAction=reloaded`);
+      }
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(await takeRepair()).toBeNull();
+      await flushDurable();
+      const snapshot = await readDurable<ContinuationSnapshot>(CONTINUATIONS_STATE);
+      resetBridgeForTests();
+      await restoreContinuations(snapshot);
+      await pair();
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(await takeRepair(), 'restart must not refund a fourth pickup').toBeNull();
+      expect(resumeJobFor(sessionId)?.error).toMatch(/not sent again.*Open the chat/s);
+      expect(continuationByToken(ticket)).toMatchObject({ state: 'awaiting-summary', sourceSend: { state: 'dispatched-unresolved' } });
+      expect((await request('POST', '/compact', { body: { conversationId, token: ticket, sourceAttempt: true } })).body.allowed).toBe(false);
+      expect((await request('POST', '/compact', { body: { conversationId, token: ticket, sourceDispatch: true } })).status).toBe(409);
+      expect((await readEvents(sessionId, { kinds: ['note'] })).filter(event => event.kind === 'note' &&
+        /still waiting for this chat's handoff/.test(event.message.text))).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
   });
 
   /**

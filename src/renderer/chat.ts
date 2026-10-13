@@ -1913,7 +1913,7 @@ async function refreshSessionControls(): Promise<void> {
   paintAutomationSwitch();
   $<HTMLButtonElement>('compactSession').disabled = !!controls.blocked || !!controls.job?.busy;
   $('cancelCompaction').hidden = !controls.job?.busy;
-  ui($('sessionControlStatus'), 'textContent', () => controls.blocked === 'worker' ? t("This sub-agent is managed by its prime.") : controls.blocked === 'blocked' ? t("This chat is blocked.") : controls.job?.busy ? t("Compaction is running in ChatGPT.") : '');
+  ui($('sessionControlStatus'), 'textContent', () => controls.blocked === 'worker' ? t("This sub-agent is managed by its prime.") : controls.blocked === 'blocked' ? t("This chat is blocked.") : controls.job?.busy ? controls.job.error || t("Compaction is running in ChatGPT.") : '');
 }
 
 async function loadDetail(navigate = false, olderBefore?: number, newerFrom?: number): Promise<boolean> {

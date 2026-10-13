@@ -7233,6 +7233,10 @@
       };
     }
 
+    if (job?.busy && job.needsAttention && job.error) {
+      return { mode: 'error', label: t('content_paused', 'Paused'), hint: job.error, action: 'cancel' };
+    }
+
     if (job && job.busy && error && !phase) {
       // The ticket is alive but this page's checkpoint failed. Say the failure without
       // declaring the durable job failed; a later generation/reload may pick it up, and the
@@ -8982,6 +8986,10 @@
 
   function stageView(input) {
     const { job, goal, phase = nativePhase, summary } = input;
+    if (job?.busy && job.needsAttention && job.error) {
+      return { stage: t('content_paused', 'Paused'), detail: job.error, body: '', kind: 'compact',
+        steps: COMPACT_STEPS, at: job.stage === 'handoff-pending' ? 1 : 3, done: false };
+    }
     if (job && job.busy) {
       const stage =
         job.stage === 'opening'
@@ -9494,6 +9502,12 @@
     );
   }
 
+  async function reportPendingCompaction(forId, token, why, current) {
+    const reply = token ? await ask({ type: 'compact', conversationId: forId, token,
+      sourcePending: true, sourceError: why, resume: false }).catch(() => null) : null;
+    if (current() && reply?.ok === true && reply.data?.reported === true && reply.data.job) job = reply.data.job;
+  }
+
   async function startCompact(automatic = false) {
     const forId = conversationId;
     const forEpoch = epoch;
@@ -9647,6 +9661,7 @@
             'The chat changed while preparing the handoff. Nothing was sent.'
           );
         if (!automatic || !hydrationCurrent()) await retireUnsentCompaction(forId, String(filed.data.token || ''), localError, current);
+        else await reportPendingCompaction(forId, String(filed.data.token || ''), localError, current);
         if (!current()) return;
         renderControl();
         return;
@@ -9677,6 +9692,7 @@
       nativePhase = '';
       localError = barrier;
       if (!automatic) await retireUnsentCompaction(forId, String(filed.data.token || ''), barrier, current);
+      else await reportPendingCompaction(forId, String(filed.data.token || ''), barrier, current);
       if (!current()) return;
       renderControl();
       void pullActivity();

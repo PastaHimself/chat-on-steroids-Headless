@@ -2677,12 +2677,14 @@ describe('worker settings authority', () => {
     await worker.send({ type: 'compact', conversationId: CHAT, ticket: true, automatic: true }, 44);
     const sourceError = 'The browser could not insert the handoff request (native_edit_rejected).';
     await worker.send({ type: 'compact', conversationId: CHAT, token, sourceLost: true, sourceError }, 44);
+    await worker.send({ type: 'compact', conversationId: CHAT, token, sourcePending: true, sourceError }, 44);
     await worker.send({ type: 'compact', conversationId: CHAT, token, sourceDispatch: true }, 44);
     await worker.send({ type: 'compact', conversationId: CHAT, token, destinationDispatch: true }, 44);
 
     expect(posted).toEqual([
       expect.objectContaining({ conversationId: CHAT, ticket: true, automatic: true }),
       expect.objectContaining({ conversationId: CHAT, token, sourceLost: true, sourceError }),
+      expect.objectContaining({ conversationId: CHAT, token, sourcePending: true, sourceError }),
       expect.objectContaining({ conversationId: CHAT, token, sourceDispatch: true }),
       expect.objectContaining({ conversationId: CHAT, token, destinationDispatch: true })
     ]);

@@ -3736,6 +3736,7 @@ const COMPACT_CHECKPOINT_FLAGS = [
   'sourceDispatch',
   'sourceUndelivered',
   'sourceLost',
+  'sourcePending',
   'destinationAttempt',
   'destinationDispatch',
   'destinationLost'

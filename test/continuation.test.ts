@@ -76,6 +76,7 @@ const {
   restoreContinuations,
   setContinuationRecoveryHooks,
   snapshotContinuations,
+  saveContinuationPickupNow,
   supersededSourceConversations
 } = await import('../src/main/session/continuation.js');
 const { RESUME_CLAIM_WINDOW_MS, resumeOpeningChat } = await import('../src/main/session/resume-gate.js');
@@ -150,6 +151,38 @@ async function readyContinuation(): Promise<{ sessionId: string; token: string }
   await attachSummary(opened.token, SAMPLE_BRIEF);
   return { sessionId: summary.id, token: opened.token };
 }
+
+describe('durable compaction pickup custody', () => {
+  it('serializes competing pickups and preserves the manual handoff lifetime on restore', async () => {
+    vi.useFakeTimers();
+    const session = await createSession({ conversationId: CHAT_A });
+    const ticket = await openContinuationNow(session.id, CHAT_A);
+    await vi.advanceTimersByTimeAsync(120_000);
+    const pickup = { phase: 'asking' as const, attempts: 1, nextAt: Date.now() + 120_000 };
+    expect(await Promise.all([saveContinuationPickupNow(ticket.token, null, pickup),
+      saveContinuationPickupNow(ticket.token, null, pickup)])).toEqual([true, false]);
+    expect(continuationByToken(ticket.token)?.touchedAt).toBe(ticket.touchedAt);
+    const snapshot = snapshotContinuations();
+    resetContinuationsForTests();
+    await restoreContinuations(snapshot);
+    expect(continuationByToken(ticket.token)?.pickup).toEqual(pickup);
+    expect(continuationByToken(ticket.token)?.touchedAt).toBe(ticket.touchedAt);
+  });
+
+  it('publishes no pickup custody after a failed durable write or a source phase change', async () => {
+    const session = await createSession({ conversationId: CHAT_A });
+    const ticket = await openContinuationNow(session.id, CHAT_A);
+    const pickup = { phase: 'asking' as const, attempts: 1, nextAt: Date.now() + 120_000 };
+    const durable = await import('../src/main/durable.js');
+    vi.spyOn(durable, 'writeDurableNow').mockRejectedValueOnce(new Error('synthetic pickup disk failure'));
+    await expect(saveContinuationPickupNow(ticket.token, null, pickup)).rejects.toThrow('synthetic pickup disk failure');
+    expect(continuationByToken(ticket.token)?.pickup).toBeNull();
+    await beginContinuationSourceSendNow(ticket.token);
+    await dispatchContinuationSourceSendNow(ticket.token);
+    expect(await saveContinuationPickupNow(ticket.token, null, pickup)).toBe(false);
+    expect(continuationByToken(ticket.token)?.sourceSend.state).toBe('dispatched-unresolved');
+  });
+});
 
 describe('reopening from a saved summary (#1215)', () => {
   /** A run that captured its brief and was then abandoned, as when chat B never opened. */
@@ -578,14 +611,17 @@ describe('claiming', () => {
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let entered!: () => void;
+    const atRebind = new Promise<void>(resolve => { entered = resolve; });
     const real = store.rebindSession;
     const spy = vi.spyOn(store, 'rebindSession').mockImplementation(async (...args) => {
+      entered();
       await held;
       return real(...args);
     });
 
     const commit = commitContinuation(token, CHAT_B);
-    await Promise.resolve();
+    await atRebind;
     expect(continuationForSession(sessionId)?.state).toBe('committing');
 
     // The retrying claimant wants its brief; what it must not get is the state put back to

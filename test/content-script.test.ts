@@ -436,6 +436,7 @@ const startedCompactions = (harness: Harness): any[] =>
       !message.summary &&
       !message.sourceAttempt &&
       !message.sourceLost &&
+      !message.sourcePending &&
       !message.sourceDispatch &&
       !message.sourceMessageId &&
       !message.destinationAttempt &&
@@ -15341,6 +15342,14 @@ describe('truthful quiet operation status', () => {
     expect(live.document.querySelector('.clf-stage')!.textContent).not.toContain('needs attention');
   });
 
+  it.each(['handoff-pending', 'opening', 'waiting-for-browser'])('shows a persisted compaction pickup blocker while %s remains collectable', async stage => {
+    live = await harness();
+    const error = 'Open the paired browser and verify sign-in; the possibly delivered request is not sent again.';
+    const job = { stage, busy: true, error, needsAttention: true, sourceSend: { state: 'dispatched-unresolved' } };
+    expect(live.hook.controlState({ job, phase: 'waiting' })).toMatchObject({ mode: 'error', label: 'Paused', hint: error, action: 'cancel' });
+    expect(live.hook.stageView({ job })).toMatchObject({ stage: 'Paused', detail: error, done: false });
+  });
+
   it('calls the handoff writing only with positive current response evidence', async () => {
     live = await harness();
     const job = { stage: 'handoff-pending', busy: true, sourceSend: { state: 'sent' } };
@@ -17675,6 +17684,9 @@ describe('the context meter and automatic compaction', () => {
     expect(stopped).not.toHaveBeenCalled();
     expect(startedCompactions(live)).toEqual([]);
     expect(live.sent.some(message => message.type === 'compact' && (message.sourceDispatch || message.sourceLost))).toBe(false);
+    expect(live.sent.filter(message => message.type === 'compact' && message.sourcePending)).toEqual([
+      expect.objectContaining({ sourceError: expect.stringContaining('not confirmed receiving the latest tool results') })
+    ]);
   }, 180_000);
 
   it('compacts once the turn ends by itself while a stale row still reads as unanswered', async () => {

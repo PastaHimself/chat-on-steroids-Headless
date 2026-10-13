@@ -3094,11 +3094,24 @@ can outlive a transport command; expiration releases transport, not permission f
 blind Send. Automatic tickets can wait indefinitely before the request was sent and retain a
 six-hour sent-request window; manual transport is shorter (ten minutes). Pickup budgets depend
 on phase: unsent 2m×5, writing 5m×3, opening 15m×3. While the source turn still works
-(`sessionInputActivity(...).exact`), an unsent ticket spends no pickup and raises no reload: the
-request is sent once that turn ends, and a ticket filed mid-turn used to spend its whole budget on a
-generating page (2026-10-12). These are bounded recovery of one obligation,
+through its existing bounded meaningful-work/native-reasoning lease or running local-call barrier),
+an unsent ticket spends no pickup and raises no reload. An unresolved recorder turn alone cannot
+veto pickup: ordinary silence recovery yields to this exact continuation and the lost source may
+never report a turn end. Pickup counts, backoffs, next deadline and exhaustion live in the
+continuation WAL; reserve before browser effects and recheck serving epoch, binding, policy,
+phase and source work after the write. Schedule writes do not renew the handoff lifetime. Snapshot construction, foreground writes
+and publication serialize across tokens because they share one WAL; background projections
+materialize lazily through the existing durable owner. Legacy records without pickup custody retain their first grace; restart cannot refund recorded attempts.
+These are bounded recovery of one obligation,
 not fresh compaction attempts. After writing 3/3 the sent transaction stays protected with no
-fourth reload; one visible timeline note says it is stuck, and lifetime limits stay terminal. Re-observe the exact page before advancing its state.
+fourth reload; its persistent status and existing compaction controls show an actionable blocker,
+with one timeline note. A possibly delivered source/destination prompt is never resent because
+its receipt is missing. An armed destination whose transport expires reports its unresolved
+receipt after the opening grace, remains collectable by its exact marker, and clears the blocker
+on late commitment. Automatic pre-Send hydration/result/Stop refusal is retained as a bounded
+source diagnostic in that same transaction, without aborting or dispatching it; a fresh
+source-send claim clears the obsolete refusal. A browser `resumed` receipt acknowledges its
+page nudge, never source Send, native result receipt or summary capture. Lifetime limits stay terminal. Re-observe the exact page before advancing its state.
 A manual ticket whose frozen source selection is Pro instead gets a one-hour deadline while the
 brief is being written: Pro reasoning is not visible transcript, so it produces no text growth
 to renew the ordinary clock, and a healthy long Pro generation used to be swept as "took too
