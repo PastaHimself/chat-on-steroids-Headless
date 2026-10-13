@@ -10062,6 +10062,13 @@
         // A late failure belongs to this exact pre-Send ticket, never to a newer
         // manual retry. The durable guard refuses an already-dispatched request.
         await retireUnsentCompaction(forId, token, why, current);
+      } else {
+        // The browser accepted a recovery nudge, not a Send. Prompt insertion, native
+        // editor remounts and disabled Send controls can still refuse the source
+        // after the settle barrier passed. Persist the exact pre-Send reason so
+        // reloads cannot hide it; never turn a recoverable failure into a new ticket
+        // or a possibly duplicated dispatch.
+        await reportPendingCompaction(forId, token, why, current);
       }
       if (!current()) return;
       renderControl();
