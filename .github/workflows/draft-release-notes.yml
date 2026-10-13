@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   draft:
-    if: github.repository == 'totec448-spec/chat-on-steroids'
+    # Manual, read-only release note drafting also works for forks with their own release history.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
