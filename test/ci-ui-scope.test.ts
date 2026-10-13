@@ -6,12 +6,17 @@ import { describe, expect, it } from 'vitest';
  * Backend-driven UI changes must not silently pass without Electron checks.
  */
 const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-const filters = [...workflow.matchAll(/grep -qE '([^']+)'/g)].map(([, expression]) => new RegExp(expression ?? ''));
+const filters = [...workflow.matchAll(/grep -E '([^']+)' > \/dev\/null/g)].map(([, expression]) => new RegExp(expression ?? ''));
 
 describe('GitHub Actions Electron UI coverage', () => {
   it('uses a scope filter for both macOS and Windows UI jobs', () => {
     expect(filters).toHaveLength(2);
     expect(filters[0]?.source).toBe(filters[1]?.source);
+    // With GitHub Actions' bash -o pipefail, grep -q may exit while git diff is
+    // writing, turning a positive match into a SIGPIPE (141) and skipping UI CI.
+    // Consume all input and redirect matches instead.
+    expect(workflow).not.toContain("grep -qE");
+    expect((workflow.match(/grep -E '[^']+' > \/dev\/null/g) ?? [])).toHaveLength(2);
   });
 
   it('runs both UI suites for main-process session, recovery and IPC changes', () => {
