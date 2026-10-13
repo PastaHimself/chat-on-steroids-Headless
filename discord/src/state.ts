@@ -93,12 +93,28 @@ export class StateStore {
     return operation;
   }
   private async archiveSettled(state: BotState, now: number): Promise<void> {
-    for (const [id, row] of Object.entries(state.interactions)) {
-      if (row.state === 'started' || (row.settledAt ?? row.createdAt) > now - RECEIPT_AGE_MS) continue;
-      // Old receipts predate fingerprints. Their immutable interaction/operation pair is still a replay fence.
-      await this.archive.put({ id, operationId: row.operationId, fingerprint: row.fingerprint ?? createHash('sha256').update(`${id}:${row.operationId}`).digest('hex'),
-        outcome: row.state === 'rejected' ? 'rejected' : 'done', createdAt: row.createdAt, settledAt: row.settledAt }, row.summary ?? null, now);
-      delete state.interactions[id];
+    const expired = Object.entries(state.interactions).filter(([, row]) =>
+      row.state !== 'started' && (row.settledAt ?? row.createdAt) <= now - RECEIPT_AGE_MS);
+    // Each archive.put() durably syncs the payload and replay fence. Thousands of serial
+    // writes can exceed Discord's maintenance budget on Windows. Archive independent IDs
+    // in small batches, but settle every in-flight write before an error can escape: no
+    // leftover operation may race the next StateStore update on this serialized owner.
+    const BATCH_SIZE = 8;
+    for (let start = 0; start < expired.length; start += BATCH_SIZE) {
+      const outcomes = await Promise.allSettled(expired.slice(start, start + BATCH_SIZE).map(async ([id, row]) => {
+        // Old receipts predate fingerprints. Their immutable interaction/operation pair remains a replay fence.
+        await this.archive.put({ id, operationId: row.operationId,
+          fingerprint: row.fingerprint ?? createHash('sha256').update(`${id}:${row.operationId}`).digest('hex'),
+          outcome: row.state === 'rejected' ? 'rejected' : 'done', createdAt: row.createdAt, settledAt: row.settledAt },
+        row.summary ?? null, now);
+        return id;
+      }));
+      const failed = outcomes.find(outcome => outcome.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      // Only the clone is mutated; its enclosing update publishes state after all
+      // batches succeed. An interrupted/failed batch leaves the original state intact
+      // and previously written immutable fences are idempotently reconciled on retry.
+      for (const outcome of outcomes) if (outcome.status === 'fulfilled') delete state.interactions[outcome.value];
     }
   }
   async upkeep(now = Date.now()): Promise<void> {
