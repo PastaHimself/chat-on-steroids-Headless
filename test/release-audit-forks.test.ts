@@ -14,6 +14,16 @@ describe('release asset verification on repository forks', () => {
     expect(publishedAudit).toContain('scripts/verify-release-assets.mjs');
   });
 
+  it('does not demand full stable-release assets when the rolling canary prerelease is published', () => {
+    // The canary workflow intentionally drops the native-sources archive and packages
+    // only common platforms, while verify-release-assets requires the full release set.
+    const canary = readFileSync(new URL('../.github/workflows/canary.yml', import.meta.url), 'utf8');
+    expect(canary).toContain('grep -vF');
+    expect(canary).toContain('prerelease=true');
+    expect(publishedAudit).toContain("if: github.event_name != 'release' || github.event.release.prerelease == false");
+    expect(publishedAudit).toContain('workflow_call:');
+  });
+
   it('requires publish.yml to invoke this verifier after publishing, not before', () => {
     expect(publish).toMatch(/verify:\s*\n\s+name: Verify published files\s*\n\s+needs: publish\s*\n\s+uses: \.\/\.github\/workflows\/verify-release\.yml/);
     expect(publishedAudit).toContain('gh release download "$TAG" --repo "$GITHUB_REPOSITORY"');
