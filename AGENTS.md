@@ -1642,6 +1642,15 @@ while browser observations supply native messages, progress, terminal state and 
 Neither can substitute for the other. Recording is local; explicit Goal/API/plugin/model tool
 use can transmit the data described by those features. Do not call all product traffic local.
 
+The existing asset quota covers both images and overflow text. A committed text row that is
+truncated without an asset, or a native image preview refused by quota, stamps optional
+`recordingIncompleteAt` in the session summary through `applyToSummary`. History reconstruction
+retains that same fact; old metadata without it stays readable and is not a completeness
+certificate. `writeOverflowText` deduplicates its warning without changing the tool outcome.
+Health reads the uncapped metadata index and projects quota pressure and affected sessions;
+Discord status exposes the session marker. Freeing space does not restore missing history or
+clear the marker. No automatic deletion or extra recording store is authorized.
+
 Recoverable `chat_error` notices coalesce against committed history for the same canonical
 authored question, including unscoped/reminted document reports after reload. Old question
 revisions cannot replace the newest question's ownership. Other errors retain their bounded
@@ -2734,6 +2743,29 @@ regressions do not establish those tabs' original cause or live validation of th
 
 ### Recovery policy
 
+Service startup rebuilds unfinished Goal/Loop silence watches from the current saved session,
+turn and recorded MCP proof inside the bridge recovery barrier. A first real page return can
+reattach the same watch for ordinary chats. Restoration never restores a browser action token,
+Send lease or provider-liveness verdict; Stop, block, explicit departure and a verified final
+veto it. Ordinary repeated polls cannot rearm a retired watch. Same-question transport recovery
+uses `questionHasMcpCall`: only exact calls from this or earlier anchored generations in the
+current conversation qualify. New questions and later generations cannot lend proof. This
+does not replace exact-turn receipt, Loop-completion or request attribution rules.
+
+The content recorder reports `reasoningTurn` only for exact native nonterminal Pro or
+xhigh/max/ultra evidence: current route, native Stop, captured selection, document section,
+Fiber owner, no transport/error verdict and no local Stop. Background forwards it; bridge
+requires the same active turn and selection. Ninety-second freshness defers the existing
+silence sweep without advancing meaningful progress or fabricating completion. Active page
+tools also veto generic stall reporting. Lost liveness remains unresolved, never completed.
+
+An authorized silence repair may preserve an exact transport-error page when its claim grants
+`continueAfterRepair`. Continue still belongs to the existing durable outbox and rechecks Stop,
+tools, final and native receipt before Send. Recovery Off retains the reload behavior. A
+preserved-action receipt records its own time and says provider recovery is unconfirmed.
+No timed turn rotation is enabled: native Stop cannot prove server-side cancellation, and
+workers or a pending Compact & Resume transaction may still own work.
+
 `tabRecoveryWanted()` means **active Goal/Loop OR the user's recoverAgentTabs switch**. It gates
 silence/no-tab recovery for workers, primes and ordinary chats. Reload repair for exact errors,
 Unattributed incidents and compaction has its own evidence. A no-tab repair only gives the chat a
@@ -3395,6 +3427,15 @@ it must not invent an unrelated project just to keep generating.
 `shared/goal.ts` owns bounded prompt/contracts; `goal.ts` projects applicability and the outbox
 owns actual delivery. An objective, an enabled mode, an unfinished reply obligation,
 a provider attempt and a browser send are five different facts.
+
+An incomplete recording marker blocks ordinary Goal/Loop decisions with non-retryable
+`recording_incomplete` and refuses finish followups and synthetic Continue. Objective, mode,
+pending ownership and successful tool outcomes remain intact. The operator must reconcile
+missing history locally before starting a new task; disabling/re-enabling does not erase
+this evidence. Existing queued/claimed Continue and pending decisions recheck the marker at
+final authorization/publication. `goal.test.ts`, `input-delivery-integration.test.ts`,
+`image-storage.test.ts`, `recovery-hold.test.ts` and the simulated
+multi-hour cases in `bridge.test.ts` cover these boundaries.
 
 ### Modes, controls and boundaries
 

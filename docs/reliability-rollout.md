@@ -6,6 +6,12 @@ branch for daily unattended work until the corresponding live gate below is reco
 The target remains Ubuntu 24.04 amd64 with Electron, Xvfb and the dedicated graphical Brave
 profile. Browser login, keyring unlock and provider approvals remain interactive.
 
+The [long-session implementation and soak procedure](long-session-reliability.md) records the
+2026-10-13 recovery fixes, nine upstream comparisons, deterministic multi-hour cases and the
+decision to keep timed rotation disabled. Recording quota pressure and incomplete history now
+appear in health; an incomplete history blocks automated decisions without discarding intent.
+Authenticated 4/8/12/24-hour acceptance and server-side cancellation proof remain pending.
+
 ## Health and operator controls
 
 `GET /v1/remote/health` is authenticated and read only. Every component includes a state,

@@ -2405,14 +2405,20 @@
    * turn for that exact section with no end. Such a turn can think for longer than STALL_MS
    * without changing the page, and reporting it stalled gets it reloaded mid-thought. Every
    * clause is re-read on each tick, so losing any one of them makes the ordinary stall due at
-   * once; the app's bounded silence window remains the backstop for a turn that never ends.
+   * once. The same exact evidence reaches the app's existing silence watch with bounded
+   * freshness, without treating a heartbeat as task progress.
    */
   function deliberateTurnLive() {
+    return !proSelection(turnSelection) && reasoningTurnLive();
+  }
+
+  function reasoningTurnLive() {
     const selected = turnSelection?.turnId === turnId ? turnSelection : null;
     // Exact efforts match shared/chat-models.ts::isDeliberateEffort.
-    if (!generating || !turnId || stopRequestedAt || !selected || proSelection(selected) ||
-        !['xhigh', 'max', 'ultra'].includes(selected.reasoningEffort)) return false;
-    if (!conversationId || CLF_DOM.conversationId() !== conversationId || !CLF_DOM.generating()) return false;
+    if (!generating || !turnId || stopRequestedAt || !selected ||
+        (!proSelection(selected) && !['xhigh', 'max', 'ultra'].includes(selected.reasoningEffort))) return false;
+    if (!conversationId || CLF_DOM.conversationId() !== conversationId || !CLF_DOM.generating() ||
+        currentStreamGone() || currentAssistantError()) return false;
     const owner = currentGenerationOwner();
     const native = owner && localGenerationOf(owner.pageTurn) === turnId ? fiberTurnFor(owner.pageTurn) : null;
     return Boolean(native && !native.endMessageId && native.conversationId === conversationId);
@@ -3115,7 +3121,7 @@
       // generic stall, including when it appears after a long quiet run.
       const thinkingFailure = quietOutcome?.reason === 'thinking_failed' || visibleErrors.some(
         error => error.reason === 'thinking_failed' && localErrorGeneration(error) === turnId && !isStale(error.node));
-      if (!thinkingFailure && !stallReported && Date.now() - stallClock() > STALL_MS && !deliberateTurnLive()) {
+      if (!thinkingFailure && !stallReported && pendingTools === 0 && Date.now() - stallClock() > STALL_MS && !reasoningTurnLive()) {
         stallReported = true;
         emit({
           kind: 'chat_error',
@@ -6950,6 +6956,9 @@
         // This document's own open turn, which it closes itself on end_turn or after ten
         // minutes without progress. Keeps a long-thinking worker from being slept as silent.
         generating,
+        // Exact native reasoning keeps the existing app silence watch alive without
+        // pretending that a heartbeat is meaningful task progress.
+        reasoningTurn: reasoningTurnLive() ? turnId : undefined,
         // ChatGPT's own approval card: the turn waits for a person, so the app tells them.
         approval: CLF_DOM.approvalWaiting()
       });

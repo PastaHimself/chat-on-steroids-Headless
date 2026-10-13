@@ -216,6 +216,7 @@ export function projectLive(controls: SessionControlsView): ControlApiLive {
   const { job, goalWait } = controls;
   return {
     activeTurnId: controls.activeTurnId,
+    ...(controls.recordingIncompleteAt !== undefined ? { recordingIncompleteAt: controls.recordingIncompleteAt } : {}),
     stopPending: controls.stopPending === true,
     automation: controls.automation,
     blocked: controls.blocked,

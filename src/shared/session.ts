@@ -673,6 +673,9 @@ export interface SessionSummary {
   endedAt: number | null;
   /** Explicit user departure suspends activity and automatic recovery until the exact page returns. */
   browserRecoveryDismissedAt?: number;
+  /** A committed row could not retain its full text/preview. Freeing space cannot repair
+   * already missing history; automation requires local reconciliation or a new task. */
+  recordingIncompleteAt?: number;
   events: number;
   userMessages: number;
   toolCalls: number;

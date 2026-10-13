@@ -17,6 +17,8 @@ import {
   upsertNativeImageEvent,
   writeAsset
 } from '../src/main/session/store.js';
+import { flushSessions, getSession, sessionsRoot, writeOverflowText } from '../src/main/session/store.js';
+import { getLog } from '../src/main/logger.js';
 
 let directory: string;
 
@@ -32,6 +34,30 @@ afterEach(async () => {
 });
 
 const text = (value: string) => ({ text: value, chars: value.length, truncated: false });
+
+it('persists incomplete history at real quota exhaustion without failing or replaying the operation', async () => {
+  const full = await createSession({ title: 'Full recording store' });
+  const session = await createSession({ title: 'Still successful operation', conversationId: 'storage-boundary' });
+  const assets = path.join(sessionsRoot(), full.id, 'assets'); await fs.mkdir(assets, { recursive: true });
+  // Sparse capacity fixture: no two-GiB allocation or long sleeps.
+  const file = path.join(assets, '11111111111111111111111111111111.txt'); await fs.writeFile(file, '');
+  await fs.truncate(file, MAX_GLOBAL_ASSET_BYTES);
+  const before = getLog().filter(row => row.message.includes(`session ${session.id}: recording is incomplete`)).length;
+  expect(await writeOverflowText(session.id, 'lost exact text')).toBeNull();
+  expect(await writeOverflowText(session.id, 'another lost text')).toBeNull();
+  expect(getLog().filter(row => row.message.includes(`session ${session.id}: recording is incomplete`))).toHaveLength(before + 1);
+  await appendEvent(session.id, { kind: 'tool_call', time: 1234, source: 'mcp', turnId: 'storage-turn', call: {
+    callId: 'already-executed', tool: 'apply_patch', requestId: 'storage-request', conversationId: 'storage-boundary',
+    attribution: 'request_id', attributionMethod: 'request_id', args: text('{}'),
+    result: { text: 'preview', chars: 300_000, truncated: true }, outcome: 'ok', durationMs: 1,
+    summary: { kind: 'edit', title: 'Edited once', tone: 'good' }
+  } });
+  await flushSessions(); resetSessionStoreForTests(); initSessionStore(directory);
+  expect((await getSession(session.id))?.recordingIncompleteAt).toBe(1234);
+  const calls = await readEvents(session.id, { kinds: ['tool_call'] });
+  expect(calls).toHaveLength(1); expect(calls[0]).toMatchObject({ call: { outcome: 'ok' } });
+  expect((await getImageStorage()).usedBytes).toBe(MAX_GLOBAL_ASSET_BYTES);
+});
 
 it('reads cold usage without opening asset contents and reuses the maintained quota after writes', async () => {
   const session = await createSession({ title: 'Usage accounting' });
