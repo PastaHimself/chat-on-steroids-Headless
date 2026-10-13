@@ -20,7 +20,7 @@ describe('release asset verification on repository forks', () => {
     const canary = readFileSync(new URL('../.github/workflows/canary.yml', import.meta.url), 'utf8');
     expect(canary).toContain('grep -vF');
     expect(canary).toContain('prerelease=true');
-    expect(publishedAudit).toContain("if: github.event_name != 'release' || github.event.release.prerelease == false");
+    expect(publishedAudit).toContain("if: (github.event_name != 'release' || github.event.release.prerelease == false) && inputs.tag != 'canary'");
     expect(publishedAudit).toContain('workflow_call:');
   });
 
