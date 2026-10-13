@@ -152,7 +152,9 @@ export interface ControlApiJob {
   /** `not-attempted`, `attempted-unresolved`, `dispatched-unresolved` or `sent`. */
   sourceSend: string;
   destinationSend: string;
-  /** Why the job failed, when it did. Free text, masked and cut like the rest. */
+  /** A durable pre-Send refusal or exhausted pickup currently requires operator attention. */
+  needsAttention?: true;
+  /** Diagnostic for a failed or blocked job. Free text, masked and cut like the rest. */
   error: string | null;
 }
 
