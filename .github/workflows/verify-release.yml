@@ -4,7 +4,7 @@ name: Verify published release
 # the published Chromium extension package is a tagged build. A problem opens an issue instead of waiting for a
 # user report. publish.yml calls it right after publishing: a release created with the workflow's
 # own token triggers no other workflow, so `release: published` alone never ran for our releases.
-# It can also be run by hand for any existing tag.
+# It can also be run by hand for any existing stable release tag.
 on:
   release:
     types: [published]
@@ -28,7 +28,7 @@ jobs:
     # The publishing workflow is usable in forks, so stable release audits must run there too.
     # Canary publishes only the common subset of assets: this full-release verifier must
     # not flag those intentional omissions as corruption on release:published events.
-    if: github.event_name != 'release' || github.event.release.prerelease == false
+    if: (github.event_name != 'release' || github.event.release.prerelease == false) && inputs.tag != 'canary'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
