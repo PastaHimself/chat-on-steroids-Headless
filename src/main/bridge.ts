@@ -201,6 +201,8 @@ import {
   abortContinuation,
   abortContinuationNow,
   abortContinuationSourceBeforeSendNow,
+  saveContinuationPickupNow,
+  reportContinuationSourceBlockerNow,
   attachSummary,
   beginContinuationDestinationSendNow,
   beginContinuationSourceSendNow,
@@ -3640,6 +3642,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     // The last durable write before the click, quoting the claim handed out above. A false
     // answer means this document was reclaimed while it was composing and must submit nothing.
+    if (body['sourcePending'] === true) {
+      const entry = continuationByToken(checkpointToken);
+      if (!entry || entry.from !== id) return json(res, 409, { error: 'no_such_continuation' }, origin);
+      const reason = typeof body['sourceError'] === 'string' ? body['sourceError'] : '';
+      if (!await reportContinuationSourceBlockerNow(checkpointToken, reason))
+        return json(res, 409, { error: 'source_send_not_releasable' }, origin);
+      changed();
+      return json(res, 200, { reported: true, job: resumeJobFor(entry.sessionId) }, origin);
+    }
     if (body['sourceDispatch'] === true) {
       const entry = continuationByToken(checkpointToken);
       if (!entry || entry.from !== id) return json(res, 409, { error: 'no_such_continuation' }, origin);
@@ -6025,6 +6036,8 @@ export interface ResumeJobView {
     messageId: string | null;
   };
   error: string | null;
+  /** A retained source refusal or exhausted pickup needs user attention. */
+  needsAttention?: true;
 }
 
 const RUNNING_STAGES = new Set<ResumeStage>(['handoff-pending', 'opening', 'waiting-for-browser']);
@@ -6073,7 +6086,12 @@ export function resumeJobFor(sessionId: string): ResumeJobView | null {
     handoffId: entry.handoffId,
     sourceSend: entry.sourceSend,
     destinationSend: entry.destinationSend,
-    error: entry.error
+    ...(RUNNING_STAGES.has(stage) && (entry.error || (entry.pickup?.told && entry.pickup.phase === compactionPhaseOf(entry)))
+      ? { needsAttention: true as const } : {}),
+    error: entry.error === 'handoff_never_sent'
+      ? 'The handoff request could not be sent after bounded browser pickup attempts. Open the source chat in the paired browser, verify sign-in and clear any draft before trying Compact & Resume again.'
+      : entry.error ?? (RUNNING_STAGES.has(stage) && entry.pickup?.told && entry.pickup.phase === compactionPhaseOf(entry)
+      ? compactionPickupBlocker(entry) : null)
   };
 }
 
@@ -8241,7 +8259,7 @@ async function noteRecoveryObservations(
     // minutes. That wait is how the 2026-09-02 prime showed "Connection interrupted" for nine
     // minutes while its model went on calling tools behind the dead page.
     if (pendingContinuations().some((entry) => entry.from === conversationId)) {
-      if (expediteCompactionPickup(conversationId)) {
+      if (await expediteCompactionPickup(conversationId)) {
         logInfo(`bridge: assistant transport failure — bringing the compaction pickup for ${conversationId} forward`);
       }
       break;
@@ -8757,6 +8775,15 @@ function compactionPhaseOf(entry: ContinuationView): CompactionPhase {
   return sendUnattempted(entry.sourceSend) ? 'asking' : 'writing';
 }
 
+/** Actionable projection of exhausted custody; ambiguous dispatch never becomes a sent claim. */
+function compactionPickupBlocker(entry: ContinuationView): string {
+  if (compactionPhaseOf(entry) === 'opening') return 'Compact & Resume could not confirm the replacement chat. ' +
+    'Open ChatGPT in the paired browser and verify sign-in and the replacement message. A possibly delivered prompt is not sent again.';
+  return `Compact & Resume is still waiting for this chat's handoff: ${entry.pickup?.attempts ?? 3} pickups did not collect it. ` +
+    (entry.sourceSend.state === 'sent' ? 'The request was already sent' : 'The request may already have been delivered') +
+    ', so it is not sent again. Open the chat in the paired browser, verify sign-in and inspect the handoff response, or cancel compaction to return to it.';
+}
+
 /**
  * Makes a ticket's next pickup due on the next sweep, within the same bound.
  *
@@ -8764,17 +8791,16 @@ function compactionPhaseOf(entry: ContinuationView): CompactionPhase {
  * brought forward is one of the phase's own. False when there is no open ticket for the
  * chat, the bridge is stopped, or its pickups are exhausted.
  */
-function expediteCompactionPickup(conversationId: string): boolean {
+async function expediteCompactionPickup(conversationId: string): Promise<boolean> {
   const entry = pendingContinuations().find((candidate) => candidate.from === conversationId);
   if (!entry || compactionWatchFloor === null) return false;
   const phase = compactionPhaseOf(entry);
-  const watch = compactionWatch.get(conversationId);
-  if (watch && watch.token === entry.token && watch.phase === phase) {
-    if (watch.attempts >= COMPACTION_PICKUPS[phase].attempts) return false;
-    watch.nextAt = 0;
-    return true;
-  }
-  compactionWatch.set(conversationId, { token: entry.token, phase, attempts: 0, nextAt: 0 });
+  const saved = entry.pickup?.phase === phase ? entry.pickup : null;
+  const watch = saved ?? { phase, attempts: 0, nextAt: 0 };
+  if (watch.attempts >= COMPACTION_PICKUPS[phase].attempts || watch.told) return false;
+  const next = { ...watch, nextAt: 0 };
+  if (!await saveContinuationPickupNow(entry.token, entry.pickup, next)) return false;
+  compactionWatch.set(conversationId, { ...next, token: entry.token });
   return true;
 }
 
@@ -8962,30 +8988,66 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
       // for asking, the durable dispatch stamp for writing. The brief's landing has no stamp
       // of its own, and at a quarter-hour cadence the sweep's half-minute lag does not matter.
       const since = Math.max(compactionWatchFloor, phase === 'asking' ? entry.openedAt : phase === 'writing' ? (entry.askedAt ?? now) : now);
-      watch = { token: entry.token, phase, attempts: 0, nextAt: since + COMPACTION_PICKUPS[phase].every };
+      watch = { token: entry.token, ...(entry.pickup?.phase === phase ? entry.pickup
+        : { phase, attempts: 0, nextAt: since + COMPACTION_PICKUPS[phase].every }) };
       compactionWatch.set(entry.from, watch);
     }
+    const sourceWorking = (current = session, at = now): boolean => {
+      if (phase !== 'asking') return false;
+      const grant = activeUntil.get(entry.from);
+      return !!silenceHeldByCalls(entry.from, grant, at, true) ||
+        !!(grant?.sessionId === entry.sessionId && !grant.thinkingFailed && grant.evidenceAt <= at &&
+          (!current.activeTurnId || current.activeTurnId === grant.turnId) &&
+          (at < grant.evidenceAt + silenceWindowMs(grant) || reasoningIsLive(grant, at)));
+    };
+    const lifecycle = bridgeLifecycleEpoch;
+    const saveWatch = async (next: Omit<NonNullable<typeof watch>, 'token'>): Promise<boolean> => {
+      if (!await saveContinuationPickupNow(entry.token, entry.pickup, next)) return false;
+      const saved = continuationByToken(entry.token)?.pickup;
+      if (!saved || saved.phase !== phase) return false;
+      entry.pickup = saved;
+      watch = { ...saved, token: entry.token };
+      compactionWatch.set(entry.from, watch);
+      const current = await getSession(entry.sessionId);
+      const ticket = continuationForSession(entry.sessionId);
+      return bridgeLifecycleEpoch === lifecycle && compactionWatchFloor !== null &&
+        current?.conversationId === entry.from && current.browserRecoveryDismissedAt === undefined &&
+        ticket?.token === entry.token && compactionPhaseOf(ticket) === phase &&
+        (!entry.automatic || automaticCompactionAllowed(current)) &&
+        !isChatBlocked(entry.from) && !stopRequestedFor(entry.from) &&
+        !sourceWorking(current, Date.now());
+    };
     const schedule = COMPACTION_PICKUPS[phase];
     if (now < watch.nextAt) continue;
-    // The handoff request is sent when the source turn has finished. While that turn still works,
-    // a pickup only reloads a busy page and spends the budget: on 2026-10-12 an automatic ticket
-    // filed mid-turn spent all ten pickups on a generating page, wrote "Trying to reload chat to
-    // recover a handoff request that has not been sent" each time, and gave up (handoff_never_sent)
-    // just after the turn finally ended. Wait for the turn instead, without counting.
-    if (phase === 'asking' && session && sessionInputActivity(session).exact) {
-      watch.nextAt = now + schedule.every;
+    // Preserve a working source's settle/Stop attempt without spending pickups. An open
+    // recorder turn is unresolved debt, not fresh work: a lost stream may never report its
+    // end, and ordinary silence recovery has already yielded to this ticket. Use that same
+    // owner's bounded work/reasoning lease and running-call barrier instead of input's
+    // conservative open-turn veto, including after history is adopted on restart.
+    if (sourceWorking()) {
+      await saveWatch({ ...watch, nextAt: now + schedule.every });
+      continue;
+    }
+    // An armed destination without a surviving transport has no safe retry: the prompt
+    // can exist in an unnamed ChatGPT conversation. Report its exact unresolved custody
+    // after the normal opening grace, while retaining late marker reconciliation.
+    if (phase === 'opening' && !sendUnattempted(entry.destinationSend) &&
+        !commands.some(command => command.spec.type === 'resume' && command.spec.token === entry.token)) {
+      if (!watch.told && await saveWatch({ ...watch, told: true })) {
+        void recordNote(entry.sessionId, compactionPickupBlocker(entry), entry.token).catch(() => undefined);
+        changed();
+      }
       continue;
     }
     if (watch.attempts >= schedule.attempts) {
-      if (phase === 'writing' && !watch.told) {
+      if (phase !== 'asking' && !watch.told) {
         // The sent request stays protected and gets no fourth reload, but the person reading
         // the app is told once that the handoff is stuck rather than left with a silent card.
-        watch.told = true;
+        if (!await saveWatch({ ...watch, told: true })) continue;
         logWarn(`bridge: compaction ticket ${entry.token.slice(0, 8)} for ${entry.from} is still without its brief after ${schedule.attempts} pickups`);
         void recordNote(
           entry.sessionId,
-          `Compact & Resume is still waiting for this chat's handoff: ${schedule.attempts} reloads did not collect it. ` +
-            'The request was already sent, so it is not sent again. Open the chat to let it finish, or cancel compaction to return to it.'
+          compactionPickupBlocker(entry), entry.token
         ).catch(() => undefined);
       }
       if (phase !== 'asking') continue;
@@ -8995,9 +9057,8 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
         // reaching Send. Keep the exact pre-Send token and slow the recovery cadence instead of
         // silently dropping auto-compaction while the chat keeps growing. Auto Off, explicit
         // Cancel, or a page-proven pre-Send refusal remain the terminal owners.
-        watch.attempts = 0;
-        watch.backoffs = (watch.backoffs ?? 0) + 1;
-        watch.nextAt = now + AUTOMATIC_ASKING_RETRY_PAUSE_MS;
+        if (!await saveWatch({ phase, attempts: 0, backoffs: (watch.backoffs ?? 0) + 1,
+          nextAt: now + AUTOMATIC_ASKING_RETRY_PAUSE_MS })) continue;
         logInfo(
           `bridge: compaction ticket ${entry.token.slice(0, 8)} still has no source Send after ${schedule.attempts} pickups — retaining automatic ticket and backing off`
         );
@@ -9025,6 +9086,7 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
       const held = repairsInFlight.get(entry.from);
       if (held?.state === 'done' && held.reason === 'compaction') repairsInFlight.delete(entry.from);
       else if (held && held.state !== 'done') continue;
+      if (!await saveWatch({ ...watch, attempts: watch.attempts + 1, nextAt: now + schedule.every })) continue;
       acted = queueBrowserRecovery(
         entry.from,
         entry.sessionId,
@@ -9039,14 +9101,13 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
     ) {
       // The brief exists but its fresh-chat transport failed before Send. The destination
       // checkpoint proves opening this same ticket again cannot duplicate the bootstrap.
+      if (!await saveWatch({ ...watch, attempts: watch.attempts + 1, nextAt: now + schedule.every })) continue;
       queueResumeCommand(entry.sessionId, entry.token);
       void deliver();
       acted = true;
     }
     if (!acted) continue;
 
-    watch.attempts += 1;
-    watch.nextAt = now + schedule.every;
     queued = true;
     logInfo(
       `bridge: compaction ticket ${entry.token.slice(0, 8)} ${phase} pickup ${watch.attempts} of ${schedule.attempts}`

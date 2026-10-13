@@ -65,7 +65,7 @@ import {
 } from '../agents.js';
 import { clearChatWorkspace, moveChatWorkspace, workspaceForChat } from '../workspace.js';
 import { clearGoalObjective, clearGoalSwitch, goalObjectiveFor, goalSwitchFor, moveGoalObjective, moveGoalSwitch, retireGoalDraftsFor } from '../goal.js';
-import { writeDurableNow, writeDurableSoon } from '../durable.js';
+import { writeDurableNow, writeDurableSnapshotSoon } from '../durable.js';
 import { handoffContinuationId, handoffMatchesContinuation, prepareHandoff, resumeBootstrapMatches } from './handoff.js';
 import { ensureHandoffRecorded, recordHandoff, recordNote, rebindConversation } from './recorder.js';
 import { endResumeClaim, noteResumeClaim, noteResumeDispatch, resetResumeGate } from './resume-gate.js';
@@ -164,6 +164,24 @@ export interface ContinuationSendCheckpoint {
 
 /** How long after the armed click a document may prove that ChatGPT never received it. */
 export const SOURCE_UNDELIVERED_AFTER_MS = 15_000;
+
+/** Existing browser-pickup schedule, owned by the continuation WAL across restarts. */
+export interface ContinuationPickup {
+  phase: 'asking' | 'writing' | 'opening';
+  nextAt: number;
+  attempts: number;
+  backoffs?: number;
+  told?: boolean;
+}
+
+function pickupState(raw: ContinuationPickup | null | undefined): ContinuationPickup | null {
+  if (!raw || !['asking', 'writing', 'opening'].includes(raw.phase) ||
+      !Number.isFinite(raw.nextAt) || raw.nextAt < 0 || !Number.isSafeInteger(raw.attempts) ||
+      raw.attempts < 0 || raw.attempts > 5 || (raw.backoffs !== undefined &&
+        (!Number.isSafeInteger(raw.backoffs) || raw.backoffs < 0 || raw.backoffs > 2))) return null;
+  return { phase: raw.phase, nextAt: raw.nextAt, attempts: raw.attempts,
+    ...(raw.backoffs !== undefined ? { backoffs: raw.backoffs } : {}), ...(raw.told === true ? { told: true } : {}) };
+}
 
 export interface ContinuationDestinationCheckpoint extends ContinuationSendCheckpoint {
   /** Chat B, learned from the page that contains the marked bootstrap message. */
@@ -264,6 +282,7 @@ interface Continuation {
    * restarted -- and by then the tab that knew the Project may be gone.
    */
   project: string | null;
+  pickup: ContinuationPickup | null;
   sourceSend: ContinuationSendCheckpoint;
   destinationSend: ContinuationDestinationCheckpoint;
   error: string | null;
@@ -274,6 +293,14 @@ const byToken = new Map<string, Continuation>();
 const openingBySession = new Map<string, Promise<ContinuationView>>();
 const commitLocks = new Map<string, { to: string; promise: Promise<ContinuationCommitResult> }>();
 const checkpointLocks = new Map<string, Promise<unknown>>();
+/** One WAL contains every token: snapshot construction and publication must serialize too. */
+let walPublication: Promise<unknown> = Promise.resolve();
+function withWalPublication<T>(operation: () => Promise<T>): Promise<T> {
+  const work = walPublication.catch(() => undefined).then(operation);
+  walPublication = work.catch(() => undefined);
+  return work;
+}
+
 export const CONTINUATIONS_STATE = 'continuations';
 const RESUME_SHADOW_COLLISION = 'the replacement chat already belongs to another local session';
 
@@ -301,6 +328,8 @@ interface ContinuationRecord {
   claimedBy: string | null;
   /** Legacy only: the pre-checkpoint arm flag, read when migrating an older record. */
   armed?: boolean;
+  /** Legacy records have no recorded pickup budget. */
+  pickup?: ContinuationPickup | null;
   /** Absent only in a record written before the checkpoints existed. */
   sourceSend?: ContinuationSendCheckpoint;
   destinationSend?: ContinuationDestinationCheckpoint;
@@ -331,6 +360,7 @@ function durableRecord(entry: Continuation): ContinuationRecord {
     summary: entry.summary.slice(0, 512 * 1024),
     handoffId: entry.handoffId,
     claimedBy: entry.claimedBy,
+    pickup: pickupState(entry.pickup),
     sourceSend: { ...entry.sourceSend },
     destinationSend: { ...entry.destinationSend },
     error: entry.error
@@ -359,11 +389,11 @@ export function snapshotContinuations(): ContinuationSnapshot {
 }
 
 function changed(): void {
-  writeDurableSoon(CONTINUATIONS_STATE, snapshotContinuations());
+  writeDurableSnapshotSoon(CONTINUATIONS_STATE, snapshotContinuations);
 }
 
 async function changedNow(): Promise<void> {
-  await writeDurableNow(CONTINUATIONS_STATE, snapshotContinuations());
+  await withWalPublication(() => writeDurableNow(CONTINUATIONS_STATE, snapshotContinuations()));
 }
 
 function publishRecord(entry: Continuation, record: ContinuationRecord): void {
@@ -392,6 +422,7 @@ function publishRecord(entry: Continuation, record: ContinuationRecord): void {
   entry.destinationSend = record.destinationSend
     ? { ...record.destinationSend }
     : { state: 'not-attempted', conversationId: null, messageId: null };
+  entry.pickup = pickupState(record.pickup);
   entry.error = record.error;
   if (entry.askedAt === null && handoffAsked(entry)) {
     entry.askedAt = typeof record.askedAt === 'number' && Number.isFinite(record.askedAt) ? record.askedAt : Date.now();
@@ -402,26 +433,28 @@ async function transitionNow(
   entry: Continuation,
   derive: (current: ContinuationRecord) => ContinuationRecord
 ): Promise<ContinuationRecord> {
-  const current = durableRecord(entry);
-  const next = derive(current);
-  // Any semantic transition is forward progress, so it renews the waiting deadline. Without this
-  // the stamp would only ever be set at open and the manual clock would be back to counting from
-  // there — the same bug in a new field.
-  if (JSON.stringify(next) !== JSON.stringify(current)) next.touchedAt = Date.now();
-  try {
-    // Persist the proposed semantic state before publishing it into the live transaction.
-    // If the durable boundary rejects, callers still see the previous state and can retry or
-    // abort safely instead of inheriting a half-published `committing`/handoff transition.
-    await writeDurableNow(CONTINUATIONS_STATE, snapshotWith(entry.token, next));
-  } catch (err) {
-    // writeDurableNow deliberately preserves a failed generation for retry. This staged
-    // transaction rejected that generation, so supersede it with the still-authoritative
-    // current snapshot before a background retry can publish a transition we never accepted.
-    writeDurableSoon(CONTINUATIONS_STATE, snapshotContinuations());
-    throw err;
-  }
-  publishRecord(entry, next);
-  return next;
+  return withWalPublication(async () => {
+    const current = durableRecord(entry);
+    const next = derive(current);
+    // Any semantic transition is forward progress, so it renews the waiting deadline. Without this
+    // the stamp would only ever be set at open and the manual clock would be back to counting from
+    // there — the same bug in a new field.
+    if (JSON.stringify(next) !== JSON.stringify(current)) next.touchedAt = Date.now();
+    try {
+      // Persist the proposed semantic state before publishing it into the live transaction.
+      // If the durable boundary rejects, callers still see the previous state and can retry or
+      // abort safely instead of inheriting a half-published `committing`/handoff transition.
+      await writeDurableNow(CONTINUATIONS_STATE, snapshotWith(entry.token, next));
+    } catch (err) {
+      // writeDurableNow deliberately preserves a failed generation for retry. This staged
+      // transaction rejected that generation, so supersede it with the still-authoritative
+      // current snapshot before a background retry can publish a transition we never accepted.
+      writeDurableSnapshotSoon(CONTINUATIONS_STATE, snapshotContinuations);
+      throw err;
+    }
+    publishRecord(entry, next);
+    return next;
+  });
 }
 
 export type ContinuationCommitResult =
@@ -463,6 +496,7 @@ export interface ContinuationView {
   askedAt: number | null;
   /** The Project the replacement chat belongs in, or null for the site root. */
   project: string | null;
+  pickup: ContinuationPickup | null;
   sourceSend: ContinuationSendCheckpoint;
   destinationSend: ContinuationDestinationCheckpoint;
 }
@@ -481,6 +515,7 @@ const view = (entry: Continuation): ContinuationView => ({
   automatic: entry.automatic,
   askedAt: entry.askedAt,
   project: entry.project,
+  pickup: pickupState(entry.pickup),
   sourceSend: { ...entry.sourceSend },
   destinationSend: { ...entry.destinationSend }
 });
@@ -777,6 +812,7 @@ function makeContinuation(sessionId: string, fromConversationId: string, automat
     handoff: null,
     claimedBy: null,
     to: null,
+    pickup: null,
     sourceSend: { state: 'not-attempted', messageId: null },
     destinationSend: { state: 'not-attempted', conversationId: null, messageId: null },
     error: null
@@ -805,15 +841,17 @@ export async function openContinuationNow(
     if (source?.conversationId === fromConversationId && source.selectedModel?.conversationId === fromConversationId) {
       entry.requestedModel = requestedModel(source.selectedModel);
     }
-    try {
-      await writeDurableNow(CONTINUATIONS_STATE, snapshotWith(entry.token, durableRecord(entry)));
-    } catch (err) {
-      // Rejecting the staged open must supersede durable.ts's retained failed generation,
-      // otherwise its retry could resurrect a token the bridge never returned to the page.
-      writeDurableSoon(CONTINUATIONS_STATE, snapshotContinuations());
-      throw err;
-    }
-    byToken.set(entry.token, entry);
+    await withWalPublication(async () => {
+      try {
+        await writeDurableNow(CONTINUATIONS_STATE, snapshotWith(entry.token, durableRecord(entry)));
+      } catch (err) {
+        // Rejecting the staged open must supersede durable.ts's retained failed generation,
+        // otherwise its retry could resurrect a token the bridge never returned to the page.
+        writeDurableSnapshotSoon(CONTINUATIONS_STATE, snapshotContinuations);
+        throw err;
+      }
+      byToken.set(entry.token, entry);
+    });
     beginPrimeTransfer(fromConversationId);
     logInfo(`continuation ${entry.token.slice(0, 8)} durably opened for session ${sessionId} in chat ${fromConversationId}`);
     return view(entry);
@@ -858,6 +896,7 @@ export async function beginContinuationSourceSendNow(
     const entry = byToken.get(token);
     if (!entry || !isOpen(entry) || entry.state !== 'awaiting-summary') return null;
     if (entry.sourceSend.state === 'attempted-unresolved') {
+      if (entry.error) await transitionNow(entry, current => ({ ...current, error: null }));
       return { allowed: true, checkpoint: { ...entry.sourceSend } };
     }
     if (entry.sourceSend.state !== 'not-attempted') {
@@ -866,7 +905,7 @@ export async function beginContinuationSourceSendNow(
     await transitionNow(entry, (current) => ({
       ...current,
       ...(project !== undefined ? { project: normalizeProjectId(project) } : {}),
-      sourceSend: { state: 'attempted-unresolved', messageId: null }
+      sourceSend: { state: 'attempted-unresolved', messageId: null }, error: null
     }));
     return { allowed: true, checkpoint: { ...entry.sourceSend } };
   });
@@ -973,6 +1012,40 @@ export async function bindContinuationSourceMessageNow(token: string, messageId:
     }));
     return true;
   });
+}
+
+/** A bounded page preparation refusal is diagnostic debt, never Send or abort authority. */
+export async function reportContinuationSourceBlockerNow(token: string, reason: string): Promise<boolean> {
+  return withCheckpointLock(token, async () => {
+    const entry = byToken.get(token);
+    if (!entry || !isOpen(entry) || entry.state !== 'awaiting-summary' || !sendUnattempted(entry.sourceSend)) return false;
+    const error = reason.trim().slice(0, 500);
+    if (!error) return false;
+    await transitionNow(entry, current => ({ ...current, error }));
+    return true;
+  });
+}
+
+/** Persist pickup custody before browser action; polling/reloads never renew the handoff TTL. */
+export async function saveContinuationPickupNow(
+  token: string, expected: ContinuationPickup | null, next: ContinuationPickup
+): Promise<boolean> {
+  return withCheckpointLock(token, () => withWalPublication(async () => {
+    const entry = byToken.get(token);
+    if (!entry || !isOpen(entry) || entry.state === 'committing') return false;
+    const phase = entry.state !== 'awaiting-summary' ? 'opening' : sendUnattempted(entry.sourceSend) ? 'asking' : 'writing';
+    const proposed = pickupState(next);
+    if (!proposed || proposed.phase !== phase || JSON.stringify(entry.pickup) !== JSON.stringify(expected)) return false;
+    const record = { ...durableRecord(entry), pickup: proposed };
+    try {
+      await writeDurableNow(CONTINUATIONS_STATE, snapshotWith(token, record));
+    } catch (error) {
+      writeDurableSnapshotSoon(CONTINUATIONS_STATE, snapshotContinuations);
+      throw error;
+    }
+    publishRecord(entry, record);
+    return true;
+  }));
 }
 
 /**
@@ -1711,6 +1784,7 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
       capture: null,
       handoff: null,
       claimedBy: typeof raw.claimedBy === 'string' ? raw.claimedBy : null,
+      pickup: pickupState(raw.pickup),
       sourceSend:
         raw.sourceSend && SEND_STATES.has(raw.sourceSend.state as ContinuationSendState)
           ? {
