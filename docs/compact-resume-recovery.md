@@ -119,9 +119,8 @@ part of this verification. The local ripgrep fetch step uses its cached pinned a
 ## 2026-10-13 follow-up: acknowledged pickups with no source Send
 
 **Production report (not reproduced against the provider):** the existing Goal
-session remained `handoff-pending` / `not_sent` after PR #5. The previously
-retired the previous ticket was correctly preserved/abandoned before Send when the
-composer changed. New the replacement started at 14:16:29 UTC with 415,811 context
+session remained `handoff-pending` / `not_sent` after PR #5. The previous ticket was durably abandoned before Send when the
+composer changed; its draft was preserved. The replacement ticket opened at 14:16:29 UTC with 415,811 context
 tokens; pickups at 14:18:47 and 14:28:18 UTC were acknowledged, with an
 assistant transport failure at 14:26:10 UTC. There was no proved source
 dispatch, marked message, brief, or committed destination. ChatGPT also
@@ -150,7 +149,7 @@ insertion failure, disabled Send, draft ownership, manual refusal, and
 post-dispatch ambiguity.
 
 **Not verified:** the report does not establish which ChatGPT-native check
-blocked ticket the replacement. If history restriction withholds the original
+blocked the replacement ticket. If history restriction withholds the original
 question, a writable composer, a native result, or the Send control, the app
 must continue to refuse unsafe source Send. This patch improves durable
 diagnosis and recovery of transient pre-Send refusal; it does **not** override
