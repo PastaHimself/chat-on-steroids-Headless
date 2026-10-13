@@ -1587,6 +1587,13 @@ Finish checkpoints use `shared/input.ts::browserInputModel()` to inherit current
 including legacy rows containing an old model. A receipt for an inherited checkpoint must not
 republish an old enqueue-time model as a fresh observed switch.
 
+An interrupted turn cannot reach its finish tool. After a confirmed silence repair and independent
+continuation authorization, its first never-offered finish checkpoint can own the existing outbox
+recovery through `recovery.queuedInput`. Its UUID, text, order and mode remain intact; revoking the
+recovery restores the checkpoint instead of cancelling its work. The renderer retains its task label,
+shows recovery blockers and uses the task-removal action. Uncertain receipts remain visible and
+are never automatically replayed. Only one checkpoint consumes each source boundary.
+
 ### Astra's finish boundary
 
 `shared/chat-models.ts` recognizes exact Astra/Pro identities; substring guesses are forbidden.
@@ -2576,6 +2583,13 @@ Continue text without a decision helper; a canonical final uses enabled Goal/Loo
 controls and bare `turn_end` are not completion evidence. An exact native assistant terminal
 identity is completion evidence even when its text is empty (for example, image-only output).
 Images alone, intermediate media and empty nonterminal messages are not finals.
+
+Exact unfinished GPT-6 Thinking evidence, including its Low/Medium/High selection, shares the
+existing native reasoning lease; its 90-second freshness never renews authored work or proves a
+completion. Restart may reattach that lease around an existing outbox ticket, while the ticket's
+Stop/Send custody and pickup budget still prevent another initial reload. Recent stalled or
+interrupted Goal work also restores from its durable current boundary/MCP proof when no ticket
+already owns it. Stop, final, dismissal, newer questions and old history remain vetoes.
 
 `ui.autoContinue` defaults On (explicit Off survives; malformed-config recovery is Off).
 Its switch controls ordinary chats; enabled Goal/Loop also uses the shared recovery. Helpers

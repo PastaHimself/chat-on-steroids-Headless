@@ -69,6 +69,8 @@ const entrySchema = inputArgs.extend({
   queuedTurn: z.object({ conversationId: z.string().min(1).max(256), turnId: z.string().min(1).max(256) }).optional(),
   /** Shared unfinished-response fallback belongs to this question in every mode. */
   recovery: z.object({ questionId: z.string(), episode: z.string().max(200).optional(), pro: z.boolean(), busyUntil: z.number(), phase: z.enum(['ready', 'stopping', 'reloading', 'resumed']), reloadOwner: z.string().optional(),
+    /** The existing checkpoint owns recovery; revocation must retain its original queued work. */
+    queuedInput: z.literal(true).optional(),
     /** First release of an unbroken run of pages withdrawing this Continue before Send (#820). */
     withdrawnSince: z.number().optional(),
     /** A page refused this Continue before claiming it, so it ended unsent; see endRecoveryInput. */
@@ -217,7 +219,7 @@ async function browserInputAllowed(entry: InputEntry): Promise<boolean> {
     const session = await getSession(entry.sessionId);
     if (session?.origin?.kind === 'desktop' && !session.conversationId) return true;
   }
-  if (entry.mode === 'finish' && entry.sessionId && entry.afterTurn !== true) {
+  if (entry.mode === 'finish' && !entry.recovery && entry.sessionId && entry.afterTurn !== true) {
     const session = await getSession(entry.sessionId);
     const selection = session?.selectedModel;
     if (selection?.conversationId === session?.conversationId && isAstraModel(selection?.model, selection?.reasoningEffort)) return false;
@@ -474,7 +476,8 @@ async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
     }
     if (row.recovery && !terminal(row) && row.sendAuthorizedAt === undefined) {
       const reason = await recoveryInvalidReason(row);
-      if (reason) return { ...row, state: 'cancelled', error: `Automatic Continue cancelled: ${reason}.` };
+      if (reason) return row.recovery.queuedInput ? withoutSilenceClaim(row) :
+        { ...row, state: 'cancelled', error: `Automatic Continue cancelled: ${reason}.` };
     }
     if (row.finishOwner && !terminal(row) && !(await finishInputCurrent(row)))
       return { ...row, state: 'cancelled', error: 'Automatic follow-up cancelled because its active turn or setting changed.' };
@@ -567,7 +570,8 @@ export function retryUnclaimedInput(id: string): Promise<InputEntry | null> {
     const [newerMessage] = await readRecentEvents(row.sessionId, 1, { kinds: ['user_message'] });
     if (newerMessage && newerMessage.time > row.createdAt) return null;
     if (current.some(other => other.id !== row.id && other.sessionId === row.sessionId &&
-        (!terminal(other) || other.createdAt > row.createdAt))) return null;
+        ((!terminal(other) && !(other.state === 'queued' && other.mode === 'finish' &&
+          other.offeredAt === undefined && neverAuthorized(other))) || other.createdAt > row.createdAt))) return null;
     const next: InputEntry = { ...row, state: 'queued', owner: null, dueAt: now, offeredAt: undefined,
       completedTurnId: undefined, error: undefined, pickupFailedAt: undefined, pickupRetryCount: 1 };
     await commit(current.map(entry => entry.id === row.id ? next : entry));
@@ -621,9 +625,11 @@ async function prepare(entry: InputEntry, suffix = ''): Promise<InputEntry> {
       ? `Original user request:\n${entry.objective}\n\nOpening instruction:\n${entry.text}\n\nFollow the complete original request, including all constraints, throughout this task.`
       : entry.text;
   const mandatoryOverhead = `${TOOL_INPUT_HEADER}\n\n${finishInstruction(getConfig().ui.finishLeadMinutes)}`;
-  const deliveryText = entry.deliveryText ?? await deliveryHooks?.prepareText?.({ ...entry, text: text + suffix }, {
+  const recoveryNotice = entry.recovery?.queuedInput
+    ? '\n\nThe previous response was interrupted. Preserve completed work and inspect the current state before repeating any action. Continue the original request while completing this checkpoint.' : '';
+  const deliveryText = entry.deliveryText ?? await deliveryHooks?.prepareText?.({ ...entry, text: text + recoveryNotice + suffix }, {
     maxChars: MAX_CHATGPT_MESSAGE_CHARS, maxBytes: TOOL_INPUT_TEXT_BYTES - Buffer.byteLength(mandatoryOverhead)
-  }, entry.authoredSource === 'none' ? '' : entry.authoredSource === 'objective' ? entry.objective ?? '' : entry.text) ?? text + suffix;
+  }, entry.authoredSource === 'none' ? '' : entry.authoredSource === 'objective' ? entry.objective ?? '' : entry.text) ?? text + recoveryNotice + suffix;
   // A single input must fit the tool envelope by itself. Aggregate batching below
   // may defer a second input, but cannot silently defer an individually impossible one.
   const envelope = `${TOOL_INPUT_HEADER}${deliveryText}\n\n${finishInstruction(getConfig().ui.finishLeadMinutes)}`;
@@ -817,7 +823,8 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
     // Offered tool receipts retain their identity until a later request proves receipt.
     const prioritized = !finishOwner ? current.map(row => row.sessionId === entry.sessionId &&
       ((row.finishOwner && row.state === 'queued') || (row.recovery && !terminal(row) && row.sendAuthorizedAt === undefined))
-      ? { ...row, state: 'cancelled' as const, error: 'Replaced by your new instruction before delivery.' } : row) : current;
+      ? row.recovery?.queuedInput ? withoutSilenceClaim(row) :
+        { ...row, state: 'cancelled' as const, error: 'Replaced by your new instruction before delivery.' } : row) : current;
     let next = append(prioritized, entry, input.mode === 'auto' && !finishOwner && policy?.canInject === true);
     // A finish plan belongs to an existing session now. Publish every editable
     // checkpoint atomically; no composer text or first-send receipt owns its life.
@@ -1166,7 +1173,7 @@ function queuedAfterTurn(row: InputEntry, session: SessionSummary): boolean {
   const astra = session.selectedModel?.conversationId === session.conversationId &&
     isAstraModel(session.selectedModel.model, session.selectedModel.reasoningEffort);
   return row.sessionId === session.id && (queuedFollowup(row) || (manualInput(row) && row.offeredAt === undefined)) && row.state === 'queued' && row.dueAt <= Date.now() &&
-    (row.mode !== 'finish' || row.afterTurn === true || !astra);
+    (row.mode !== 'finish' || row.afterTurn === true || !astra || !!row.recovery);
 }
 export async function hasQueuedAfterTurnInput(sessionId: string): Promise<boolean> {
   const session = await getSession(sessionId);
@@ -1259,6 +1266,7 @@ function releaseRecoveryClaim(row: InputEntry, error?: string): InputEntry {
     recovery: { ...row.recovery!, phase: row.recovery!.phase === 'ready' ? 'ready' : 'resumed' } };
 }
 async function recoveryCurrent(row: InputEntry): Promise<boolean> {
+  if (row.recovery?.ended) return false;
   const conversationId = row.silenceBoundary?.conversationId;
   // Unassigned calls conservatively block every chat while attribution settles, for a bounded
   // time once the chat was found silent (#1086). They cannot prove that this frozen source
@@ -1272,7 +1280,7 @@ async function recoveryCurrent(row: InputEntry): Promise<boolean> {
 async function recoveryInvalidReason(row: InputEntry): Promise<string | null> {
   const boundary = row.silenceBoundary;
   if (!row.recovery || !row.sessionId || !boundary) return 'the recovery source is missing';
-  if (Date.now() - row.createdAt >= 12 * 60 * 60_000) return 'the twelve-hour recovery window expired';
+  if (Date.now() - (boundary.acceptedAt ?? row.createdAt) >= 12 * 60 * 60_000) return 'the twelve-hour recovery window expired';
   const unavailable = () => isChatBlocked(boundary.conversationId) ? 'this chat is blocked' :
     deliveryHooks?.recoveryAllowed?.(row.sessionId!, boundary.conversationId) !== true ? 'automatic continuation is off or paused' : null;
   const reason = unavailable();
@@ -1383,7 +1391,8 @@ export function advanceRecoveryInput(id: string, owner: string, conversationId: 
 }
 
 /** File on the existing outbox row, never in a parallel retry/ticket ledger. */
-export function fileSilenceInput(sessionId: string, conversationId: string, turnId: string, currentOwner: () => boolean, listenUntil?: number): Promise<boolean> {
+export function fileSilenceInput(sessionId: string, conversationId: string, turnId: string, currentOwner: () => boolean, listenUntil?: number,
+  recovery?: { pro: boolean; busyUntil: number; episode: string }): Promise<boolean> {
   return serial(async () => {
     const current = await load();
     const session = await getSession(sessionId);
@@ -1399,16 +1408,30 @@ export function fileSilenceInput(sessionId: string, conversationId: string, turn
     if (current.some(row => row.sessionId === sessionId && (row.state === 'browser' || row.state === 'tool'))) return false;
     const candidates = ordered(current).filter(row => row.sessionId === sessionId && row.state === 'queued');
     const row = candidates.find(row => manualInput(row) && row.offeredAt === undefined && row.dueAt <= Date.now()) ?? candidates.find(queuedFollowup);
-    if (!row || !queuedAfterTurn(row, session)) return false;
+    if (!row) return false;
+    // A finish checkpoint cannot collect its finish call from an interrupted provider turn.
+    // It takes the existing Continue custody only after the bridge's confirmed silence repair,
+    // with independent automation authority. Its text, order and delivery preference stay intact.
+    const recoverCheckpoint = !!recovery && row.mode === 'finish' && !row.finishOwner &&
+      row.dueAt <= Date.now() && row.offeredAt === undefined && neverAuthorized(row) && row.delivery !== 'tool' && row.attachmentDelivery !== 'tool' &&
+      deliveryHooks?.recoveryAllowed?.(sessionId, conversationId) === true &&
+      !await readCompletedFinal(sessionId, conversationId, turnId);
+    if (!queuedAfterTurn(row, session) && !recoverCheckpoint) return false;
     if (row.recovery) return true; // Its frozen source and conditional busy deadline belong to the outbox.
-    const [work] = await readRecentEvents(sessionId, 1, { kinds: INPUT_WORK_KINDS });
+    const question = recoverCheckpoint ? await readLatestUserMessage(sessionId, turnId) : null;
+    const recover = recoverCheckpoint && !!question?.messageId;
+    const [work] = await readRecentEvents(sessionId, 1, { kinds: recover ? RECOVERY_WORK_KINDS : INPUT_WORK_KINDS });
     if (!work || !currentOwner()) return false;
     const previous = current.find(entry => entry.sessionId === sessionId && entry.silenceBoundary?.turnId === turnId)?.silenceBoundary;
     const listening = Math.max(listenUntil ?? 0, previous?.listenUntil ?? 0);
-    if (row.silenceBoundary?.turnId === turnId && row.silenceBoundary.workSeq === workSequence(work) &&
+    if (!recover && row.silenceBoundary?.turnId === turnId && row.silenceBoundary.workSeq === workSequence(work) &&
         (row.silenceBoundary.listenUntil ?? 0) === listening) return true;
-    await commit(current.map(entry => entry === row ? { ...entry,
-      silenceBoundary: { turnId, conversationId, workSeq: workSequence(work), acceptedAt: previous ? previous.acceptedAt : Date.now(), ...(listening ? { listenUntil: listening } : {}), ...(previous?.nativeBusy ? { nativeBusy: true } : {}) } }
+    const next: InputEntry = { ...row,
+      ...(recover ? { recovery: { ...recovery!, queuedInput: true as const, questionId: question!.messageId!, phase: 'ready' as const } } : {}),
+      silenceBoundary: { turnId, conversationId, workSeq: workSequence(work), acceptedAt: previous ? previous.acceptedAt : Date.now(), ...(listening ? { listenUntil: listening } : {}), ...(previous?.nativeBusy ? { nativeBusy: true } : {}) } };
+    if (recover && !await recoveryCurrent(next)) return false;
+    if (!currentOwner()) return false;
+    await commit(current.map(entry => entry === row ? next
       : entry.sessionId === sessionId && entry.state === 'queued' && entry.silenceBoundary?.turnId === turnId ? { ...entry, silenceBoundary: undefined } : entry));
     return true;
   });
@@ -1432,7 +1455,7 @@ export function deferSilenceInput(id: string, conversationId: string, turnId: st
       boundary = { conversationId, turnId, workSeq: workSequence(work), acceptedAt: Date.now() };
     }
     if (boundary.conversationId !== conversationId || boundary.turnId !== turnId) return false;
-    if (row.recovery && boundary.nativeBusy) return false; // One half-window, never a rolling extension.
+    if (boundary.nativeBusy) return false; // One half-window, never a rolling extension.
     await commit(current.map(entry => entry === row ? { ...row,
       silenceBoundary: { ...boundary!, listenUntil: row.recovery
         ? row.recovery.busyUntil
@@ -1443,10 +1466,10 @@ export function deferSilenceInput(id: string, conversationId: string, turnId: st
 }
 
 function withoutSilenceClaim(row: InputEntry, preserveBoundary = false): InputEntry {
-  if (row.recovery) return { ...row, state: 'cancelled', error: 'Automatic Continue cancelled by new activity.' };
+  if (row.recovery && !row.recovery.queuedInput) return { ...row, state: 'cancelled', error: 'Automatic Continue cancelled by new activity.' };
   return { ...row, state: 'queued', owner: null, silenceBoundary: preserveBoundary ? row.silenceBoundary : undefined, completedTurnId: undefined,
     ...(manualInput(row) ? { transportIntent: 'tool' } : {}),
-    companionInputId: undefined, offeredAt: undefined, sendAuthorizedAt: undefined, requiresAuthorization: undefined, deliveryText: undefined, error: undefined };
+    recovery: undefined, companionInputId: undefined, offeredAt: undefined, sendAuthorizedAt: undefined, requiresAuthorization: undefined, deliveryText: undefined, error: undefined };
 }
 /** New work revokes an unspent ticket. Authorized sends retain custody until their exact receipt/failure. */
 export function revokeSilenceInputs(sessionId: string): Promise<void> {
@@ -1841,7 +1864,9 @@ export function endRecoveryInput(id: string, conversationId: string): Promise<bo
     const error = 'Automatic Continue was not needed: the page shows a finished answer.';
     logWarn(`input ${row.id}: ${error}`);
     await commit(current.map(entry => entry === row
-      ? { ...entry, state: 'cancelled', owner: null, error, recovery: { ...row.recovery!, ended: 'page-final' } } : entry));
+      ? row.recovery!.queuedInput ? { ...row, owner: null, recovery: { ...row.recovery!, ended: 'page-final' },
+          error: 'Checkpoint retained: waiting for the final answer to be recorded.' } :
+        { ...entry, state: 'cancelled', owner: null, error, recovery: { ...row.recovery!, ended: 'page-final' } } : entry));
     return true;
   });
 }

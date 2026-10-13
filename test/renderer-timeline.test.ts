@@ -868,6 +868,37 @@ it('identifies automatic Continue without user-task editing or reordering and ke
   expect(w.document.querySelectorAll('#finishQueue [aria-label="Edit queued task"]')).toHaveLength(2);
 });
 
+it('identifies a recovering Plan checkpoint as queued work and labels cancellation as removing that task', async () => {
+  const { w, live, append } = await boot([]);
+  const entry: InputEntry = { id: 'recovering-checkpoint', sessionId: summary([]).id, text: 'Verify implementation', mode: 'finish',
+    dueAt: 0, model: null, reasoningEffort: null, state: 'queued', owner: null, createdAt: 0, conversationId: 'chat-b',
+    error: 'Checkpoint retained: waiting for the final answer to be recorded.',
+    recovery: { queuedInput: true, questionId: 'source-question', pro: false, busyUntil: Date.now() + 60_000, phase: 'ready' } };
+  live.inputs.push(entry); await append([]);
+  const card = w.document.querySelector<HTMLElement>('#finishQueue [data-input-id="recovering-checkpoint"]')!;
+  expect(card.textContent).toContain(entry.text);
+  expect(card.textContent).toContain(entry.error);
+  expect(card.textContent).not.toContain('Automatic Continue');
+  expect(card.getAttribute('aria-label')).toBe('Queued message');
+  expect(card.querySelector('[aria-label="Cancel automatic Continue"]')).toBeNull();
+  expect(card.querySelector('[aria-label="Edit queued task"]')).toBeNull();
+  card.querySelector<HTMLButtonElement>('[aria-label="Remove queued task"]')!.click(); await settle();
+  expect((w as any).api.cancelInput).toHaveBeenCalledWith(entry.id);
+});
+
+it('keeps an uncertain checkpoint delivery visible as an authored delivery notice', async () => {
+  const { w, live, append } = await boot([]);
+  live.inputs.push({ id: 'uncertain-checkpoint', sessionId: summary([]).id, text: 'Verify the plugin', mode: 'finish',
+    dueAt: 0, model: null, reasoningEffort: null, state: 'cancelled', owner: 'lost-page', createdAt: 0, conversationId: 'chat-b',
+    error: 'Stopped waiting for delivery confirmation. The message may already have been sent; it will not be resent.',
+    recovery: { queuedInput: true, questionId: 'source-question', pro: false, busyUntil: 0, phase: 'resumed' } });
+  await append([]);
+  const notice = w.document.querySelector('#inputQueue [data-input-id="uncertain-checkpoint"]');
+  expect(notice).not.toBeNull();
+  expect(notice?.textContent).toContain('Verify the plugin');
+  expect(notice?.textContent).toContain('may already have been sent');
+});
+
 it('keeps a transport-deferred immediate upload visible with cancellation instead of an invalid task editor', async () => {
   const { w, live, append } = await boot([]);
   live.inputs.push({ id: 'native-correction', sessionId: summary([]).id, text: 'Waiting upload', mode: 'after-turn', requestedMode: 'auto',

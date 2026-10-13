@@ -7914,7 +7914,7 @@ describe('unattributed activity recovery', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('projects repeated native-busy waits from the same queued input and withdraws them with new work', async () => {
+  it('bounds native-busy waiting on the same queued input and withdraws it with new work', async () => {
     const input = await import('../src/main/session/input.js');
     input.resetInputForTests();
     vi.useFakeTimers();
@@ -7938,10 +7938,11 @@ describe('unattributed activity recovery', () => {
       await maintenance(repair!.token); // Replayed receipt must not extend the deadline.
       expect((await sessionControlsFor(session!.id)).recovery).toEqual([{ kind: 'post-reload', next: 'queue', deadline: Date.now() + 30_000, generating: true }]);
       await vi.advanceTimersByTimeAsync(30_000);
+      const busyDeadline = Date.now() + 60_000;
       for (let attempt = 0; attempt < 2; attempt++) {
         const response = await request('POST', '/input/claim', { body: { id: row.id, owner: 'queue-countdown-page', conversationId: OTHER, silenceBusyTurnId: 'queue-countdown' } });
-        expect(response.body.ok).toBe(true);
-        expect((await sessionControlsFor(session!.id)).recovery).toEqual([{ kind: 'native-busy', next: 'queue', deadline: Date.now() + 60_000 }]);
+        expect(response.body.ok).toBe(attempt === 0);
+        expect((await sessionControlsFor(session!.id)).recovery).toEqual([{ kind: 'native-busy', next: 'queue', deadline: busyDeadline }]);
         if (attempt === 0) await vi.advanceTimersByTimeAsync(60_000);
       }
       await attributed(OTHER, false, Date.now());
@@ -8169,7 +8170,7 @@ describe('unattributed activity recovery', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it.each(['ultra', 'pro'])('keeps exact native long reasoning (%s) live for 24 simulated hours and expires only its liveness proof', async effort => {
+  it.each(['high', 'ultra', 'pro'])('keeps exact native long reasoning (%s) live for 24 simulated hours and expires only its liveness proof', async effort => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       await pair(); const chat = randomUUID();
@@ -8187,6 +8188,47 @@ describe('unattributed activity recovery', () => {
       expect((await sessionControlsFor(session.id)).activeTurnId).toBeNull();
       // Silence and stale liveness do not establish a provider completion or authorize Send.
       expect((await getSession(session.id))?.activeTurnId).toBe('long-reasoning');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['stalled', 'interrupted', 'stopped'] as const)('restores unfinished Goal work at startup after a %s boundary', async outcome => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await pair(); const chat = randomUUID();
+      await events(chat, [openTurn('restart-interrupted-work')]);
+      await attributed(chat, false, Date.now());
+      const sessionId = (await findSessionByConversation(chat))!.id;
+      await setSessionObjective(sessionId, 'Complete the saved work', 'goal');
+      await events(chat, [endTurn('restart-interrupted-work', outcome)]);
+      expect((await getSession(sessionId))?.activeTurnId).toBeNull();
+      await stopBridge(); resetRecorderForTests(); resetBridgeForTests();
+      vi.setSystemTime(Date.now() + 600_001);
+      const port = await startBridge(); expect(port).not.toBeNull();
+      base = `http://127.0.0.1:${port}`; await pair(); await sweepStaleSwarm(Date.now());
+      const repairs = (await maintenanceBatch()).filter(row => row.conversationId === chat);
+      if (outcome === 'stopped') expect(repairs).toEqual([]);
+      else expect(repairs).toContainEqual(expect.objectContaining({ reason: 'silence' }));
+      expect((await sessionControlsFor(sessionId)).objective).toBe('Complete the saved work');
+      await events(chat, [endTurn('restart-interrupted-work', 'stopped')]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('restores the five-minute Pro Thinking-failed recovery policy at startup', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await pair(); const chat = randomUUID();
+      await events(chat, [{ kind: 'model_selection', model: 'gpt-6-pro', reasoningEffort: 'pro', time: Date.now() }, openTurn('restart-thinking-failed')]);
+      await attributed(chat, false, Date.now());
+      const sessionId = (await findSessionByConversation(chat))!.id;
+      await setSessionObjective(sessionId, 'Complete the saved work', 'goal');
+      await events(chat, [{ kind: 'turn_end', turnId: 'restart-thinking-failed', outcome: 'failed', reason: 'thinking_failed', time: Date.now() }]);
+      await stopBridge(); resetRecorderForTests(); resetBridgeForTests();
+      vi.setSystemTime(Date.now() + 300_001);
+      const port = await startBridge(); base = `http://127.0.0.1:${port}`;
+      await pair(); await sweepStaleSwarm(Date.now());
+      expect((await maintenanceBatch()).filter(row => row.conversationId === chat))
+        .toContainEqual(expect.objectContaining({ reason: 'silence' }));
+      await events(chat, [endTurn('restart-thinking-failed', 'stopped')]);
     } finally { vi.useRealTimers(); }
   });
 

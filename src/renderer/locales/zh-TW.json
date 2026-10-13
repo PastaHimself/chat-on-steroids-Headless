@@ -2171,5 +2171,6 @@
   "This chat was deleted in ChatGPT. Start a new chat to continue.": "此聊天已在 ChatGPT 中刪除。請新增聊天以繼續。",
   "Chat deleted in ChatGPT": "已在 ChatGPT 中刪除的聊天",
   "ChatGPT no longer has this chat, so nothing more can be sent to it.": "ChatGPT 中已沒有此聊天，因此無法再傳送任何內容給它。",
-  "Start a new chat to continue. This history stays in the app.": "請新增聊天以繼續。此歷史記錄會保留在應用程式中。"
+  "Start a new chat to continue. This history stays in the app.": "請新增聊天以繼續。此歷史記錄會保留在應用程式中。",
+  "Checkpoint retained: waiting for the final answer to be recorded.": "檢查點已保留：正在等待最終回答被記錄。"
 }

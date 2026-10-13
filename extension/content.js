@@ -2414,9 +2414,12 @@
 
   function reasoningTurnLive() {
     const selected = turnSelection?.turnId === turnId ? turnSelection : null;
+    const model = (selected?.model || '').trim().toLowerCase().replace(/\s+/g, '-');
+    const thinking = /^(?:gpt-?)?6(?:\.0)?-thinking$/.test(model) ||
+      (/^(?:gpt-?)?6(?:\.0)?$/.test(model) && ['low', 'medium', 'high'].includes(selected?.reasoningEffort));
     // Exact efforts match shared/chat-models.ts::isDeliberateEffort.
     if (!generating || !turnId || stopRequestedAt || !selected ||
-        (!proSelection(selected) && !['xhigh', 'max', 'ultra'].includes(selected.reasoningEffort))) return false;
+        (!thinking && !proSelection(selected) && !['xhigh', 'max', 'ultra'].includes(selected.reasoningEffort))) return false;
     if (!conversationId || CLF_DOM.conversationId() !== conversationId || !CLF_DOM.generating() ||
         currentStreamGone() || currentAssistantError()) return false;
     const owner = currentGenerationOwner();
