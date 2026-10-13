@@ -25,7 +25,10 @@ permissions:
 
 jobs:
   verify:
-    # The publishing workflow is usable in forks, so its post-publish asset audit must run there too.
+    # The publishing workflow is usable in forks, so stable release audits must run there too.
+    # Canary publishes only the common subset of assets: this full-release verifier must
+    # not flag those intentional omissions as corruption on release:published events.
+    if: github.event_name != 'release' || github.event.release.prerelease == false
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
