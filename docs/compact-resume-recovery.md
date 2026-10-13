@@ -114,3 +114,47 @@ Verification runs use a temporary network-denial preload allowing only local end
 Provider backends use synthetic test keys and fetch stubs. No provider/account action is
 part of this verification. The local ripgrep fetch step uses its cached pinned archive with
 `TAR_OPTIONS=--no-same-owner` because this root namespace cannot map the archive's upstream UID.
+
+
+## 2026-10-13 follow-up: acknowledged pickups with no source Send
+
+**Production report (not reproduced against the provider):** the Flux AntiCheat Goal
+session remained `handoff-pending` / `not_sent` after PR #5. The previously
+retired `b1gsaF_f` ticket was correctly preserved/abandoned before Send when the
+composer changed. New `ptBS9Ly2` started at 14:16:29 UTC with 415,811 context
+tokens; pickups at 14:18:47 and 14:28:18 UTC were acknowledged, with an
+assistant transport failure at 14:26:10 UTC. There was no proved source
+dispatch, marked message, brief, or committed destination. ChatGPT also
+reported temporary restrictions on conversation-history access.
+
+**Verified source-code gap:** PR #5 persisted automatic preparation refusal
+during hydration and `stopAndSettle`, but the following native
+`runNativeCompaction.abandonBeforeSend` path still returned after errors
+without forwarding the refusal: no handoff prompt, missing/remounted composer,
+native editor insertion refusal, Send button not ready, or a native pre-Send
+exception. The background worker had already recorded `resumed` as a successful
+browser nudge, while the app's durable ticket had no source Send and no
+diagnostic to distinguish a provider/editor refusal from a healthy recovery.
+Repeated pickup ACKs were not a delivery receipt.
+
+**Fix:** recoverable *automatic* refusals in that native pre-Send path now call
+the existing bounded `sourcePending` checkpoint, retaining the original token
+and recoverable custody. A conflicting user draft still retires only the
+provably unsent ticket and preserves the human draft. Manual refusals retain
+their existing immediate-abort behavior. Any step that crossed the exclusive
+`sourceDispatch` boundary remains ambiguous and **never** reports itself
+retryable; source identity, Stop, local-call drain, result receipt and
+no-duplicate protections are unchanged. New page-level regression tests
+exercise the shipped native function for missing prompt, composer unavailable,
+insertion failure, disabled Send, draft ownership, manual refusal, and
+post-dispatch ambiguity.
+
+**Not verified:** the report does not establish which ChatGPT-native check
+blocked ticket `ptBS9Ly2`. If history restriction withholds the original
+question, a writable composer, a native result, or the Send control, the app
+must continue to refuse unsafe source Send. This patch improves durable
+diagnosis and recovery of transient pre-Send refusal; it does **not** override
+provider restrictions, confirm live Send/resume, or modify the VPS. A source
+`sourcePending` error (or its absence) must be read with the exact durable
+`sourceSend` state before any further conclusion. Source delivery and later
+receipt remain separate facts.
