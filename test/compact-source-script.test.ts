@@ -28,8 +28,8 @@ function page(options: {
     textContent: options.draft ?? '',
     getAttribute: () => null
   };
-  const reported = vi.fn(async () => undefined);
-  const retired = vi.fn(async () => undefined);
+  const reported = vi.fn(async (_id: string, _token: string, _reason: string, _current: () => boolean) => undefined);
+  const retired = vi.fn(async (_id: string, _token: string, _reason: string, _current: () => boolean) => undefined);
   const messages = vi.fn(() => [{ role: 'user', id: 'question-before' }]);
   const ask = vi.fn(async (body: Record<string, unknown>) => {
     if (body.sourceDispatch === true) return { ok: true, data: { armed: true } };
