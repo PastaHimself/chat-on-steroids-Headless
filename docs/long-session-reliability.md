@@ -5,6 +5,11 @@ reconnections, backend restarts and Compact & Resume transactions. Simulated ela
 is explicitly separate from wall-clock authenticated provider acceptance. No production
 account, installed service, secret or external deployment was changed.
 
+The October 14 follow-up preserves these improvements and adds durable confirmed-deletion
+handling and asynchronous publication fences. Its separate evidence, verification results,
+limitations and staged VPS procedure are in [the recovery follow-up](long-session-recovery-2026-10-14.md).
+The October 13 validation results below describe that earlier environment and revision.
+
 ## Research and root causes
 
 All nine primary upstream reports were reviewed against this fork's implementation and tests.

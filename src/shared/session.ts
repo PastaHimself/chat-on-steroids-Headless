@@ -483,7 +483,7 @@ export type SessionEvent =
   | (BaseEvent & { kind: 'turn_end'; outcome: TurnOutcome; detail?: string; reason?: 'thinking_failed'; providerMessageId?: string;
       /** The user sent a message into this running answer and ChatGPT carried the response on into the next turn (#1301). */
       continued?: true })
-  | (BaseEvent & { kind: 'chat_error'; message: StoredText; recoverable?: boolean; blocking?: boolean; reason?: 'thinking_failed' | 'stream_gone' })
+  | (BaseEvent & { kind: 'chat_error'; message: StoredText; recoverable?: boolean; blocking?: boolean; reason?: 'thinking_failed' | 'stream_gone' | 'conversation_deleted'; conversationId?: string })
   | (BaseEvent & { kind: 'tool_call'; call: ToolCallRecord; origin?: number })
   /**
    * An app-authored line. `continuation` names the Compact & Resume it is about, so the
@@ -676,6 +676,9 @@ export interface SessionSummary {
   /** A committed row could not retain its full text/preview. Freeing space cannot repair
    * already missing history; automation requires local reconciliation or a new task. */
   recordingIncompleteAt?: number;
+  /** Authoritative provider deletion, scoped to its exact frontend. It survives page
+   * return/restart; rebind retires that frontend without deleting local work. */
+  providerUnavailable?: Record<string, { reason: 'conversation_deleted'; confirmedAt: number }>;
   events: number;
   userMessages: number;
   toolCalls: number;
@@ -1287,4 +1290,10 @@ export interface SessionSearchReply {
   total: number;
   /** More chats match than `results` holds. */
   limited?: true;
+}
+
+/** Page activity, a stream 404 and local execution cannot undo confirmed deletion. */
+export function providerUnavailableFor(summary: Pick<SessionSummary, 'conversationId' | 'providerUnavailable'> | null | undefined,
+  conversationId = summary?.conversationId): NonNullable<SessionSummary['providerUnavailable']>[string] | undefined {
+  return conversationId ? summary?.providerUnavailable?.[conversationId] : undefined;
 }

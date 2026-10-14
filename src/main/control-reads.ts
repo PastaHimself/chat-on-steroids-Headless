@@ -217,6 +217,7 @@ export function projectLive(controls: SessionControlsView): ControlApiLive {
   return {
     activeTurnId: controls.activeTurnId,
     ...(controls.recordingIncompleteAt !== undefined ? { recordingIncompleteAt: controls.recordingIncompleteAt } : {}),
+    ...(controls.providerUnavailable ? { providerUnavailable: { reason: controls.providerUnavailable.reason, confirmedAt: controls.providerUnavailable.confirmedAt } } : {}),
     stopPending: controls.stopPending === true,
     automation: controls.automation,
     blocked: controls.blocked,

@@ -2110,6 +2110,7 @@
   "Cancelled locally; delivery was later confirmed in ChatGPT.": "Yerel olarak iptal edildi; teslimat daha sonra ChatGPT'de onaylandı.",
   "Not injected: the selected turn ended before an eligible tool call.": "Eklenmedi: seçilen tur, uygun bir araç çağrısından önce bitti.",
   "Not sent: ChatGPT did not accept the message.": "Gönderilmedi: ChatGPT mesajı kabul etmedi.",
+  "Not sent: the conversation changed before delivery.": "Gönderilmedi: konuşma teslimden önce değişti.",
   "Not sent: the browser did not pick up this message within 60 seconds.": "Gönderilmedi: tarayıcı bu mesajı 60 saniye içinde almadı.",
   "Replaced by your new instruction before delivery.": "Teslimattan önce yeni talimatınızla değiştirildi.",
   "Stopped waiting for delivery confirmation. The message may already have been sent; it will not be resent.": "Teslimat onayı beklemesi durduruldu. Mesaj zaten gönderilmiş olabilir; yeniden gönderilmeyecek.",

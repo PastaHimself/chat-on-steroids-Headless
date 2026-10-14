@@ -92,6 +92,22 @@ describe('Discord commands and authorization', () => {
     await controller.command(interaction('status'));
     expect(store.snapshot().selected[admin]).toBe(session);
   });
+  it('shows confirmed deletion and asks for exact-source reconciliation before saved-summary recovery', async () => {
+    const api = backend(), original = api.request, chat = randomUUID();
+    api.request = vi.fn(async (route: string) => route === `/v1/sessions/${session}?live=1` ? {
+      session: { id: session, conversationId: chat, title: 'retained work', updatedAt: 1 },
+      live: { activeTurnId: null, automation: 'goal', providerUnavailable: { reason: 'conversation_deleted', confirmedAt: 1 } }
+    } : original(route));
+    const controller = new DiscordController(config, store, api as unknown as ControlClient);
+    const status = await controller.command(interaction('status'));
+    expect(status.embeds[0].toJSON().description).toContain('ChatGPT confirmed deletion');
+    expect(status.embeds[0].toJSON().description).toContain('/compact');
+    const confirm = await controller.command(interaction('compact'));
+    expect(confirm.embeds[0].toJSON().description).toContain('reconciled');
+    const view = Object.values(store.snapshot().views).find((row: any) => row.kind === 'confirm') as any;
+    expect(view.args).toMatchObject({ sessionId: session, recoverDeletedConversationId: chat });
+    expect(api.action).not.toHaveBeenCalled();
+  });
   it('shows source and replacement send evidence when Compact & Resume needs attention', async () => {
     const api = backend();
     const original = api.request;

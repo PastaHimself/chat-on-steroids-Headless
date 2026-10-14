@@ -60,7 +60,7 @@ import { writeDurableNow, writeDurableSnapshotSoon, writeDurableSoon } from './d
 import { logInfo, logWarn } from './logger.js';
 import { getSecret } from './secrets.js';
 import { findSessionByConversation, getSession, readEvents, readHandoff, readRecentEvents, turnHasMcpCall } from './session/store.js';
-import { foldProgress } from '../shared/session.js';
+import { providerUnavailableFor, foldProgress } from '../shared/session.js';
 import { modelFacingText } from '../shared/content-reference.js';
 import { supportsFinishAutomation } from '../shared/finish.js';
 import { BROWSER_PICKUP_MAX_ATTEMPTS } from '../shared/recovery.js';
@@ -173,8 +173,14 @@ const REQUEST_TIMEOUT_MS = 180_000;
  * belongs to the page's Goal loop, which is the only place that can tell whether the turn is
  * still the one being answered. This is what that loop reads, published as `retryable`.
  */
-const SETTLED_FAILURE = /^(?:recording_incomplete|auth_rejected|out_of_credit|unknown_model|no_api_key|no_conversation|no_objective|invalid_provider|goal_marker_missing|goal_browser_cancelled|goal_browser_send_unconfirmed|goal_browser_send_failed)(?:$|:)/;
+const SETTLED_FAILURE = /^(?:conversation_deleted|recording_incomplete|auth_rejected|out_of_credit|unknown_model|no_api_key|no_conversation|no_objective|invalid_provider|goal_marker_missing|goal_browser_cancelled|goal_browser_send_unconfirmed|goal_browser_send_failed)(?:$|:)/;
+const DELETED_FAILURE = 'conversation_deleted: ChatGPT confirmed this conversation was deleted. Local work and objective are retained. Reconcile effects and use a saved summary for a replacement.';
 const RECORDING_FAILURE = 'recording_incomplete: Recording history is incomplete. Inspect and reconcile the missing history locally before starting a new task.';
+/** One store-owned source verdict, checked before provider work and before publication. */
+async function goalSourceFailure(sessionId: string): Promise<string | null> {
+  const session = await getSession(sessionId);
+  return providerUnavailableFor(session) ? DELETED_FAILURE : session?.recordingIncompleteAt !== undefined ? RECORDING_FAILURE : null;
+}
 
 /** One failure classification shared by ordinary drafts and the conversation-less opening request. */
 function retryableGoalFailure(error: string): boolean {
@@ -757,7 +763,7 @@ export async function automaticLoopHasMcpWork(sessionId: string, conversationId:
 
 /** Older restored automatic debt has no exemption; URL/reply-id prefixes grant none. */
 export async function loopReplyHasAuthority(sessionId: string, conversationId: string, turnId: string): Promise<boolean> {
-  if ((await getSession(sessionId))?.recordingIncompleteAt !== undefined) return false;
+  if (await goalSourceFailure(sessionId)) return false;
   if (goalSwitchFor(conversationId).mode !== 'loop') return true;
   const reply = goalReplies.get(conversationId);
   if (reply?.sessionId === sessionId && reply.turnId === turnId && reply.state === 'pending' && reply.explicitActivation) return true;
@@ -2028,10 +2034,18 @@ async function requestDrivingDecision(
 }
 
 async function run(draft: GoalDraft): Promise<void> {
-  if ((await getSession(draft.sessionId))?.recordingIncompleteAt !== undefined)
-    return settle(draft, 'failed', RECORDING_FAILURE);
-  if (await astraFinishOnly(draft.sessionId, draft.conversationId)) return settle(draft, 'no-reply');
-  if (draft.mode === 'loop' && !await loopReplyHasAuthority(draft.sessionId, draft.conversationId, draft.turnId)) return settle(draft, 'no-reply');
+  const sourceFailure = await goalSourceFailure(draft.sessionId);
+  if (sourceFailure) return settle(draft, 'failed', sourceFailure);
+  const finishOnly = await astraFinishOnly(draft.sessionId, draft.conversationId);
+  const afterPreference = await goalSourceFailure(draft.sessionId);
+  if (afterPreference) return settle(draft, 'failed', afterPreference);
+  if (finishOnly) return settle(draft, 'no-reply');
+  if (draft.mode === 'loop') {
+    const loopAuthority = await loopReplyHasAuthority(draft.sessionId, draft.conversationId, draft.turnId);
+    const afterAuthority = await goalSourceFailure(draft.sessionId);
+    if (afterAuthority) return settle(draft, 'failed', afterAuthority);
+    if (!loopAuthority) return settle(draft, 'no-reply');
+  }
   const { endpoint, reasoning } = draft;
   const key = draft.backend === 'api' ? await goalProviderKey(endpoint.kind) : null;
   if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
@@ -2053,6 +2067,8 @@ async function run(draft: GoalDraft): Promise<void> {
   if (!draft.objective && (messages.length === 0 || !messages.some((message) => message.role === 'user'))) {
     return settle(draft, 'failed', 'no_conversation');
   }
+  const beforeDispatch = await goalSourceFailure(draft.sessionId);
+  if (beforeDispatch) return settle(draft, 'failed', beforeDispatch);
 
   const abort = new AbortController();
   draft.abort = abort;
@@ -2091,8 +2107,12 @@ async function run(draft: GoalDraft): Promise<void> {
       }
     });
     if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return;
-    if ((await getSession(draft.sessionId))?.recordingIncompleteAt !== undefined) return settle(draft, 'failed', RECORDING_FAILURE);
-    if (await astraFinishOnly(draft.sessionId, draft.conversationId)) return settle(draft, 'no-reply');
+    const changedSource = await goalSourceFailure(draft.sessionId);
+    if (changedSource) return settle(draft, 'failed', changedSource);
+    const finishOnlyNow = await astraFinishOnly(draft.sessionId, draft.conversationId);
+    const beforeSettlement = await goalSourceFailure(draft.sessionId);
+    if (beforeSettlement) return settle(draft, 'failed', beforeSettlement);
+    if (finishOnlyNow) return settle(draft, 'no-reply');
     // Logged like the exception path below. Ten rate limits in a row on 2026-09-02 left no
     // trace in app.log because a provider's refusal is an answer, not an exception.
     if (decision.action === 'http' || decision.action === 'invalid') {
@@ -2159,8 +2179,8 @@ async function run(draft: GoalDraft): Promise<void> {
  */
 /** Finish uses the selected Goal/Loop driver; its caller owns delivery and hold release. */
 export async function draftFastFollowup(sessionId: string, signal: AbortSignal = AbortSignal.timeout(180000), preparedMessages?: ChatMessage[], publish?: GoalRequest['publish'], mode: GoalMode = 'loop'): Promise<string | null> {
-  if ((await getSession(sessionId))?.recordingIncompleteAt !== undefined)
-    throw nativeGoalFailure(RECORDING_FAILURE, goalBackendFor(mode));
+  const sourceFailure = await goalSourceFailure(sessionId);
+  if (sourceFailure) throw nativeGoalFailure(sourceFailure, goalBackendFor(mode));
   const backend = goalBackendFor(mode);
   const settings = getConfig().goal;
   const endpoint = goalEndpoint();
@@ -2182,6 +2202,8 @@ export async function draftFastFollowup(sessionId: string, signal: AbortSignal =
   const messages = preparedMessages ?? await conversationMessages(sessionId, appInput);
   if (!objective && !messages.some(message => message.role === 'user')) throw new Error('No recorded user request is available for Goal');
   const prompt = mode === 'loop' ? settings.loopPrompt : objective ? settings.objectivePrompt : settings.prompt;
+  const beforeDispatch = await goalSourceFailure(sessionId);
+  if (beforeDispatch) throw nativeGoalFailure(beforeDispatch, backend);
   const decision = backend === 'templates'
     ? templateGoalDecision(messages.filter(message => message.role === 'assistant').at(-1)?.content ?? '', Math.floor(Math.random() * 200), Math.floor(Math.random() * 200))
     : await requestDrivingDecision({ sourceSessionId: sessionId, backend, endpoint, reasoning: settings.reasoning, key: key ?? '', model: settings.model, mode,
@@ -2193,7 +2215,8 @@ export async function draftFastFollowup(sessionId: string, signal: AbortSignal =
         signal.throwIfAborted();
         throw nativeGoalFailure(`request_failed: ${error instanceof Error ? error.message : error}`, backend);
       });
-  if ((await getSession(sessionId))?.recordingIncompleteAt !== undefined) throw nativeGoalFailure(RECORDING_FAILURE, backend);
+  const changedSource = await goalSourceFailure(sessionId);
+  if (changedSource) throw nativeGoalFailure(changedSource, backend);
   if (decision.action === 'stop') {
     if (mode === 'loop') throw new Error('loop_stop_refused');
     return null;

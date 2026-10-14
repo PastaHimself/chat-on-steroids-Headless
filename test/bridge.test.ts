@@ -1080,7 +1080,7 @@ describe('active agent tab discard projection', () => {
   });
   it('does not mistake a broker active label for a running provider turn', async () => {
     await pair();
-    const workerConversation = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const workerConversation = randomUUID();
     spawn({ workers: [{ task: 'stay live while Chrome applies the tab policy' }], caller: { conversationId: PRIME_CHAT } });
 
     expect((await request('GET', '/status')).body.nonDiscardableConversations).toEqual([]);
@@ -4735,6 +4735,19 @@ describe('delivering a bootstrap', () => {
     expect(reopened.body.command.text).toContain(lease.workspace.virtual);
     expect(reopened.body.command.text).not.toContain('Selected project directory: /project/managed-bootstrap-source');
     expect(reopened.body.command.text).not.toContain('SOURCE_GUIDELINES_PRESERVED');
+    const workerSession = await createSession({ conversationId: workerConversation });
+    const worktrees = await import('../src/main/worktrees/index.js'), validate = worktrees.validateWorkerWorkspaceLease;
+    const gate = faultGate();
+    const validation = vi.spyOn(worktrees, 'validateWorkerWorkspaceLease').mockImplementation(async (...args) => {
+      const result = await validate(...args); await gate.hold(); return result;
+    });
+    const lateRedeem = request('POST', '/commands/redeem', { body: {
+      id: revival!.id, client: 'revival-page', conversationId: workerConversation
+    } });
+    try {
+      await gate.entered; await sessionStoreModule.markConversationDeleted(workerSession.id, workerConversation); gate.release();
+      expect((await lateRedeem).status).toBe(409);
+    } finally { gate.release(); validation.mockRestore(); await lateRedeem; }
     resetWorkerWorktreeRegistryForTests();
   });
 
@@ -8349,6 +8362,75 @@ describe('unattributed activity recovery', () => {
 
   /** The chat a pass was told to repair. */
   const chatOf = (repair: { conversationId: string } | null): string | null => repair?.conversationId ?? null;
+
+  it('leaves a newer turn recovery watch intact when an older silence sweep finishes late', async () => {
+    const inputModule = await import('../src/main/session/input.js');
+    const gate = faultGate();
+    const original = inputModule.pendingQueuedPickups;
+    const held = vi.spyOn(inputModule, 'pendingQueuedPickups').mockImplementationOnce(async () => {
+      await gate.hold(); return original();
+    });
+    try {
+      await pair(); const chat = randomUUID();
+      await events(chat, [openTurn('spent-old-watch')]);
+      const session = (await findSessionByConversation(chat))!;
+      const sweeping = sweepStaleSwarm(Date.now() + CHAT_SILENCE_MS + 1);
+      await gate.entered;
+      await events(chat, [{ kind: 'user_message', time: Date.now(), messageId: 'new-watch-question', text: 'Next work' }, openTurn('new-watch')]);
+      await attributed(chat, false, Date.now());
+      const watched = (await sessionControlsFor(session.id)).recovery?.find(row => row.kind === 'silence');
+      expect(watched).toBeDefined();
+      gate.release(); await sweeping;
+      expect((await sessionControlsFor(session.id)).recovery?.find(row => row.kind === 'silence')).toEqual(watched);
+      const before = getLog().filter(row => row.message.includes('asking the browser to reload ' + chat)).length;
+      await sweepStaleSwarm(watched!.deadline + 1);
+      expect(getLog().filter(row => row.message.includes('asking the browser to reload ' + chat)).length - before).toBe(1);
+    } finally { gate.release(); held.mockRestore(); }
+  });
+
+  it('retains confirmed deletion through the replayable observation journal without the direct notification', async () => {
+    await pair(); const chat = randomUUID();
+    await events(chat, [{ kind: 'user_message', messageId: 'journal-deletion-question', text: 'Finish work', time: Date.now() }, openTurn('journal-deletion')]);
+    await attributed(chat, false, Date.now());
+    const session = (await findSessionByConversation(chat))!;
+    await events(chat, [{ kind: 'chat_error', time: Date.now(), turnId: 'journal-deletion', reason: 'conversation_deleted', recoverable: false,
+      text: 'This chat was deleted in ChatGPT. Start a new chat to continue.' }]);
+    resetSessionStoreForTests();
+    expect((await sessionControlsFor(session.id)).providerUnavailable).toMatchObject({ reason: 'conversation_deleted' });
+  });
+
+  it.each(['goal', 'loop'] as const)('permanently retires confirmed deleted %s recovery across page returns and restart', async mode => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await pair(); const chat = randomUUID();
+      await events(chat, [{ kind: 'user_message', messageId: 'deleted-task', text: 'Complete the entire objective', time: Date.now() }, openTurn('deleted-turn')]);
+      await attributed(chat, false, Date.now());
+      const session = (await findSessionByConversation(chat))!;
+      await setSessionObjective(session.id, 'Complete the entire objective', mode);
+      await events(chat, [{ kind: 'chat_error', turnId: 'deleted-turn', time: Date.now(), reason: 'stream_gone', recoverable: true, text: 'resume HTTP 404' }]);
+      const repair = await maintenance();
+      expect(repair).toMatchObject({ conversationId: chat, reason: 'assistant-error' });
+      // Deletion is independent authoritative evidence, not the preceding stream 404.
+      await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+      expect((await request('POST', '/repairs/claim', { body: { token: repair!.token, conversationId: chat } })).body.allowed).toBe(false);
+      await events(chat, [{ kind: 'turn_end', time: Date.now(), turnId: 'deleted-turn', outcome: 'failed',
+        detail: 'This chat was deleted in ChatGPT. Start a new chat to continue.' }]);
+      for (const hours of [4, 8, 12, 24]) {
+        resetRecorderForTests(); resetBridgeForTests(); resetSessionStoreForTests();
+        await startBridge();
+        vi.setSystemTime(session.startedAt + hours * 60 * 60_000);
+        await request('GET', `/activity?conversationId=${chat}`);
+        await sweepStaleSwarm(Date.now());
+        expect(await maintenance()).toBeNull();
+        const controls = await sessionControlsFor(session.id);
+        expect(controls).toMatchObject({ sessionId: session.id, automation: mode, objective: 'Complete the entire objective',
+          providerUnavailable: { reason: 'conversation_deleted', confirmedAt: expect.any(Number) } });
+        expect(controls.recovery).toEqual([]);
+        expect((await getSession(session.id))?.conversationId).toBe(chat);
+        expect((await readEvents(session.id)).some(row => row.kind === 'tool_call')).toBe(true);
+      }
+    } finally { vi.useRealTimers(); }
+  });
 
   it.each(['goal', 'loop'] as const)('restores the %s silence owner on a normal page return after backend restart', async mode => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -15787,6 +15869,15 @@ describe('independent prime browser transports', () => {
 });
 
 describe('app requests to stop one exact active turn', () => {
+  it('withholds an obsolete Stop command after confirmed provider deletion', async () => {
+    const chat = randomUUID(), sessionId = await active(chat);
+    await (await import('../src/main/bridge.js')).stopSessionTurn(sessionId, 'stop-turn-one');
+    const command = (await request('GET', '/status')).body.stopTurns[0]; expect(command).toBeDefined();
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    expect((await request('GET', '/status')).body.stopTurns).toEqual([]);
+    expect((await request('POST', '/commands/redeem', { body: { id: command.id, conversationId: chat, client: 'deleted-stop-document' } })).status).not.toBe(200);
+    expect((await getSession(sessionId))?.conversationId).toBe(chat);
+  });
   it('does not present a persisted unfinished turn as live after recorder restart', async () => {
     const { sessionControlsFor } = await import('../src/main/bridge.js');
     const sessionId = await active('e5555555-aaaa-4bbb-8ccc-111111111111');
@@ -16313,6 +16404,187 @@ describe('native ChatGPT Project for a new CoS project', () => {
     expect((await claim({})).body.input).toBeNull();
     expect((await claim({ project: `g-p-${'d'.repeat(32)}` })).body.input).toBeNull();
     expect((await claim({ project: nativeId })).body.input).toMatchObject({ id: row.id });
+  });
+});
+
+describe('deleted provider command and replacement fences', () => {
+  it.each(['tool', 'process'] as const)('holds replacement for a sleeping worker with an admitted %s effect', async effect => {
+    await pair(); const chat = randomUUID(), workerChat = randomUUID(), session = await createSession({ conversationId: chat });
+    const token = await readyContinuation(session.id, SAMPLE_BRIEF, chat); await abortContinuation(token, 'cancelled');
+    const spawned = spawn({ workers: [{ task: 'Accepted worker effect' }], caller: { conversationId: chat } }, { deferDelivery: true });
+    expect(bindConversation('worker-1', workerChat)).toBe(true);
+    const workerSession = await createSession({ conversationId: workerChat, origin: { kind: 'worker', fromSessionId: session.id, agentId: 'worker-1', task: 'Accepted worker effect' } });
+    const gate = faultGate(), calls = await import('../src/main/mcp/call-context.js'), ownership = await import('../src/main/codex/ownership.js');
+    const processRead = ownership.runningExecProcesses;
+    const processes = effect === 'process' ? vi.spyOn(ownership, 'runningExecProcesses').mockImplementation(id => id === workerSession.id
+      ? [{ processId: 123, incarnation: 1, command: 'isolated worker effect', startedAt: Date.now(), tty: false }] : processRead(id)) : null;
+    const running = effect === 'tool' ? calls.trackInFlight({ startedAt: Date.now(), transportKey: null, agent: null, outcome: null, evidence: calls.emptyEvidence(),
+      caller: { conversationId: workerChat, sessionId: workerSession.id, requestId: 'worker-still-running', transportKey: null } }, () => gate.hold()) : null;
+    try {
+      if (running) await gate.entered;
+      (await import('../src/main/agents.js')).sleepWorker('worker-1', 'Operator reconciliation', spawned.runId);
+      expect(swarmState().agents.find(row => row.id === 'worker-1')?.state).toBe('sleeping');
+      await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+      await expect(compactSession(session.id, chat)).rejects.toThrow('running');
+      expect(continuationForSession(session.id)).toBeNull();
+    } finally { gate.release(); processes?.mockRestore(); await running; }
+  });
+  it('rechecks workers accepted while saved-summary recovery is reading its handoff', async () => {
+    await pair(); const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const token = await readyContinuation(session.id, SAMPLE_BRIEF, chat); await abortContinuation(token, 'cancelled');
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    const read = sessionStoreModule.readHandoff, gate = faultGate();
+    const lookup = vi.spyOn(sessionStoreModule, 'readHandoff').mockImplementation(async (...args) => {
+      const result = await read(...args); await gate.hold(); return result;
+    });
+    const recovery = compactSession(session.id, chat);
+    try {
+      await gate.entered;
+      spawn({ workers: [{ task: 'Accepted outstanding assignment' }], caller: { conversationId: chat } });
+      gate.release(); await expect(recovery).rejects.toThrow('running');
+      expect(continuationForSession(session.id)).toBeNull();
+    } finally { gate.release(); lookup.mockRestore(); await recovery.catch(() => undefined); }
+  });
+  it('holds saved-summary recovery for an invited worker without a browser conversation', async () => {
+    await pair(); const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const token = await readyContinuation(session.id, SAMPLE_BRIEF, chat); await abortContinuation(token, 'cancelled');
+    spawn({ workers: [{ task: 'Outstanding accepted work' }], caller: { conversationId: chat } });
+    expect(swarmState().agents.some(agent => agent.role === 'worker' && agent.state === 'invited' && !agent.conversationId)).toBe(true);
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    await expect(compactSession(session.id, chat)).rejects.toThrow('running');
+    expect(continuationForSession(session.id)).toBeNull();
+  });
+
+  it('does not reuse a summary whose abandoned destination Send was dispatched without a receipt', async () => {
+    await pair(); const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const token = await readyContinuation(session.id, SAMPLE_BRIEF, chat);
+    await claimContinuationNow(token, 'unknown-destination');
+    const continuation = await import('../src/main/session/continuation.js');
+    expect((await continuation.beginContinuationDestinationSendNow(token))?.allowed).toBe(true);
+    expect(await continuation.dispatchContinuationDestinationSendNow(token)).toBe(true);
+    await continuation.abortContinuationNow(token, 'cancelled');
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    await expect(compactSession(session.id, chat)).rejects.toThrow('summary');
+    expect(continuationForSession(session.id)).toBeNull();
+  });
+
+  it('withholds a queued worker revival and its command after authoritative deletion', async () => {
+    // Earlier shutdown drills intentionally replace the broker's singleton callbacks.
+    // This integration case boots its actual bridge lifecycle before testing delivery.
+    await stopBridge(); const port = await startBridge(); base = `http://127.0.0.1:${port}`;
+    await pair(); const prime = randomUUID(); await createSession({ conversationId: prime });
+    spawn({ workers: [{ task: 'First assignment' }], caller: { conversationId: prime } });
+    const bootstrap = await redeem(), chat = randomUUID();
+    expect((await request('POST', '/commands/ack', { body: { id: bootstrap.id, status: 'sent', conversationId: chat, agent: 'worker-1', client: 'tab-1' } })).body.committed).toBe(true);
+    await request('POST', '/events', { body: { conversationId: chat, events: [{ kind: 'user_message', time: Date.now(), text: 'First assignment', messageId: 'worker-task' }] } });
+    finishAgent({ conversationId: chat }, 'Completed first assignment');
+    const staged = stageMessages({ conversationId: prime }, [{ to: 'worker-1', text: 'Second assignment' }]);
+    staged.commit(); requestWorkerRevivals(staged.waking, staged.runId); const command = await waitForRevival();
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    expect((await request('GET', '/status')).body.revivals).not.toContainEqual(expect.objectContaining({ conversationId: chat }));
+    expect((await request('POST', '/commands/redeem', { body: { id: command.id, conversationId: chat, client: 'late-worker-document' } })).status).not.toBe(200);
+  });
+});
+
+describe('operator recovery of a deleted provider from a saved summary', () => {
+  it.each([false, true])('rejects deletion first confirmed during an ordinary saved-summary read (running tool: %s)', async running => {
+    await pair(); const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const prior = await readyContinuation(session.id, SAMPLE_BRIEF, chat); await abortContinuation(prior, 'cancelled');
+    const source = (await getSession(session.id))!, handoffGate = faultGate(), effectGate = faultGate();
+    const original = sessionStoreModule.readHandoff;
+    const lookup = vi.spyOn(sessionStoreModule, 'readHandoff').mockImplementation(async (...args) => {
+      const answer = await original(...args); await handoffGate.hold(); return answer;
+    });
+    const calls = await import('../src/main/mcp/call-context.js'), bridge = await import('../src/main/bridge.js');
+    const resumed = bridge.resumeFromSavedSummary(session.id, source.lastHandoffId!);
+    let effect: Promise<void> | undefined;
+    try {
+      await handoffGate.entered;
+      if (running) {
+        effect = calls.trackInFlight({ startedAt: Date.now(), transportKey: null, agent: null, outcome: null, evidence: calls.emptyEvidence(),
+          caller: { conversationId: chat, sessionId: session.id, requestId: 'admitted-during-reopen', transportKey: null } }, () => effectGate.hold());
+        await effectGate.entered;
+      }
+      await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+      expect((await getSession(session.id))?.providerUnavailable?.[chat]).toBeDefined();
+      handoffGate.release();
+      await expect(resumed).rejects.toThrow('Reconcile');
+      expect(continuationForSession(session.id)).toBeNull();
+      expect(pendingCommands().some(command => command.what === `resume:${session.id}`)).toBe(false);
+    } finally { handoffGate.release(); effectGate.release(); lookup.mockRestore(); await effect; await resumed.catch(() => undefined); }
+  });
+
+  it.each(['tool', 'browser'] as const)('retains an unresolved %s receipt through unrelated queue trimming and restart', async transport => {
+    await pair(); const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const prior = await readyContinuation(session.id, SAMPLE_BRIEF, chat); await abortContinuation(prior, 'cancelled');
+    const input = await import('../src/main/session/input.js'); input.resetInputForTests(); await writeDurableNow('session-input', []);
+    const message = (sessionId: string, text = 'Unresolved source instruction') => ({ id: randomUUID(), sessionId, projectId: null,
+      text, mode: 'auto' as const, dueAt: 0, model: null, reasoningEffort: null });
+    const uncertain = await input.enqueueInput(message(session.id));
+    if (transport === 'tool') expect((await input.offerToolInput(session.id, chat, 'unconfirmed-tool', Date.now() + 1)).messages).toHaveLength(1);
+    else {
+      expect(await input.claimBrowserInput(uncertain.id, 'unconfirmed-browser', chat, true)).not.toBeNull();
+      expect(await input.authorizeBrowserInput(uncertain.id, 'unconfirmed-browser', chat)).toBe(true);
+    }
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    await expect(compactSession(session.id, chat)).rejects.toThrow('Send remains unconfirmed');
+    const unrelated = await createSession({ conversationId: randomUUID() });
+    for (let count = 0; count < 55; count++) {
+      const row = await input.enqueueInput(message(unrelated.id, `Withdraw task ${count}`)); await input.cancelInput(row.id);
+    }
+    input.resetInputForTests();
+    const retained = (await input.listInputs()).find(row => row.id === uncertain.id);
+    expect(retained).toBeDefined();
+    expect(input.deliveryProof(retained!)).toBe('unconfirmed');
+    expect((await input.listInputs()).filter(row => row.sessionId === unrelated.id)).toHaveLength(51);
+    await expect(compactSession(session.id, chat)).rejects.toThrow('Send remains unconfirmed');
+    expect(continuationForSession(session.id)).toBeNull();
+    if (transport === 'tool') await input.acknowledgeToolInput(session.id, chat, 'late-exact-call', Date.now() + 1000);
+    else expect(await input.acknowledgeBrowserInput(uncertain.id, 'unconfirmed-browser', chat, 'late-native-receipt')).toBe(true);
+    expect(input.deliveryProof((await input.listInputs()).find(row => row.id === uncertain.id)!)).toBe('sent');
+    expect((await compactSession(session.id, chat)).sessionId).toBe(session.id);
+  });
+
+  it('requires reconciliation before creating a replacement and preserves the same session and objective', async () => {
+    await pair(); const chat = randomUUID();
+    const session = await createSession({ conversationId: chat });
+    await setSessionObjective(session.id, 'Complete the original full task', 'goal');
+    const token = await readyContinuation(session.id, SAMPLE_BRIEF, chat);
+    await abortContinuation(token, 'cancelled');
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    await expect(compactSession(session.id)).rejects.toThrow('reconcile');
+    expect(continuationForSession(session.id)).toBeNull();
+    const result = await compactSession(session.id, chat);
+    const replacement = continuationForSession(session.id)!;
+    expect(replacement.state).toBe('awaiting-chat');
+    expect(replacement.from).toBe(chat);
+    expect(result.sessionId).toBe(session.id);
+    expect(await claimContinuationNow(replacement.token, 'replacement-owner')).not.toBeNull();
+    const destination = randomUUID();
+    expect(await commitContinuation(replacement.token, destination)).toBe(true);
+    expect(await sessionStoreModule.conversationAttachment(chat, session.id)).not.toBe('current');
+    expect(await sessionStoreModule.conversationAttachment(destination, session.id)).toBe('current');
+    expect(await sessionControlsFor(session.id)).toMatchObject({ conversationId: destination, automation: 'goal', objective: 'Complete the original full task' });
+    expect((await sessionControlsFor(session.id)).providerUnavailable).toBeUndefined();
+    // A replay for A cannot fence B or move its current binding.
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    expect(await sessionControlsFor(session.id)).toMatchObject({ conversationId: destination });
+    expect((await sessionControlsFor(session.id)).providerUnavailable).toBeUndefined();
+  });
+
+  it('refuses replacement while an admitted source tool effect is still running', async () => {
+    await pair(); const chat = randomUUID(); const session = await createSession({ conversationId: chat });
+    const token = await readyContinuation(session.id, SAMPLE_BRIEF, chat); await abortContinuation(token, 'cancelled');
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    const { trackInFlight, emptyEvidence } = await import('../src/main/mcp/call-context.js');
+    const gate = faultGate();
+    const call = trackInFlight({ startedAt: Date.now(), transportKey: null, agent: null, outcome: null, evidence: emptyEvidence(),
+      caller: { conversationId: chat, sessionId: session.id, requestId: 'source-still-running', transportKey: null } }, () => gate.hold());
+    try {
+      await gate.entered;
+      await expect(compactSession(session.id, chat)).rejects.toThrow('running');
+      expect(continuationForSession(session.id)).toBeNull();
+    } finally { gate.release(); await call; }
   });
 });
 

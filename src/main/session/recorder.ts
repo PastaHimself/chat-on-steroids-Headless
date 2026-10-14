@@ -1790,7 +1790,7 @@ export interface ChatObservation {
   fiberConversationId?: string;
   outcome?: TurnOutcome;
   /** Thinking failed closes input; stream_gone only files a recoverable transport episode. */
-  reason?: 'thinking_failed' | 'stream_gone';
+  reason?: 'thinking_failed' | 'stream_gone' | 'conversation_deleted';
   /** On `turn_end`: a message sent into the running answer ended this turn and the response went on (#1301). */
   continued?: true;
   detail?: string;
@@ -2384,7 +2384,8 @@ async function recordChatObservationsNow(
         await appendEvent(sessionId, {
           ...base,
           kind: 'chat_error',
-          ...(item.reason === 'thinking_failed' || item.reason === 'stream_gone' ? { reason: item.reason } : {}),
+          ...(item.reason === 'thinking_failed' || item.reason === 'stream_gone' || item.reason === 'conversation_deleted' ? { reason: item.reason } : {}),
+          ...(item.reason === 'conversation_deleted' && item.recoverable === false ? { conversationId } : {}),
           ...(typeof item.recoverable === 'boolean' ? { recoverable: item.recoverable } : {}),
           ...(typeof item.blocking === 'boolean' ? { blocking: item.blocking } : {}),
           message: await storeText(sessionId, item.text ?? '', 2000)

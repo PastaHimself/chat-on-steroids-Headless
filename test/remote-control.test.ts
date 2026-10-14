@@ -87,6 +87,13 @@ describe('authenticated remote service adapters', () => {
     await expect(action('ask', { id: randomUUID(), sessionId: worker.id, text: 'Bypass the prime' })).rejects.toMatchObject({ code: 'session_not_controllable' });
     await expect(action('automation', { id: randomUUID(), sessionId: worker.id, automation: 'loop' })).rejects.toMatchObject({ code: 'session_not_controllable' });
   });
+  it('preserves a deleted prime while refusing new delegated work', async () => {
+    await sessions.markConversationDeleted(session, 'remote-primary');
+    await expect(action('delegate', { id: randomUUID(), sessionId: session, task: 'Must not execute' }))
+      .rejects.toMatchObject({ code: 'conversation_deleted' });
+    expect(agents.swarmState().agents.filter(row => row.role === 'worker')).toHaveLength(0);
+    expect(await read(`/v1/sessions/${session}/controls`)).toMatchObject({ providerUnavailable: { reason: 'conversation_deleted' } });
+  });
   it('keeps composer approval separate from durable update_plan and rejects stale approval', async () => {
     planner.draft.mockResolvedValue(['Implement the entire objective', 'Verify the implementation']);
     const id = randomUUID(); await action('plan', { id, sessionId: session, prompt: 'Complete task' });

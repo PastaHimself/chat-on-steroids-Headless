@@ -23385,7 +23385,7 @@ describe('a chat deleted in ChatGPT', () => {
     deleted(chat); deleted(chat);
     await settle(); await live.hook.flush();
     expect(emitted(live.sent, 'chat_error').map(entry => entry.event)).toEqual([expect.objectContaining({
-      turnId: started.turnId, recoverable: false, text: 'This chat was deleted in ChatGPT. Start a new chat to continue.' })]);
+      turnId: started.turnId, reason: 'conversation_deleted', recoverable: false, text: 'This chat was deleted in ChatGPT. Start a new chat to continue.' })]);
     expect(emitted(live.sent, 'turn_end').map(entry => entry.event)).toEqual([expect.objectContaining({
       turnId: started.turnId, outcome: 'failed', detail: 'This chat was deleted in ChatGPT. Start a new chat to continue.' })]);
     expect(live.sent.filter(message => message.type === 'conversation_deleted')).toEqual([

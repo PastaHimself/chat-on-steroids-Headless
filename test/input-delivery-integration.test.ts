@@ -3307,3 +3307,336 @@ describe('checkpoint recovery fences', () => {
     } finally { clock.mockRestore(); }
   });
 });
+
+it('retains ambiguous Send custody and accepts a late exact receipt after confirmed deletion', async () => {
+  const chat = randomUUID(); const session = await createSession({ conversationId: chat });
+  const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto' });
+  expect(await input.claimBrowserInput(row.id, 'deleted-send-owner', chat, true)).not.toBeNull();
+  expect(await input.authorizeBrowserInput(row.id, 'deleted-send-owner', chat)).toBe(true);
+  await post('/conversation-deleted', { conversationId: chat });
+  const uncertain = (await input.listInputs()).find(item => item.id === row.id)!;
+  expect(input.deliveryProof(uncertain)).toBe('unconfirmed');
+  expect(uncertain.owner).toBe('deleted-send-owner');
+  expect(await input.acknowledgeBrowserInput(row.id, 'deleted-send-owner', chat, 'late-native-message')).toBe(true);
+  expect(input.deliveryProof((await input.listInputs()).find(item => item.id === row.id)!)).toBe('sent');
+});
+
+it('retires an unacknowledged MCP input without replaying it into a replacement', async () => {
+  const chat = randomUUID(), session = await createSession({ conversationId: chat });
+  const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto' });
+  expect((await input.offerToolInput(session.id, chat, 'old-delivery', Date.now() + 1)).messages).toHaveLength(1);
+  await post('/conversation-deleted', { conversationId: chat });
+  const uncertain = (await input.listInputs()).find(item => item.id === row.id)!;
+  expect(uncertain).toMatchObject({ state: 'cancelled', owner: 'old-delivery', text: row.text });
+  expect(input.deliveryProof(uncertain)).toBe('unconfirmed');
+  const destination = randomUUID();
+  expect(await (await import('../src/main/session/store.js')).rebindSession(session.id, chat, destination)).toBe(true);
+  expect((await input.offerToolInput(session.id, destination, 'new-delivery', Date.now() + 2)).messages).toEqual([]);
+});
+
+it.each(['authorization', 'legacy-claim', 'tool-offer'] as const)('withholds %s publication when deletion wins during the durable outbox write', async path => {
+  const durable = await import('../src/main/durable.js');
+  const { faultGate } = await import('./helpers.js');
+  const { markConversationDeleted } = await import('../src/main/session/store.js');
+  const chat = randomUUID(), session = await createSession({ conversationId: chat });
+  const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto' });
+  if (path === 'authorization') expect(await input.claimBrowserInput(row.id, 'racing-owner', chat, true)).not.toBeNull();
+  const gate = faultGate(), original = durable.writeDurableNow;
+  const write = vi.spyOn(durable, 'writeDurableNow').mockImplementation(async (name, value) => {
+    if (name === 'session-input' && Array.isArray(value) && value.some(item => item.id === row.id &&
+        (path === 'authorization' ? item.sendAuthorizedAt !== undefined : item.state === (path === 'tool-offer' ? 'tool' : 'browser')))) await gate.hold();
+    return original(name, value);
+  });
+  const publishing = path === 'authorization' ? input.authorizeBrowserInput(row.id, 'racing-owner', chat) :
+    path === 'legacy-claim' ? input.claimBrowserInput(row.id, 'racing-owner', chat) : input.offerToolInput(session.id, chat, 'racing-request', Date.now() + 1);
+  try {
+    await gate.entered; await markConversationDeleted(session.id, chat); gate.release();
+    const result = await publishing;
+    if (path === 'authorization') expect(result).toBe(false);
+    else if (path === 'legacy-claim') expect(result).toBeNull();
+    else expect(result).toMatchObject({ messages: [] });
+  } finally { gate.release(); write.mockRestore(); await publishing; }
+});
+
+describe('MCP publication after recording', () => {
+  it.each([
+    { reused: false, publicationFailed: true }, { reused: true, publicationFailed: true }, { reused: true, publicationFailed: false }
+  ])('joins a reoffer receipt to retained publication (reused: $reused, failed write: $publicationFailed)', async ({ reused, publicationFailed }) => {
+    const { faultGate } = await import('./helpers.js');
+    const effectGate = faultGate(); let reoffer: Promise<import('../src/main/mcp/kernel.js').ToolResult> | undefined;
+    let now = Date.now(); const started = now, clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const chat = randomUUID(), session = await createSession({ conversationId: chat }), turnId = randomUUID(), first = randomUUID(), next = randomUUID();
+    const correlation = await import('../src/main/session/correlation.js'), kernel = await import('../src/main/mcp/kernel.js'), durable = await import('../src/main/durable.js');
+    const prove = (requestId: string) => correlation.observeRequestCorrelation({ requestId, conversationId: chat, sessionId: session.id,
+      messageId: 'publication-order-question', tool: 'read', observedAt: now });
+    await post('/events', { conversationId: chat, events: [{ kind: 'user_message', time: now, messageId: 'publication-order-question', text: 'Original task' },
+      { kind: 'model_selection', time: now, model: 'gpt-6-pro' }, { kind: 'turn_start', time: now, turnId }] });
+    if (reused) {
+      now = started + 50; prove(next);
+      await kernel.dispatch('read', {}, null, next, 'core', async () => kernel.ok('Earlier same-request work'));
+    }
+    now = started + 70;
+    const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined });
+    prove(first); const original = durable.writeDurableNow;
+    const write = vi.spyOn(durable, 'writeDurableNow').mockImplementation(async (name, value) => {
+      if (publicationFailed && name === 'session-input' && Array.isArray(value) && value.some(item => item.id === row.id && item.toolPublicationAt !== undefined))
+        throw new Error('Isolated lost publication proof');
+      return original(name, value);
+    });
+    try {
+      now = started + 100;
+      expect(JSON.stringify(await kernel.dispatch('read', {}, null, first, 'core', async () => kernel.ok('First effect')))).toContain(row.text);
+      expect((await input.listInputs()).find(item => item.id === row.id)?.toolPublicationAt).toBe(publicationFailed ? undefined : now);
+      write.mockRestore(); input.resetInputForTests();
+      if (reused) {
+        now = started + 150;
+        await post('/events', { conversationId: chat, events: [{ kind: 'tool_evidence', time: now, turnId,
+          calls: [{ messageId: randomUUID(), tool: 'read', order: 0, answered: false, requestId: next }] }] });
+      }
+      if (!publicationFailed) {
+        prove(next);
+        reoffer = kernel.dispatch('read', {}, null, next, 'core', async () => { await effectGate.hold(); return kernel.ok('Reoffered effect'); });
+        await effectGate.entered;
+      }
+      now = started + 200;
+      await post('/events', { conversationId: chat, events: [{ kind: 'assistant_message', time: now, turnId, messageId: randomUUID(),
+        providerMessageId: randomUUID(), text: 'Earlier answer finished', state: 'final', final: true }] });
+      now = started + 400; prove(next);
+      effectGate.release();
+      expect(JSON.stringify(await (reoffer ?? kernel.dispatch('read', {}, null, next, 'core', async () => kernel.ok('Reoffered effect'))))).toContain(row.text);
+      const kept = (await input.listInputs()).find(item => item.id === row.id)!;
+      expect(kept.toolPublicationAt).toBe(publicationFailed ? now : started + 100);
+      expect(input.deliveryProof(kept)).toBe(publicationFailed ? 'unconfirmed' : 'sent');
+      expect(kept.deliveredAt).toBe(publicationFailed ? undefined : started + 200);
+    } finally { effectGate.release(); await reoffer; write.mockRestore(); clock.mockRestore(); }
+  });
+
+  it('records a successful reoffer under the immutable original claim after a lost publication write and restart', async () => {
+    const chat = randomUUID(), session = await createSession({ conversationId: chat }), originalRequest = randomUUID();
+    const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined });
+    const correlation = await import('../src/main/session/correlation.js'), kernel = await import('../src/main/mcp/kernel.js'), durable = await import('../src/main/durable.js');
+    const prove = (requestId: string) => correlation.observeRequestCorrelation({ requestId, conversationId: chat, sessionId: session.id,
+      messageId: 'publication-retry-question', tool: 'read', observedAt: Date.now() });
+    prove(originalRequest);
+    const originalWrite = durable.writeDurableNow;
+    const write = vi.spyOn(durable, 'writeDurableNow').mockImplementation(async (name, value) => {
+      if (name === 'session-input' && Array.isArray(value) && value.some(item => item.id === row.id && item.toolPublicationAt !== undefined))
+        throw new Error('Isolated lost publication write');
+      return originalWrite(name, value);
+    });
+    try {
+      expect(JSON.stringify(await kernel.dispatch('read', {}, null, originalRequest, 'core', async () => kernel.ok('First effect')))).toContain(row.text);
+      expect((await input.listInputs()).find(item => item.id === row.id)?.toolPublicationAt).toBeUndefined();
+    } finally { write.mockRestore(); }
+    input.resetInputForTests();
+    const nextRequest = randomUUID(); prove(nextRequest);
+    expect(JSON.stringify(await kernel.dispatch('read', {}, null, nextRequest, 'core', async () => kernel.ok('Second effect')))).toContain(row.text);
+    expect((await input.listInputs()).find(item => item.id === row.id)).toMatchObject({ owner: originalRequest, toolPublicationAt: expect.any(Number) });
+    await post('/conversation-deleted', { conversationId: chat }); input.resetInputForTests();
+    await input.acknowledgeToolInput(session.id, chat, 'later-receipt', Date.now() + 1000);
+    expect(input.deliveryProof((await input.listInputs()).find(item => item.id === row.id)!)).toBe('sent');
+  });
+
+  it.each([
+    { publication: 'published', receipt: 'call' }, { publication: 'withheld', receipt: 'call' }, { publication: 'withheld', receipt: 'final' }
+  ])('preserves uncertainty across restart when the $publication publication fact cannot be saved ($receipt)', async ({ publication, receipt }) => {
+    const { faultGate } = await import('./helpers.js');
+    const chat = randomUUID(), session = await createSession({ conversationId: chat }), requestId = randomUUID(), turnId = randomUUID();
+    await post('/events', { conversationId: chat, events: [
+      { kind: 'user_message', time: Date.now(), messageId: 'write-failure-question', text: 'Original task' },
+      { kind: 'model_selection', time: Date.now(), model: 'gpt-6-pro' }, { kind: 'turn_start', time: Date.now(), turnId }
+    ] });
+    const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined });
+    const correlation = await import('../src/main/session/correlation.js'), recorder = await import('../src/main/session/recorder.js'), kernel = await import('../src/main/mcp/kernel.js');
+    correlation.observeRequestCorrelation({ requestId, conversationId: chat, sessionId: session.id, messageId: 'write-failure-question', tool: 'read', observedAt: Date.now() });
+    const durable = await import('../src/main/durable.js'), originalWrite = durable.writeDurableNow, originalRecord = recorder.recordToolCall;
+    const gate = faultGate(), failed = faultGate();
+    const write = vi.spyOn(durable, 'writeDurableNow').mockImplementation(async (name, value) => {
+      if (name === 'session-input' && Array.isArray(value) && value.some(item => item.id === row.id &&
+          (publication === 'published' ? item.toolPublicationAt !== undefined : item.toolPublicationWithdrawnAt !== undefined))) {
+        failed.release(); await failed.hold(); throw new Error('Isolated publication write failure');
+      }
+      return originalWrite(name, value);
+    });
+    const record = vi.spyOn(recorder, 'recordToolCall').mockImplementation(async args => {
+      if (args.requestId === requestId) await gate.hold(); return originalRecord(args);
+    });
+    const call = kernel.dispatch('read', {}, null, requestId, 'core', async () => kernel.ok('Effect survives storage failure'));
+    try {
+      await gate.entered;
+      // The durable deletion wins before its separately serialized outbox retirement.
+      if (publication === 'withheld') await (await import('../src/main/session/store.js')).markConversationDeleted(session.id, chat);
+      gate.release(); await failed.entered;
+      const result = await call;
+      expect(JSON.stringify(result)).toContain('Effect survives storage failure');
+      if (publication === 'withheld') expect(JSON.stringify(result)).not.toContain(row.text);
+      write.mockRestore(); record.mockRestore();
+      if (publication === 'published') await post('/conversation-deleted', { conversationId: chat });
+      input.resetInputForTests();
+      if (receipt === 'call') await input.acknowledgeToolInput(session.id, chat, 'later-exact-call', Date.now() + 1000);
+      else await post('/events', { conversationId: chat, events: [{ kind: 'assistant_message', time: Date.now() + 1000,
+        turnId, messageId: randomUUID(), text: 'Original task finished', state: 'final', final: true }] });
+      const kept = (await input.listInputs()).find(item => item.id === row.id)!;
+      expect(input.deliveryProof(kept)).toBe('unconfirmed');
+      expect(kept.deliveredAt).toBeUndefined();
+    } finally { gate.release(); failed.release(); write.mockRestore(); record.mockRestore(); await call; }
+  });
+
+  it.each([
+    { receipt: 'call', restart: false }, { receipt: 'call', restart: true },
+    { receipt: 'final', restart: false }, { receipt: 'final', restart: true }
+  ])('never confirms a withheld first appendix from a later $receipt (restart: $restart)', async ({ receipt, restart }) => {
+    const { faultGate } = await import('./helpers.js');
+    const chat = randomUUID(), session = await createSession({ conversationId: chat }), requestId = randomUUID(), turnId = randomUUID();
+    await post('/events', { conversationId: chat, events: [
+      { kind: 'user_message', time: Date.now(), messageId: 'publication-question', text: 'Original task' },
+      { kind: 'model_selection', time: Date.now(), model: 'gpt-6-pro' },
+      { kind: 'turn_start', time: Date.now(), turnId }
+    ] });
+    const correlation = await import('../src/main/session/correlation.js'), recorder = await import('../src/main/session/recorder.js'), kernel = await import('../src/main/mcp/kernel.js');
+    const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined, text: 'This first offer was never published' });
+    correlation.observeRequestCorrelation({ requestId, conversationId: chat, sessionId: session.id, messageId: 'publication-question', tool: 'read', observedAt: Date.now() });
+    const original = recorder.recordToolCall, gate = faultGate();
+    const record = vi.spyOn(recorder, 'recordToolCall').mockImplementation(async args => {
+      if (args.requestId === requestId) await gate.hold(); return original(args);
+    });
+    const call = kernel.dispatch('read', {}, null, requestId, 'core', async () => kernel.ok('Admitted effect'));
+    try {
+      await gate.entered; await post('/conversation-deleted', { conversationId: chat }); gate.release();
+      expect(JSON.stringify(await call)).not.toContain(row.text);
+      if (restart) input.resetInputForTests();
+      if (receipt === 'call') {
+        const later = randomUUID();
+        correlation.observeRequestCorrelation({ requestId: later, conversationId: chat, sessionId: session.id, messageId: 'publication-question', tool: 'read', observedAt: Date.now() });
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 1000), handler = vi.fn(async () => kernel.ok('Forbidden'));
+        try { await kernel.dispatch('read', {}, null, later, 'core', handler); }
+        finally { clock.mockRestore(); }
+        expect(handler).not.toHaveBeenCalled();
+      } else await post('/events', { conversationId: chat, events: [{ kind: 'assistant_message', time: Date.now() + 1000,
+        turnId, messageId: randomUUID(), text: 'Original task finished', state: 'final', final: true }] });
+      const kept = (await input.listInputs()).find(item => item.id === row.id)!;
+      expect(input.deliveryProof(kept)).toBe('not_sent');
+      expect(kept.deliveredAt).toBeUndefined();
+    } finally { gate.release(); record.mockRestore(); await call; }
+  });
+
+  it.each(['healthy', 'deleted', 'rebound'] as const)('retains the admitted result and fences new work when the source is %s during recording', async source => {
+    const { faultGate } = await import('./helpers.js');
+    const chat = randomUUID(), session = await createSession({ conversationId: chat }), requestId = randomUUID();
+    const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined, text: 'New work must retain its exact owner' });
+    const correlation = await import('../src/main/session/correlation.js');
+    correlation.observeRequestCorrelation({ requestId, conversationId: chat, sessionId: session.id,
+      messageId: 'publication-question', tool: 'read', observedAt: Date.now() });
+    const recorder = await import('../src/main/session/recorder.js'), kernel = await import('../src/main/mcp/kernel.js');
+    const original = recorder.recordToolCall, gate = faultGate();
+    const record = vi.spyOn(recorder, 'recordToolCall').mockImplementation(async args => {
+      if (args.requestId === requestId) await gate.hold();
+      return original(args);
+    });
+    const handler = vi.fn(async () => ({ ...kernel.ok('Existing effect result'), structuredContent: { effect: 'existing' } }));
+    const dispatch = kernel.dispatch('read', { paths: ['/isolated-publication'] }, null, requestId, 'core', handler);
+    try {
+      await gate.entered;
+      if (source === 'deleted') {
+        expect((await post('/conversation-deleted', { conversationId: chat })).body.ok).toBe(true);
+        expect((await input.listInputs()).find(item => item.id === row.id)?.state).toBe('cancelled');
+      } else if (source === 'rebound') expect(await rebindSession(session.id, chat, randomUUID())).toBe(true);
+      gate.release(); const result = await dispatch;
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(result)).toContain('Existing effect result');
+      expect(result.structuredContent?.effect).toBe('existing');
+      if (source === 'healthy') expect(JSON.stringify(result)).toContain(row.text);
+      else expect(JSON.stringify(result)).not.toContain(row.text);
+    } finally { gate.release(); record.mockRestore(); await dispatch; }
+  });
+});
+
+describe('deleted MCP input receipts', () => {
+  it('bounds unresolved receipt retention by rejecting admission rather than pruning custody', async () => {
+    const chat = randomUUID(), session = await createSession({ conversationId: chat }), admitted: string[] = [];
+    let full = false;
+    for (let count = 0; count < 60; count++) {
+      try {
+        const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined, text: 'x'.repeat(24000) });
+        admitted.push(row.id);
+        expect(await input.claimBrowserInput(row.id, `legacy-${count}`, chat)).not.toBeNull();
+        expect(await input.cancelInput(row.id)).toBe(true);
+      } catch (error) { expect((error as Error).message).toContain('queue is full'); full = true; break; }
+    }
+    expect(full).toBe(true);
+    input.resetInputForTests();
+    const retained = await input.listInputs();
+    expect(retained.map(row => row.id)).toEqual(admitted);
+    expect(retained.every(row => input.deliveryProof(row) === 'unconfirmed')).toBe(true);
+  });
+
+  it.each(['interim', 'foreign', 'final'] as const)('uses only an exact recorded final to settle a cancelled tool receipt after restart (%s)', async boundary => {
+    let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const chat = randomUUID(), session = await createSession({ conversationId: chat }), turnId = randomUUID(), requestId = randomUUID();
+      await post('/events', { conversationId: chat, events: [
+        { kind: 'user_message', messageId: 'receipt-question', text: 'Original task', time: ++now },
+        { kind: 'model_selection', model: 'gpt-6-pro', time: now },
+        { kind: 'turn_start', turnId, time: ++now }
+      ] });
+      const correlation = await import('../src/main/session/correlation.js'), kernel = await import('../src/main/mcp/kernel.js');
+      correlation.observeRequestCorrelation({ requestId, conversationId: chat, sessionId: session.id,
+        messageId: 'receipt-question', tool: 'read', observedAt: now });
+      const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined });
+      now++;
+      expect(JSON.stringify(await kernel.dispatch('read', {}, null, requestId, 'core', async () => kernel.ok('Read complete')))).toContain(row.text);
+      await post('/conversation-deleted', { conversationId: chat });
+      now += 1000;
+      await post('/events', { conversationId: chat, events: [{ kind: 'assistant_message', turnId: boundary === 'foreign' ? randomUUID() : turnId,
+        messageId: `answer-${boundary}`, text: 'Done', state: boundary === 'interim' ? 'streaming' : 'final', final: boundary !== 'interim', time: now }] });
+      input.resetInputForTests();
+      const receipt = (await input.listInputs()).find(item => item.id === row.id)!;
+      expect(receipt.state).toBe('cancelled');
+      expect(input.deliveryProof(receipt)).toBe(boundary === 'final' ? 'sent' : 'unconfirmed');
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each([false, true])('accepts an exact late arrival without replay or new effects (restart: %s)', async restart => {
+    const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined });
+    expect((await input.offerToolInput(session.id, chat, 'previous-tool-owner', Date.now() + 1)).messages).toHaveLength(1);
+    await post('/conversation-deleted', { conversationId: chat });
+    if (restart) input.resetInputForTests();
+    const correlation = await import('../src/main/session/correlation.js'), kernel = await import('../src/main/mcp/kernel.js');
+    const requestId = randomUUID();
+    correlation.observeRequestCorrelation({ requestId, conversationId: chat, sessionId: session.id,
+      messageId: 'same-question', tool: 'read', observedAt: Date.now() });
+    const handler = vi.fn(async () => kernel.ok('Must not execute'));
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 1000);
+    let result;
+    try { result = await kernel.dispatch('read', {}, null, requestId, 'core', handler); }
+    finally { clock.mockRestore(); }
+    expect(handler).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).toContain('CONVERSATION_DELETED');
+    expect(JSON.stringify(result)).not.toContain(row.text);
+    const receipt = (await input.listInputs()).find(item => item.id === row.id)!;
+    expect(receipt.state).toBe('cancelled');
+    expect(input.deliveryProof(receipt)).toBe('sent');
+    expect((await input.offerToolInput(session.id, chat, randomUUID(), Date.now() + 1)).messages).toEqual([]);
+  });
+
+  it('requires the exact tool delivery transport, session, conversation and later invocation', async () => {
+    const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto', automation: undefined });
+    expect((await input.offerToolInput(session.id, chat, 'exact-owner', Date.now() + 1)).messages).toHaveLength(1);
+    await post('/conversation-deleted', { conversationId: chat });
+    const offeredAt = (await input.listInputs()).find(item => item.id === row.id)!.offeredAt!;
+    await input.acknowledgeToolInput(session.id, chat, 'overlap', offeredAt);
+    await input.acknowledgeToolInput(session.id, randomUUID(), 'foreign-chat', offeredAt + 1000);
+    await input.acknowledgeToolInput((await createSession({ conversationId: randomUUID() })).id, chat, 'foreign-session', offeredAt + 1000);
+    expect(input.deliveryProof((await input.listInputs()).find(item => item.id === row.id)!)).toBe('unconfirmed');
+    const browserChat = randomUUID(), browserSession = await createSession({ conversationId: browserChat });
+    const browser = await input.enqueueInput({ ...message(browserSession.id, 'off'), mode: 'auto', automation: undefined });
+    expect(await input.claimBrowserInput(browser.id, 'legacy-browser', browserChat)).not.toBeNull();
+    await post('/conversation-deleted', { conversationId: browserChat });
+    await input.acknowledgeToolInput(browserSession.id, browserChat, 'new-tool', Date.now() + 1000);
+    expect(input.deliveryProof((await input.listInputs()).find(item => item.id === browser.id)!)).toBe('unconfirmed');
+    await input.acknowledgeToolInput(session.id, chat, 'valid-arrival', offeredAt + 1000);
+    expect(input.deliveryProof((await input.listInputs()).find(item => item.id === row.id)!)).toBe('sent');
+  });
+});

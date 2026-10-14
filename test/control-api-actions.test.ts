@@ -967,12 +967,16 @@ describe('what a message row proves', () => {
     const t0 = Date.now() - 20_000;
     const own = await makeSession('Own turn', 'chat-inj-own');
     const foreign = await makeSession('Foreign turn', 'chat-inj-foreign');
+    const unproven = await makeSession('Unproven publication', 'chat-inj-unproven');
     const inject = (sessionId: string, conversationId: string, owner: string) =>
-      row({ sessionId, conversationId, text: 'nudge', state: 'tool', owner, createdAt: t0, offeredAt: t0 + 2_000, toolTurnId: 'turn-own' });
+      row({ sessionId, conversationId, text: 'nudge', state: 'tool', owner, createdAt: t0, offeredAt: t0 + 2_000,
+        receiptTransport: 'tool', toolPublicationAt: t0 + 2_000, toolTurnId: 'turn-own' });
     const rowOwn = inject(own, 'chat-inj-own', 'req-own');
     const rowForeign = inject(foreign, 'chat-inj-foreign', 'req-foreign');
-    await seed([rowOwn, rowForeign]);
-    for (const [sessionId, conversationId, owner] of [[own, 'chat-inj-own', 'req-own'], [foreign, 'chat-inj-foreign', 'req-foreign']] as const) {
+    const rowUnproven = { ...inject(unproven, 'chat-inj-unproven', 'req-unproven'), toolPublicationAt: undefined };
+    await seed([rowOwn, rowForeign, rowUnproven]);
+    for (const [sessionId, conversationId, owner] of [[own, 'chat-inj-own', 'req-own'], [foreign, 'chat-inj-foreign', 'req-foreign'],
+      [unproven, 'chat-inj-unproven', 'req-unproven']] as const) {
       await appendEvent(sessionId, { kind: 'user_message', source: 'extension', time: t0, messageId: 'q-' + owner, message: text('Do the work') });
       await appendEvent(sessionId, { kind: 'turn_start', source: 'extension', time: t0 + 500, turnId: 'turn-own' });
       await appendEvent(sessionId, { kind: 'tool_call', source: 'mcp', time: t0 + 1_000, turnId: 'turn-own',
@@ -982,6 +986,8 @@ describe('what a message row proves', () => {
     // belongs to a different turn that happens to sit later in the same journal.
     await appendEvent(own, { kind: 'assistant_message', source: 'extension', time: t0 + 5_000, messageId: 'final-own', turnId: 'turn-own', final: true, message: text('Done.') });
     await appendEvent(own, { kind: 'turn_end', source: 'extension', time: t0 + 5_100, outcome: 'completed', turnId: 'turn-own' });
+    await appendEvent(unproven, { kind: 'assistant_message', source: 'extension', time: t0 + 5_000, messageId: 'final-unproven', turnId: 'turn-own', final: true, message: text('Done.') });
+    await appendEvent(unproven, { kind: 'turn_end', source: 'extension', time: t0 + 5_100, outcome: 'completed', turnId: 'turn-own' });
     await appendEvent(foreign, { kind: 'turn_start', source: 'extension', time: t0 + 4_000, turnId: 'turn-other' });
     await appendEvent(foreign, { kind: 'assistant_message', source: 'extension', time: t0 + 5_000, messageId: 'final-other', turnId: 'turn-other', final: true, message: text('Done elsewhere.') });
     await appendEvent(foreign, { kind: 'turn_end', source: 'extension', time: t0 + 5_100, outcome: 'completed', turnId: 'turn-other' });
@@ -989,6 +995,7 @@ describe('what a message row proves', () => {
     const byId = new Map((await call('GET', '/v1/inputs')).body.inputs.map((entry: { id: string }) => [entry.id, entry]));
     expect(byId.get((rowOwn as { id: string }).id)).toMatchObject({ state: 'sent', delivery: 'sent', messageId: expect.stringMatching(/^input:/) });
     expect(byId.get((rowForeign as { id: string }).id)).toMatchObject({ state: 'tool', delivery: 'unconfirmed', messageId: null, deliveredAt: null });
+    expect(byId.get(rowUnproven.id)).toMatchObject({ state: 'tool', delivery: 'unconfirmed', messageId: null, deliveredAt: null });
   });
 
   it('tells the messages the app filed itself from the ones a person or agent sent', async () => {

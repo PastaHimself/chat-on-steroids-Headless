@@ -12,7 +12,7 @@ import { projectAgents, projectLive, RequestError } from './control-reads.js';
 import { redact, logWarn } from './logger.js';
 import { redactSecretText } from './redaction.js';
 import { sessionControlsFor, setSessionAutomation, setSessionObjective, stopSessionTurn, compactSession } from './bridge.js';
-import { getSession, readSessionPlan, conversationWasSuperseded } from './session/store.js';
+import { getSession, readSessionPlan, conversationWasSuperseded, conversationUnavailableKnown } from './session/store.js';
 import { deliveryProof, sessionInputPolicy } from './session/input.js';
 import { sendDesktopInput, cancelDesktopInput } from './session/start-input.js';
 import { listProjects, projectWorkspace, assignSessionProject, getSessionProject } from './projects.js';
@@ -40,7 +40,7 @@ const schemas = {
   automation: sessionBase.extend({ automation: z.enum(['off', 'goal', 'loop']), afterTurn: z.boolean().optional() }).strict(),
   objective: sessionBase.extend({ objective: z.string().trim().min(1).max(16000), mode: z.enum(['goal', 'loop']) }).strict(),
   stop: sessionBase.extend({ expectedTurnId: z.string().min(1).max(256) }).strict(),
-  compact: sessionBase.strict(),
+  compact: sessionBase.extend({ recoverDeletedConversationId: uuid.optional() }).strict(),
   project: sessionBase.extend({ projectId: uuid }).strict(),
   plan: sessionBase.extend({ prompt: z.string().trim().min(1).max(16000), backend: z.enum(['chatgpt', 'api']).optional() }).strict(),
   'plan-edit': base.extend({ planId: uuid, revision: z.number().int().nonnegative(), index: z.number().int().min(0).max(11), text: z.string().trim().min(1).max(12000).nullable() }).strict(),
@@ -155,10 +155,14 @@ async function callerFor(id: string, runId?: string): Promise<Caller> {
   // A trusted local operator names a session. The broker still verifies exact prime/run ownership.
   return { sessionId: id, conversationId: session.conversationId, ...(runId ? { runId } : {}) };
 }
+function assertWorkerSource(caller: Caller): void {
+  if (caller.conversationId && conversationUnavailableKnown(caller.conversationId, caller.sessionId))
+    throw new RequestError(409, 'conversation_deleted', 'Reconcile existing workers before replacing the deleted prime.');
+}
 async function acceptStaged(staged: { commit(): void | boolean; rollback(): void }, action: RemoteAction, caller: Caller): Promise<void> {
   await acceptAgentMutation(staged, 'Worker mutation is unconfirmed', undefined, {
     validate: async () => { if ((await controllable(caller.sessionId!)).conversationId !== caller.conversationId) throw new RequestError(409, 'conversation_changed'); },
-    assertCurrent: () => assertPermission(action)
+    assertCurrent: () => { assertPermission(action); assertWorkerSource(caller); }
   });
 }
 
@@ -205,7 +209,7 @@ async function execute(action: RemoteAction, raw: unknown, effect: () => void = 
     }
     case 'compact': {
       const body = schemas.compact.parse(raw); await controllable(body.sessionId); assertPermission(action);
-      effect(); return publicControls(await compactSession(body.sessionId));
+      effect(); return publicControls(await compactSession(body.sessionId, body.recoverDeletedConversationId));
     }
     case 'project': {
       const body = schemas.project.parse(raw); await controllable(body.sessionId); await projectWorkspace(body.projectId); assertPermission(action);
@@ -283,6 +287,7 @@ async function execute(action: RemoteAction, raw: unknown, effect: () => void = 
     case 'delegate': {
       const body = schemas.delegate.parse(raw);
       const caller = await callerFor(body.sessionId, body.runId);
+      assertWorkerSource(caller);
       if (!getConfig().multiAgent.enabled || getConfig().readOnly) throw new RequestError(403, 'workers_disabled');
       const workspace = await getSessionProject(body.sessionId);
       assertPermission(action);
@@ -291,7 +296,7 @@ async function execute(action: RemoteAction, raw: unknown, effect: () => void = 
         workspace: () => getSessionProject(body.sessionId),
         canIsolate: () => { const config = getConfig(), caps = effectiveCapabilities(config); return !config.readOnly && caps.command && caps.create && caps.edit; },
         validateOwner: async () => { if ((await controllable(body.sessionId)).conversationId !== caller.conversationId) throw new RequestError(409, 'conversation_changed'); },
-        assertCurrent: () => assertPermission(action)
+        assertCurrent: () => { assertPermission(action); assertWorkerSource(caller); }
       });
       requestWorkerBootstraps(staged.created.map(row => row.id), staged.runId);
       return { runId: staged.runId, created: staged.created.map(row => ({ id: row.id, state: row.state, model: row.model })) };
@@ -310,6 +315,7 @@ async function execute(action: RemoteAction, raw: unknown, effect: () => void = 
         return { paused: result !== null, workerId: worker.id, runId: body.runId, note: 'Broker worker sleeping; this does not prove native generation cancellation' };
       }
       if (!body.text) throw new RequestError(400, 'text_required');
+      assertWorkerSource(caller);
       effect(); const staged = stageMessages(caller, [{ to: worker.id, text: body.text }]);
       await acceptStaged(staged, action, caller);
       requestWorkerRevivals(staged.waking, staged.runId);

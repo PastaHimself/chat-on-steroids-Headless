@@ -1218,6 +1218,9 @@ export async function reopenWithHandoffNow(sessionId: string, handoffId: string)
   const prior = saved.provenance?.continuationId
     ? [...byToken.values()].find((entry) => handoffContinuationId(entry.token) === saved.provenance?.continuationId)
     : undefined;
+  // A saved brief is context, not proof that the previous destination Send never
+  // crossed the browser boundary. Missing/pruned WAL evidence cannot authorize replay.
+  if (!prior || !sendUnattempted(prior.destinationSend) || prior.sourceSend.state === 'dispatched-unresolved') return null;
   const opened = await openContinuationNow(sessionId, session.conversationId, false, prior?.project ?? null);
   const entry = byToken.get(opened.token);
   if (!entry || opened.state !== 'awaiting-summary') return null;

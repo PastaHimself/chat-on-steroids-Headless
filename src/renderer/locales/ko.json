@@ -2110,6 +2110,7 @@
   "Cancelled locally; delivery was later confirmed in ChatGPT.": "로컬에서 취소했지만, 나중에 ChatGPT에서 전달이 확인되었습니다.",
   "Not injected: the selected turn ended before an eligible tool call.": "삽입되지 않음: 선택한 턴이 적합한 도구 호출 전에 끝났습니다.",
   "Not sent: ChatGPT did not accept the message.": "보내지 않음: ChatGPT가 메시지를 받지 않았습니다.",
+  "Not sent: the conversation changed before delivery.": "전송되지 않음: 전달 전에 대화가 변경되었습니다.",
   "Not sent: the browser did not pick up this message within 60 seconds.": "보내지 않음: 브라우저가 60초 안에 이 메시지를 가져가지 않았습니다.",
   "Replaced by your new instruction before delivery.": "전달 전에 새 지시로 대체되었습니다.",
   "Stopped waiting for delivery confirmation. The message may already have been sent; it will not be resent.": "전달 확인 대기를 멈췄습니다. 메시지가 이미 전송되었을 수 있으므로 다시 보내지 않습니다.",
