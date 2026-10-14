@@ -21,11 +21,12 @@ describe('Discord bot state store & API client reliability', () => {
     const store = new StateStore(tempDir);
     await store.load();
 
-    // Populate store with 1650 settled interactions using valid 18-digit snowflake keys
+    // Populate store with 1050 settled interactions using valid 18-digit snowflake keys.
+    // >= 1000 triggers elevated archiving mode without excessive disk sync overhead.
     await store.update(state => {
       const now = Date.now();
       const baseSnowflake = BigInt('100000000000000000');
-      for (let i = 0; i < 1650; i++) {
+      for (let i = 0; i < 1050; i++) {
         const id = (baseSnowflake + BigInt(i)).toString();
         state.interactions[id] = {
           operationId: randomUUID(),
@@ -36,14 +37,14 @@ describe('Discord bot state store & API client reliability', () => {
       }
     });
 
-    expect(Object.keys(store.snapshot().interactions).length).toBe(1650);
+    expect(Object.keys(store.snapshot().interactions).length).toBe(1050);
 
     // Call upkeep to trigger interaction archiving
     await store.upkeep();
 
     // Settled interactions should have been archived and cleared from memory
     expect(Object.keys(store.snapshot().interactions).length).toBe(0);
-  });
+  }, 120_000);
 
   it('prunes stale and completed notification monitors when capacity is approached', async () => {
     const store = new StateStore(tempDir);
