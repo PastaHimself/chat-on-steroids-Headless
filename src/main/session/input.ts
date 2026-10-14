@@ -1,5 +1,5 @@
 import { recoveryHeld } from '../recovery-hold.js';
-import { REASONING_EFFORTS, workSequence } from '../../shared/session.js';
+import { providerUnavailableFor, REASONING_EFFORTS, workSequence } from '../../shared/session.js';
 /** User-authored input has one durable owner across browser and MCP delivery.
  * A claimed browser send is never automatically retried: losing the ACK is ambiguous.
  * Tool delivery repeats under a stable message id until a later request proves receipt.
@@ -172,7 +172,7 @@ export async function sessionInputPolicy(sessionId: string, observedActivity?: I
   if (recoveryHeld()) return { queueAtFinish: false, canInject: false, injectionTurnId: null, directTurn: null, browserAllowed: false, settled: false };
   const [end] = await readRecentEvents(sessionId, 1, { kinds: ['turn_start', 'turn_end'] });
   const session = await getSession(sessionId);
-  if (!session?.conversationId || isChatBlocked(session.conversationId)) return { queueAtFinish: false, canInject: false, injectionTurnId: null, directTurn: null, browserAllowed: false, settled: false };
+  if (!session?.conversationId || providerUnavailableFor(session) || isChatBlocked(session.conversationId)) return { queueAtFinish: false, canInject: false, injectionTurnId: null, directTurn: null, browserAllowed: false, settled: false };
   const activity = observedActivity ?? deliveryHooks?.activity?.(session) ?? { possible: !!session.activeTurnId, exact: !!session.activeTurnId };
   const stopped = session.finishTurn?.released === true;
   const selection = session.selectedModel?.conversationId === session.conversationId ? session.selectedModel : null;
@@ -194,7 +194,7 @@ export async function sessionInputPolicy(sessionId: string, observedActivity?: I
   const completed = !session.activeTurnId
     ? await readCompletedFinal(sessionId, session.conversationId) : null;
   const current = await getSession(sessionId);
-  if (current?.conversationId !== session.conversationId || current?.activeTurnId !== session.activeTurnId)
+  if (current?.conversationId !== session.conversationId || providerUnavailableFor(current) || current?.activeTurnId !== session.activeTurnId)
     return { queueAtFinish: false, canInject: false, injectionTurnId: null, directTurn: null, browserAllowed: false, settled: false };
   const terminal = end?.kind === 'turn_end' && !!end.turnId && end.outcome !== 'unknown';
   const settled = (terminal && ((end.outcome === 'completed' && !activity.possible && !activity.exact) ||
@@ -226,6 +226,7 @@ async function browserInputAllowed(entry: InputEntry): Promise<boolean> {
   }
   if (!entry.sessionId) return entry.transportIntent !== 'tool';
   const session = await getSession(entry.sessionId);
+  if (providerUnavailableFor(session)) return false;
   // Departure suspends already accepted delivery through the final Send check.
   // A new explicit immediate message remains a user action that may open the chat.
   if (session?.browserRecoveryDismissedAt !== undefined &&
@@ -692,6 +693,7 @@ async function target(entry: InputEntry): Promise<string | null> {
   const session = await getSession(entry.sessionId);
   if (entry.opening && session?.origin?.kind === 'desktop' && !session.conversationId) return null;
   if (!session?.conversationId) throw new Error('This recording has no ChatGPT conversation');
+  if (providerUnavailableFor(session)) throw new Error('CONVERSATION_DELETED: ' + CONVERSATION_DELETED);
   if (isChatBlocked(session.conversationId)) throw new Error('Unblock this conversation before sending');
   return session.conversationId;
 }
@@ -736,6 +738,7 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
       return { ...prior };
     }
     const requestedSession = input.sessionId ? await getSession(input.sessionId) : null;
+    if (providerUnavailableFor(requestedSession)) throw new Error('CONVERSATION_DELETED: ' + CONVERSATION_DELETED);
     // Explicit injection has its own recipient and can never spend a browser completion.
     const activity = requestedSession && input.delivery !== 'tool' && input.attachmentDelivery !== 'tool'
       ? deliveryHooks?.activity?.(requestedSession) : null;
@@ -1075,7 +1078,8 @@ export function authorizeBrowserInput(id: string, owner: string, conversationId:
     // holds Goal until either the exact send receipt or a known pre-click abort.
     if (!row.recovery && row.completedTurnId && row.sessionId && conversationId)
       await consumeGoalReplyForInputNow(conversationId, row.sessionId, row.completedTurnId);
-    return !row.recovery || await recoveryCurrent(row);
+    return (!row.recovery || await recoveryCurrent(row)) && await browserInputAllowed(row) &&
+      await target(row).catch(() => undefined) === conversationId;
   });
 }
 /** The same outbox serialization owns mode changes and browser ACK. A late ACK
@@ -1604,6 +1608,7 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
       await consumeGoalReplyForInputNow(conversationId, entry.sessionId, completedTurnId);
     logInfo(`input ${id}: browser claimed after ${Math.max(0, Date.now() - entry.createdAt)} ms`);
     const withoutMention = await imageRequestWithoutMention(entry, session, companion);
+    if (!await browserInputAllowed(claimed) || await target(claimed).catch(() => undefined) !== conversationId) return null;
     if (withoutMention) logInfo(`input ${id}: asks for an image, so it goes out without the Core mention`);
     return { ...combinedInput(claimed, companion), ...selection, text: claimed.deliveryText ?? claimed.text,
       ...(withoutMention ? { coreMention: false as const } : {}) };
@@ -1745,7 +1750,7 @@ export function offerToolInput(sessionId: string | null | undefined, conversatio
     const batch: ToolInputBatch = { messages: [], reminder: '' };
     if (!sessionId || !conversationId || !requestId || isChatBlocked(conversationId)) return batch;
     const session = await getSession(sessionId);
-    if (session?.conversationId !== conversationId) return batch;
+    if (session?.conversationId !== conversationId || providerUnavailableFor(session, conversationId)) return batch;
     const finishSettings = getConfig().ui;
     finishBoundary = finishBoundary && finishSettings.finishTool === true && session.origin?.kind !== 'worker';
     const finishReminder = finishSettings.finishTool === true && !session.finishTurn?.released &&
@@ -1811,6 +1816,9 @@ export function offerToolInput(sessionId: string | null | undefined, conversatio
     for (const id of delivered) if (!offered.has(id)) offered.set(id, Date.now());
     for (const entry of next) if (terminal(entry)) offered.delete(entry.id);
     await publishHistory();
+    const currentSession = await getSession(sessionId);
+    if (currentSession?.conversationId !== conversationId || providerUnavailableFor(currentSession, conversationId))
+      return { messages: [], reminder: '' };
     return batch;
   });
 }
@@ -1964,13 +1972,17 @@ export function failInputsForDeletedConversation(conversationId: string): Promis
     const current = await load();
     const ended = new Set<string>();
     for (const row of current) {
-      if (row.state !== 'queued' && row.state !== 'browser') continue;
+      if (row.state !== 'queued' && row.state !== 'browser' && row.state !== 'tool') continue;
       let destination = row.conversationId;
-      if (!destination) { try { destination = await target(row); } catch { destination = null; } }
+      if (!destination && row.sessionId) destination = (await getSession(row.sessionId))?.conversationId ?? null;
       if (destination === conversationId) ended.add(row.id);
     }
     if (!ended.size) return 0;
-    await commit(current.map(row => ended.has(row.id) ? { ...row, state: 'failed', owner: null, error: CONVERSATION_DELETED } : row));
+    await commit(current.map(row => ended.has(row.id) ? !neverAuthorized(row)
+      // No exact rejection receipt exists for this input. Preserve its owner, native receipt
+      // custody and spent Send; a late exact ACK may settle it, but nobody can send it again.
+      ? { ...row, state: 'cancelled', error: CONVERSATION_DELETED + ' Delivery remains unconfirmed; inspect its receipt.' }
+      : { ...row, state: 'failed', owner: null, error: CONVERSATION_DELETED } : row));
     for (const id of ended) {
       decisionWaiters.get(id)?.reject(new Error('goal_browser_send_failed: ' + CONVERSATION_DELETED));
       decisionWaiters.delete(id);

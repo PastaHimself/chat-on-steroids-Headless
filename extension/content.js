@@ -12474,7 +12474,7 @@
    */
   function endDeletedTurn() {
     if (!generating || !turnId || typeof conversationId !== 'string' || !deletedConversations.has(conversationId.toLowerCase())) return;
-    emit({ kind: 'chat_error', turnId, recoverable: false, text: CONVERSATION_DELETED });
+    emit({ kind: 'chat_error', turnId, reason: 'conversation_deleted', recoverable: false, text: CONVERSATION_DELETED });
     finishGeneration(generationTurn(), { outcome: 'failed', detail: CONVERSATION_DELETED });
     void flush();
   }

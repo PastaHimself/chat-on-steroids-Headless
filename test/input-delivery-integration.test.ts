@@ -3307,3 +3307,53 @@ describe('checkpoint recovery fences', () => {
     } finally { clock.mockRestore(); }
   });
 });
+
+it('retains ambiguous Send custody and accepts a late exact receipt after confirmed deletion', async () => {
+  const chat = randomUUID(); const session = await createSession({ conversationId: chat });
+  const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto' });
+  expect(await input.claimBrowserInput(row.id, 'deleted-send-owner', chat, true)).not.toBeNull();
+  expect(await input.authorizeBrowserInput(row.id, 'deleted-send-owner', chat)).toBe(true);
+  await post('/conversation-deleted', { conversationId: chat });
+  const uncertain = (await input.listInputs()).find(item => item.id === row.id)!;
+  expect(input.deliveryProof(uncertain)).toBe('unconfirmed');
+  expect(uncertain.owner).toBe('deleted-send-owner');
+  expect(await input.acknowledgeBrowserInput(row.id, 'deleted-send-owner', chat, 'late-native-message')).toBe(true);
+  expect(input.deliveryProof((await input.listInputs()).find(item => item.id === row.id)!)).toBe('sent');
+});
+
+it('retires an unacknowledged MCP input without replaying it into a replacement', async () => {
+  const chat = randomUUID(), session = await createSession({ conversationId: chat });
+  const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto' });
+  expect((await input.offerToolInput(session.id, chat, 'old-delivery', Date.now() + 1)).messages).toHaveLength(1);
+  await post('/conversation-deleted', { conversationId: chat });
+  const uncertain = (await input.listInputs()).find(item => item.id === row.id)!;
+  expect(uncertain).toMatchObject({ state: 'cancelled', owner: 'old-delivery', text: row.text });
+  expect(input.deliveryProof(uncertain)).toBe('unconfirmed');
+  const destination = randomUUID();
+  expect(await (await import('../src/main/session/store.js')).rebindSession(session.id, chat, destination)).toBe(true);
+  expect((await input.offerToolInput(session.id, destination, 'new-delivery', Date.now() + 2)).messages).toEqual([]);
+});
+
+it.each(['authorization', 'legacy-claim', 'tool-offer'] as const)('withholds %s publication when deletion wins during the durable outbox write', async path => {
+  const durable = await import('../src/main/durable.js');
+  const { faultGate } = await import('./helpers.js');
+  const { markConversationDeleted } = await import('../src/main/session/store.js');
+  const chat = randomUUID(), session = await createSession({ conversationId: chat });
+  const row = await input.enqueueInput({ ...message(session.id, 'off'), mode: 'auto' });
+  if (path === 'authorization') expect(await input.claimBrowserInput(row.id, 'racing-owner', chat, true)).not.toBeNull();
+  const gate = faultGate(), original = durable.writeDurableNow;
+  const write = vi.spyOn(durable, 'writeDurableNow').mockImplementation(async (name, value) => {
+    if (name === 'session-input' && Array.isArray(value) && value.some(item => item.id === row.id &&
+        (path === 'authorization' ? item.sendAuthorizedAt !== undefined : item.state === (path === 'tool-offer' ? 'tool' : 'browser')))) await gate.hold();
+    return original(name, value);
+  });
+  const publishing = path === 'authorization' ? input.authorizeBrowserInput(row.id, 'racing-owner', chat) :
+    path === 'legacy-claim' ? input.claimBrowserInput(row.id, 'racing-owner', chat) : input.offerToolInput(session.id, chat, 'racing-request', Date.now() + 1);
+  try {
+    await gate.entered; await markConversationDeleted(session.id, chat); gate.release();
+    const result = await publishing;
+    if (path === 'authorization') expect(result).toBe(false);
+    else if (path === 'legacy-claim') expect(result).toBeNull();
+    else expect(result).toMatchObject({ messages: [] });
+  } finally { gate.release(); write.mockRestore(); await publishing; }
+});

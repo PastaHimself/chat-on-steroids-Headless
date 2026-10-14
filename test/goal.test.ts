@@ -688,6 +688,83 @@ describe('the reply', () => {
     return session.id;
   };
 
+  it.each(['goal', 'loop'] as const)('blocks %s decisions for a deleted provider while retaining local intent', async mode => {
+    const id = `deleted-provider-${mode}`, sessionId = await seed(id);
+    await goal.setGoalSwitchNow(id, mode, true);
+    await goal.setGoalObjectiveNow(id, 'Verify the original entire objective');
+    const { markConversationDeleted } = await import('../src/main/session/store.js');
+    await markConversationDeleted(sessionId, id);
+    const fetch = vi.fn(async () => decision('stop', ''));
+    globalThis.fetch = fetch;
+    goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'deleted-source' });
+    const view = await settled(id);
+    expect(view).toMatchObject({ stage: 'failed', retryable: false, reply: '' });
+    expect(view.error).toContain('deleted');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(goal.goalObjectiveFor(id)).toBe('Verify the original entire objective');
+    expect(goal.goalSwitchFor(id)).toMatchObject({ enabled: true, mode });
+    await expect(goal.draftFastFollowup(sessionId)).rejects.toThrow('deleted');
+  });
+
+  it('refuses a late provider stop decision after the source conversation was deleted', async () => {
+    const id = 'late-deleted-decision', sessionId = await seed(id);
+    await goal.setGoalSwitchNow(id, 'goal', true);
+    await goal.setGoalObjectiveNow(id, 'Finish every original requirement');
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const fetch = vi.fn(async () => { await pending; return decision('stop', ''); }); globalThis.fetch = fetch;
+    goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'deleted-during-decision' });
+    try {
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      await (await import('../src/main/session/store.js')).markConversationDeleted(sessionId, id);
+      release();
+      expect(await settled(id)).toMatchObject({ stage: 'failed', retryable: false });
+      expect(goal.goalObjectiveFor(id)).toBe('Finish every original requirement');
+    } finally { release(); }
+  });
+
+  it('does not spend reply debt when deletion wins during the final model-preference read', async () => {
+    const id = 'deleted-during-final-policy', sessionId = await seed(id);
+    await goal.setGoalSwitchNow(id, 'goal', true);
+    await goal.setGoalObjectiveNow(id, 'Finish the original objective');
+    const store = await import('../src/main/session/store.js'); const read = store.getSession;
+    let providerDone = false, reads = 0, release!: () => void, entered!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const spy = vi.spyOn(store, 'getSession').mockImplementation(async (...args) => {
+      const snapshot = await read(...args);
+      if (providerDone && ++reads === 2) { entered(); await pending; }
+      return snapshot;
+    });
+    globalThis.fetch = vi.fn(async () => { providerDone = true; return decision('stop'); });
+    goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'final-policy-turn' });
+    try {
+      await ready; await store.markConversationDeleted(sessionId, id); release();
+      expect(await settled(id)).toMatchObject({ stage: 'failed', retryable: false });
+      expect(goal.goalObjectiveFor(id)).toBe('Finish the original objective');
+    } finally { release(); spy.mockRestore(); }
+  });
+
+  it('preserves Loop reply debt when deletion wins during its authority read', async () => {
+    const id = 'deleted-during-loop-authority', sessionId = await seed(id);
+    await goal.setGoalSwitchNow(id, 'loop', true); await recordLoopMcpProof(sessionId, 'loop-authority-turn');
+    const store = await import('../src/main/session/store.js'); const read = store.getSession;
+    let release!: () => void, entered!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const spy = vi.spyOn(store, 'getSession').mockImplementation(async (...args) => {
+      if (new Error().stack?.includes('loopReplyHasAuthority')) { entered(); await pending; }
+      return read(...args);
+    });
+    const fetcher = vi.fn(async () => decision('stop')); globalThis.fetch = fetcher;
+    goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'loop-authority-turn' });
+    try {
+      await ready; await store.markConversationDeleted(sessionId, id); release();
+      expect(await settled(id)).toMatchObject({ stage: 'failed', retryable: false });
+      expect(fetcher).not.toHaveBeenCalled(); expect(goal.goalSwitchFor(id)).toMatchObject({ enabled: true, mode: 'loop' });
+    } finally { release(); spy.mockRestore(); }
+  });
+
   it.each(['goal', 'loop'] as const)('blocks %s decisions on incomplete recording without losing the objective or calling a provider', async mode => {
     const id = `incomplete-recording-${mode}`;
     const sessionId = await seed(id);

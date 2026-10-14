@@ -278,6 +278,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Goal control | `goal.ts` / `goal-objectives`, `goal-switches`, `goal-replies` | Objective, mode and reply debt are separate concepts; draft memory is disposable. See §21 for remaining atomicity gaps. |
 | Stop/block/finish | Stop command; `blocked-chats.ts` durable set; finish facts in recorded progress/session projection | Each names exact chat/turn; no false terminal event. |
 | Browser repair | `bridge.ts` process-memory episodes | Re-earn from live evidence; never restore an old reload token as action authority. |
+| Confirmed provider deletion | `store.ts` / `SessionSummary.providerUnavailable[conversationId]`, reconstructed from exact `chat_error` evidence | Persist before browser acknowledgment. A resume-stream 404 is not deletion. Page returns, MCP observations and restarts cannot clear it. Keep the durable session, objective, workers and receipts; fence new effects and old-chat repair. |
 | Catalog/usage | Saved successful `chat-models`; derived `usage-cache`; live usage snapshot | Catalog is observation, not a send receipt; estimates are not provider billing. |
 | Connector refresh | `plugin-refresh.ts` / `state/plugin-refresh.json` | Exact installed app id + schema fingerprint, claimed before Refresh, verified after. |
 | Connector proof | `connector-proof.ts` / `connector-proof.json` | Per surface and tunnel: newest request, tool call and installed evidence from earlier runs. Setup reads it as "created in ChatGPT"; it is never call authority. A changed tunnel id has no proof. |
@@ -2756,6 +2757,21 @@ empty tabs reported on 2026-09-13 were already user-closed; the proven reuse lea
 regressions do not establish those tabs' original cause or live validation of the fix.
 
 ### Recovery policy
+
+Confirmed `conversation_deleted` is a permanent fact for its exact provider ID, owned by
+`store.ts::markConversationDeleted` and the session projection of structured journal errors.
+It is not derived from resume-stream HTTP 404, silence or DOM prose. Recovery/page-return,
+Goal/Loop, input publication, MCP admission/appendices and worker/Stop command publication
+must honor the fact after their last awaited policy read. Synchronous final vetoes read the
+store's existing live/catalog projections; do not maintain a separate unavailable-chat set.
+Keep the local session, objective, project, workers, history and uncertain receipt custody.
+Discord's existing `/compact` confirmation can request a reconciled saved-summary replacement
+for that exact source. The existing continuation WAL must positively prove its prior destination
+was not dispatched; a pruned/missing WAL is not proof. Running effects, invited workers and
+unconfirmed input delivery block replacement, including work accepted during handoff reads.
+No deletion event proves provider cancellation, clears delivery uncertainty or authorizes replay.
+An asynchronous silence sweep may retire only the grant/repair objects it inspected, never
+a newer turn's grant by conversation ID.
 
 Service startup rebuilds unfinished Goal/Loop silence watches from the current saved session,
 turn and recorded MCP proof inside the bridge recovery barrier. A first real page return can

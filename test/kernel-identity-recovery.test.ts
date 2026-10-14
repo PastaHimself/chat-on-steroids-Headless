@@ -1,15 +1,23 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-const fixture = vi.hoisted(() => ({ attachment: vi.fn(), record: vi.fn(), blocked: false }));
+const fixture = vi.hoisted(() => ({ attachment: vi.fn(), record: vi.fn(), offer: vi.fn(), awaitOrigin: vi.fn(), access: vi.fn(), strict: false, deletedKnown: false, unavailable: false, blocked: false }));
 vi.mock('../src/main/session/recorder.js', async original => ({
   ...await original<typeof import('../src/main/session/recorder.js')>(),
   freshCallOrigin: (_tool: string, _at: number, requestId: string) => requestCorrelation(requestId)?.conversationId ?? null,
-  awaitFreshCallOrigin: async (_tool: string, _at: number, _timeout: number, options: { requestId: string }) => requestCorrelation(options.requestId)?.conversationId ?? null,
+  awaitFreshCallOrigin: async (_tool: string, _at: number, _timeout: number, options: { requestId: string }) => {
+    await fixture.awaitOrigin(options.requestId); return requestCorrelation(options.requestId)?.conversationId ?? null;
+  },
   recordToolCall: fixture.record
 }));
 vi.mock('../src/main/session/store.js', async original => ({
-  ...await original<typeof import('../src/main/session/store.js')>(), conversationAttachment: fixture.attachment
+  ...await original<typeof import('../src/main/session/store.js')>(), conversationAttachment: fixture.attachment,
+  anyConversationUnavailable: async () => fixture.unavailable,
+  conversationUnavailableKnown: () => fixture.deletedKnown
 }));
-vi.mock('../src/main/session/input.js', () => ({ offerToolInput: async () => ({ messages: [], reminder: '' }), acknowledgeToolInput: async () => {}, TOOL_INPUT_HEADER: '' }));
+vi.mock('../src/main/session/conversation-access.js', async original => ({
+  ...await original<typeof import('../src/main/session/conversation-access.js')>(),
+  strictChatAllowlistEnabled: () => fixture.strict, conversationAccessRefusal: fixture.access
+}));
+vi.mock('../src/main/session/input.js', () => ({ offerToolInput: fixture.offer, acknowledgeToolInput: async () => {}, TOOL_INPUT_HEADER: '' }));
 vi.mock('../src/main/session/blocked-chats.js', () => ({
   BLOCKED_CHAT_REFUSAL: 'CHAT_BLOCKED', anyChatBlocked: () => fixture.blocked, isChatBlocked: () => fixture.blocked
 }));
@@ -25,6 +33,8 @@ import { observeRequestCorrelation, requestCorrelation, resetCorrelationRegistry
 beforeEach(() => {
   vi.clearAllMocks(); resetToolClock(); resetCorrelationRegistryForTests();
   fixture.attachment.mockResolvedValue('current'); fixture.record.mockResolvedValue(null); fixture.blocked = false;
+  fixture.unavailable = false; fixture.awaitOrigin.mockResolvedValue(undefined); fixture.offer.mockResolvedValue({ messages: [], reminder: '' });
+  fixture.strict = false; fixture.deletedKnown = false; fixture.access.mockResolvedValue(null);
 });
 function prove(requestId = 'request-a', conversationId = 'chat-a', sessionId = 'session-a') {
   return observeRequestCorrelation({ requestId, conversationId, sessionId, messageId: 'message', tool: '', observedAt: Date.now() });
@@ -124,4 +134,41 @@ it('defers the notice when the result has spent its text budget', async () => {
 it('does not invent ownership for a headerless refusal', async () => {
   await dispatch('agents', {}, null, null, 'core', async () => failIdentity('No agent operation'));
   prove(); expect(notice(await invoke())).toHaveLength(0);
+});
+
+it('refuses exact deleted conversation tool admission without executing or emitting recovery data', async () => {
+  prove(); fixture.attachment.mockResolvedValue('unavailable');
+  const run = vi.fn(async () => ok('side effect'));
+  const result = await invoke('request-a', run);
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result)).toContain('CONVERSATION_DELETED');
+  expect(run).not.toHaveBeenCalled();
+  expect(notice(result)).toHaveLength(0);
+});
+
+it('waits for exact late request evidence when a deleted conversation could own an unknown call', async () => {
+  fixture.unavailable = true; fixture.attachment.mockResolvedValue('unavailable');
+  fixture.awaitOrigin.mockImplementation(async () => { prove(); });
+  const run = vi.fn(async () => ok('side effect'));
+  expect((await invoke('request-a', run)).isError).toBe(true);
+  expect(fixture.awaitOrigin).toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+});
+
+it('preserves a completed tool result but withholds new instructions if deletion wins during delivery', async () => {
+  prove(); fixture.offer.mockImplementation(async () => {
+    fixture.attachment.mockResolvedValue('unavailable');
+    return { messages: [{ text: 'New filesystem work', images: [] }], reminder: '' };
+  });
+  const result = await invoke();
+  expect(result.content).toEqual([{ type: 'text', text: 'result' }]);
+});
+
+it('checks deletion after the final awaited strict Trust policy read', async () => {
+  prove(); fixture.strict = true; let reads = 0;
+  fixture.access.mockImplementation(async () => {
+    if (++reads === 4) { fixture.deletedKnown = true; fixture.attachment.mockResolvedValue('unavailable'); }
+    return null;
+  });
+  const run = vi.fn(async () => ok('side effect'));
+  expect((await invoke('request-a', run)).isError).toBe(true); expect(run).not.toHaveBeenCalled();
 });

@@ -4230,3 +4230,15 @@ it('persists worker presentation independently of broker retention and rejects s
   expect(restored?.origin?.task).toBe('Original task');
   expect(restored?.title).toBe('Original');
 });
+
+it('retains every confirmed deleted frontend across multiple rebinds and cold reload', async () => {
+  const { markConversationDeleted, conversationAttachment } = await import('../src/main/session/store.js');
+  const a = 'deleted-lineage-a', b = 'deleted-lineage-b', session = await createSession({ conversationId: a });
+  await markConversationDeleted(session.id, a);
+  expect(await rebindSession(session.id, a, b)).toBe(true);
+  await markConversationDeleted(session.id, b);
+  resetSessionStoreForTests();
+  expect(await conversationAttachment(a, session.id)).toBe('unavailable');
+  expect(await conversationAttachment(b, session.id)).toBe('unavailable');
+  expect(await rebindSession(session.id, b, a)).toBe(false);
+});

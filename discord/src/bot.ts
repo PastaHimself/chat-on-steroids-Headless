@@ -207,8 +207,14 @@ export class DiscordController {
         const rows = await this.api.request(`${sessionPath(target.id)}/events?limit=10`);
         return panel('Worker activity', historyDescription(rows.events));
       }
-      case 'compact': return this.confirmPanel(interaction, 'compact', { sessionId: this.session(interaction) },
-        'Start Compact & Resume. The provider conversation will change while this local session and Discord mapping remain the same.');
+      case 'compact': {
+        const id = this.session(interaction), detail = await this.api.request(`${sessionPath(id)}?live=1`);
+        const deleted = detail.live?.providerUnavailable?.reason === 'conversation_deleted';
+        return this.confirmPanel(interaction, 'compact', { sessionId: id,
+          ...(deleted ? { recoverDeletedConversationId: detail.session.conversationId } : {}) }, deleted
+          ? 'Confirm only after you have reconciled the old tools, workers, project and /queue receipts. Use the latest saved summary to replace the deleted ChatGPT conversation in this same local session. Unconfirmed Sends and running effects remain blocked; a missing summary requires local recovery.'
+          : 'Start Compact & Resume. The provider conversation will change while this local session and Discord mapping remain the same.');
+      }
       case 'queue': {
         const id = this.session(interaction), queue = await this.api.request('/v1/inputs?limit=100');
         return panel('Input delivery records', queue.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id)
@@ -280,7 +286,7 @@ export class DiscordController {
     const input = queue.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id).at(-1);
     const projects = await this.api.request('/v1/remote/projects');
     const project = projects.projects.find((row: any) => row.id === detail.session.projectId);
-    return panel('Session status', `${sessionDescription(detail)}\nProject: ${project?.name ?? 'Unfiled or unavailable'}\nNext prompt model: ${requested.model ?? 'Current provider selection'}\nDelivery: ${input?.delivery ?? 'No recent input proof'}\nWorkers: ${workerSummary}\nRecovery: ${detail.live?.recordingIncompleteAt !== undefined ? 'Recording history is incomplete. Inspect and reconcile it locally before requesting automatic continuation.' : detail.live?.blocked ? 'Review the session block in Details.' : detail.live?.job?.needsAttention ? 'Compact & Resume needs attention; inspect the source and replacement Send checkpoints above. Never manually resend an unconfirmed handoff.' : detail.live?.recovery?.length ? 'The backend is recovering this session. Review Details and inspect its receipt before requesting more work.' : input?.delivery === 'unconfirmed' ? 'Inspect queue and history before submitting another request.' : 'No current recovery action reported.'}`,
+    return panel('Session status', `${sessionDescription(detail)}\nProject: ${project?.name ?? 'Unfiled or unavailable'}\nNext prompt model: ${requested.model ?? 'Current provider selection'}\nDelivery: ${input?.delivery ?? 'No recent input proof'}\nWorkers: ${workerSummary}\nRecovery: ${detail.live?.providerUnavailable?.reason === 'conversation_deleted' ? 'ChatGPT confirmed deletion. Local work and objective are retained. Review /queue, /operations, /history and workers; after reconciliation, /compact can recover from a saved summary. A stream resume 404 alone does not prove deletion.' : detail.live?.recordingIncompleteAt !== undefined ? 'Recording history is incomplete. Inspect and reconcile it locally before requesting automatic continuation.' : detail.live?.blocked ? 'Review the session block in Details.' : detail.live?.job?.needsAttention ? 'Compact & Resume needs attention; inspect the source and replacement Send checkpoints above. Never manually resend an unconfirmed handoff.' : detail.live?.recovery?.length ? 'The backend is recovering this session. Review Details and inspect its receipt before requesting more work.' : input?.delivery === 'unconfirmed' ? 'Inspect queue and history before submitting another request.' : 'No current recovery action reported.'}`,
       [buttons(view, [['refresh', 'Refresh'], ['taskplan', 'View Plan'], ['queue', 'View queue'], ['history', 'View history'], ['details', 'Details']])]);
   }
   private async operationListPanel(interaction: any, sessionId: string, cursor?: string) {

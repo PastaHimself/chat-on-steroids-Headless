@@ -21,6 +21,7 @@
  *   sessions/<id>/handoffs/<id>.json
  */
 
+import { providerUnavailableFor } from '../../shared/session.js';
 import { modelFacingText } from '../../shared/content-reference.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isProModel } from '../../shared/chat-models.js';
@@ -880,6 +881,7 @@ async function rebuildSummaryFromHistory(
         toolCalls: rebuilt.toolCalls,
         lastToolCallAt: rebuilt.lastToolCallAt,
         ...(rebuilt.recordingIncompleteAt !== undefined ? { recordingIncompleteAt: rebuilt.recordingIncompleteAt } : {}),
+        ...(rebuilt.providerUnavailable !== undefined ? { providerUnavailable: { ...checkpoint?.providerUnavailable, ...rebuilt.providerUnavailable } } : {}),
         lastToolActivity: rebuilt.lastToolActivity,
         lastAssistantFinalAt: rebuilt.lastAssistantFinalAt,
         lastTurnEndAt: rebuilt.lastTurnEndAt,
@@ -1042,6 +1044,9 @@ function noteFinishWork(summary: SessionSummary, event: SessionEvent): void {
 
 function applyToSummary(summary: SessionSummary, event: SessionEvent): void {
   applyTurnIdentity(summary, event);
+  if (event.kind === 'chat_error' && event.reason === 'conversation_deleted' && event.recoverable === false &&
+      event.conversationId && summary.chatIds.includes(event.conversationId) && !providerUnavailableFor(summary, event.conversationId))
+    summary.providerUnavailable = { ...summary.providerUnavailable, [event.conversationId]: { reason: 'conversation_deleted', confirmedAt: event.time } };
   summary.events += 1;
   // Never backwards. A tool call is written once the app knows which chat it belongs to,
   // which can be after the page has already reported the end of the turn it ran in, and
@@ -2431,6 +2436,11 @@ function normalizeSummary(id: string, raw: string): MetaCheckpoint | null {
         : null;
     const { [META_HISTORY_SEQ]: _historySeq, [META_CANONICAL_PROJECTION]: canonicalProjection, [META_TOKEN_ESTIMATE]: tokenEstimate, ...publicFields } = parsed;
     const publicSummary = publicFields as SessionSummary;
+    const unavailable = publicSummary.providerUnavailable;
+    if (unavailable !== undefined) publicSummary.providerUnavailable = unavailable && typeof unavailable === 'object' && !Array.isArray(unavailable)
+      ? Object.fromEntries(Object.entries(unavailable).filter(([chat, fact]) =>
+        Array.isArray(publicSummary.chatIds) && publicSummary.chatIds.includes(chat) && fact?.reason === 'conversation_deleted' &&
+        Number.isFinite(fact.confirmedAt) && fact.confirmedAt >= 0)) : {};
     if (publicSummary.recordingIncompleteAt !== undefined &&
         (!Number.isFinite(publicSummary.recordingIncompleteAt) || publicSummary.recordingIncompleteAt < 0))
       delete publicSummary.recordingIncompleteAt;
@@ -2944,6 +2954,32 @@ export async function indexedSessions(): Promise<SessionSummary[]> {
   return readEverySummary();
 }
 
+/** Exceptional unknown-request admission consults the same durable ownership catalog. */
+export async function anyConversationUnavailable(): Promise<boolean> {
+  if (root === '') return false;
+  const catalog = await ensureAttachmentCatalog();
+  for (const summary of catalog.summaries.values()) if (Object.keys(summary.providerUnavailable ?? {}).length) return true;
+  for (const entry of open.values()) if (Object.keys(entry.summary.providerUnavailable ?? {}).length) return true;
+  return false;
+}
+
+/** Final synchronous veto after an awaited ownership lookup. This reads the owner's
+ * existing live/catalog projections; it creates no second deletion ledger. */
+export function conversationUnavailableKnown(conversationId: string, sessionId?: string | null): boolean {
+  if (sessionId) return !!providerUnavailableFor(open.get(sessionId)?.summary ?? attachmentCatalog?.summaries.get(sessionId), conversationId);
+  for (const entry of open.values()) if (providerUnavailableFor(entry.summary, conversationId)) return true;
+  for (const id of attachmentCatalog?.historical.get(conversationId) ?? [])
+    if (providerUnavailableFor(attachmentCatalog?.summaries.get(id), conversationId)) return true;
+  return false;
+}
+
+/** Existing catalog/live lineage lookup for synchronous execution reconciliation. */
+export function knownSessionIdsForConversation(conversationId: string): string[] {
+  const ids = new Set(attachmentCatalog?.historical.get(conversationId) ?? []);
+  for (const [id, entry] of open) if (entry.summary.chatIds.includes(conversationId)) ids.add(id);
+  return [...ids];
+}
+
 /**
  * Finds the durable session that owns one ChatGPT conversation id.
  *
@@ -3038,6 +3074,24 @@ export async function conversationWasSuperseded(conversationId: string): Promise
   return false;
 }
 
+/** Publish confirmed provider deletion before acknowledging the browser. This is
+ * metadata authority like rebind/project ownership, not a liveness observation.
+ * A delayed report for A cannot mark its committed successor B unavailable. */
+export async function markConversationDeleted(id: string, conversationId: string): Promise<boolean> {
+  const entry = await ensureOpen(id);
+  return enqueueSessionOperation(entry, 'provider deletion', async () => {
+    if (entry.summary.conversationId !== conversationId) return false;
+    if (providerUnavailableFor(entry.summary, conversationId)) return true;
+    const staged: SessionSummary = { ...entry.summary,
+      providerUnavailable: { ...entry.summary.providerUnavailable, [conversationId]: { reason: 'conversation_deleted', confirmedAt: Date.now() } } };
+    await writeSummary(staged, entry.historySeq);
+    Object.assign(entry.summary, staged);
+    entry.metaDirty = false;
+    publishCachedSummary(entry.summary, false);
+    return true;
+  });
+}
+
 /**
  * Whether one ChatGPT frontend is still the session's executable attachment.
  *
@@ -3049,15 +3103,16 @@ export async function conversationWasSuperseded(conversationId: string): Promise
 export async function conversationAttachment(
   conversationId: string,
   sessionId: string | null = null
-): Promise<'current' | 'superseded' | 'unknown'> {
+): Promise<'current' | 'superseded' | 'unavailable' | 'unknown'> {
   if (!conversationId) return 'unknown';
   if (sessionId) {
     const exact = await getSession(sessionId);
     if (!exact || !exact.chatIds.includes(conversationId)) return 'unknown';
+    if (providerUnavailableFor(exact, conversationId)) return 'unavailable';
     return exact.conversationId === conversationId ? 'current' : 'superseded';
   }
   const current = await findSessionByConversation(conversationId, { requireUnique: true });
-  if (current) return 'current';
+  if (current) return providerUnavailableFor(current, conversationId) ? 'unavailable' : 'current';
   return (await conversationWasSuperseded(conversationId)) ? 'superseded' : 'unknown';
 }
 
@@ -3453,7 +3508,7 @@ export async function rebindSession(
   missingCurrentConversations.delete(toConversationId);
   const entry = await ensureOpen(id);
   return enqueueSessionOperation(entry, 'rebind', async () => {
-    if (entry.summary.conversationId !== fromConversationId) return false;
+    if (entry.summary.conversationId !== fromConversationId || providerUnavailableFor(entry.summary, toConversationId)) return false;
     // Browser conversation ids are UUID-like. A handful of store unit tests deliberately
     // use short symbolic ids and reuse them across retained temp sessions; ownership safety
     // applies to the real identity domain rather than manufacturing a test-only collision.
