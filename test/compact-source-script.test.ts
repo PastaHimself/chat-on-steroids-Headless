@@ -22,17 +22,31 @@ function page(options: {
   editor?: boolean;
   insertion?: boolean;
   send?: 'not-ready' | 'authorized-but-no-receipt';
+  afterPermit?: 'missing' | 'empty' | 'human-draft' | 'attachment' | 'source-changed';
 } = {}) {
   const editor = options.editor === false ? null : {
     isConnected: true,
     textContent: options.draft ?? '',
     getAttribute: () => null
   };
+  let currentEditor = editor;
+  let sourceOwned = true;
   const reported = vi.fn(async (_id: string, _token: string, _reason: string, _current: () => boolean) => undefined);
   const retired = vi.fn(async (_id: string, _token: string, _reason: string, _current: () => boolean) => undefined);
   const messages = vi.fn(() => [{ role: 'user', id: 'question-before' }]);
   const ask = vi.fn(async (body: Record<string, unknown>) => {
-    if (body.sourceAttempt === true) return { ok: true, data: { allowed: true } };
+    if (body.sourceAttempt === true) {
+      if (options.afterPermit === 'missing') currentEditor = null;
+      if (options.afterPermit === 'empty' || options.afterPermit === 'human-draft' || options.afterPermit === 'attachment') {
+        currentEditor = {
+          isConnected: true,
+          textContent: options.afterPermit === 'human-draft' ? 'human-owned draft' : '',
+          getAttribute: () => null
+        };
+      }
+      if (options.afterPermit === 'source-changed') sourceOwned = false;
+      return { ok: true, data: { allowed: true } };
+    }
     if (body.sourceDispatch === true) return { ok: true, data: { armed: true } };
     throw new Error('unexpected backend request');
   });
@@ -43,12 +57,13 @@ function page(options: {
     job: { automatic: options.automatic !== false },
     CLF_DOM: {
       conversationId: () => CHAT,
-      composer: () => editor,
+      composer: () => currentEditor,
       composerVisible: () => true,
+      hasComposerAttachments: () => options.afterPermit === 'attachment' && currentEditor !== null,
       messages,
       insertPrompt: (prompt: string, _mention: boolean, onFailure: (why: string) => void) => {
         if (options.insertion === false) { onFailure('native_edit_rejected'); return false; }
-        if (editor) editor.textContent = prompt;
+        if (currentEditor) currentEditor.textContent = prompt;
         return true;
       },
       clearPromptExact: clear
@@ -73,8 +88,8 @@ function page(options: {
   const run = runInNewContext(nativeSource, context) as (
     prompt: string, token: string, id: string, epoch: number, run: number, same: () => boolean
   ) => Promise<void>;
-  return { context, editor, reported, retired, ask, clear,
-    run: (prompt = PROMPT) => run(prompt, TOKEN, CHAT, 2, 1, () => true) };
+  return { context, editor, getCurrentEditor: () => currentEditor, reported, retired, ask, clear,
+    run: (prompt = PROMPT) => run(prompt, TOKEN, CHAT, 2, 1, () => sourceOwned) };
 }
 
 describe('automatic Compact & Resume native pre-Send recovery (PR #5 follow-up)', () => {
@@ -130,6 +145,48 @@ describe('automatic Compact & Resume native pre-Send recovery (PR #5 follow-up)'
     await f.run();
     expect(f.retired).toHaveBeenCalledOnce();
     expect(f.reported).not.toHaveBeenCalled();
+  });
+
+  it('keeps an automatic ticket when React removes the editor after sourceAttempt but before Send', async () => {
+    const f = page({ afterPermit: 'missing' });
+    await f.run();
+    expect(f.ask).toHaveBeenCalledWith(expect.objectContaining({ sourceAttempt: true, token: TOKEN }));
+    expect(f.reported).toHaveBeenCalledOnce();
+    expect(f.retired).not.toHaveBeenCalled();
+    expect(f.ask.mock.calls.some(([request]) => request.sourceDispatch === true)).toBe(false);
+  });
+
+  it('keeps an automatic ticket after a post-permit empty editor remount', async () => {
+    const f = page({ afterPermit: 'empty' });
+    await f.run();
+    expect(f.reported).toHaveBeenCalledOnce();
+    expect(f.retired).not.toHaveBeenCalled();
+    expect(f.ask.mock.calls.some(([request]) => request.sourceDispatch === true)).toBe(false);
+  });
+
+  it('retires only an unsent ticket when a human draft replaces the editor after authorization', async () => {
+    const f = page({ afterPermit: 'human-draft' });
+    await f.run();
+    expect(f.getCurrentEditor()?.textContent).toBe('human-owned draft');
+    expect(f.retired).toHaveBeenCalledOnce();
+    expect(f.reported).not.toHaveBeenCalled();
+    expect(f.ask.mock.calls.some(([request]) => request.sourceDispatch === true)).toBe(false);
+  });
+
+  it('does not send the handoff with an attached user file after editor remount', async () => {
+    const f = page({ afterPermit: 'attachment' });
+    await f.run();
+    expect(f.retired).toHaveBeenCalledOnce();
+    expect(f.reported).not.toHaveBeenCalled();
+    expect(f.ask.mock.calls.some(([request]) => request.sourceDispatch === true)).toBe(false);
+  });
+
+  it('still retires the pre-Send ticket when the owning source chat changed', async () => {
+    const f = page({ afterPermit: 'source-changed' });
+    await f.run();
+    expect(f.retired).toHaveBeenCalledOnce();
+    expect(f.reported).not.toHaveBeenCalled();
+    expect(f.ask.mock.calls.some(([request]) => request.sourceDispatch === true)).toBe(false);
   });
 
   it('never reports an ambiguous post-dispatch send as safely retryable', async () => {

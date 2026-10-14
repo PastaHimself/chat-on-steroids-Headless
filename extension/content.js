@@ -10182,14 +10182,21 @@
       // Reacquire the current editable composer and verify the exact frozen prompt: an
       // unchanged draft survives remounts, while changed or user-owned text still fails closed.
       const sendComposer = editable();
-      if (!sameSource() || !sendComposer || squeeze(sendComposer.textContent) !== squeeze(prompt)) {
+      // A changed source chat revokes this ticket. A missing/remounted editor does not:
+      // sourceAttempt is still pre-Send, and a temporary React unmount is not proof that
+      // a human took over the composer. Keep the automatic ticket for bounded recovery.
+      // A changed human draft or attachment, on the other hand, must never be overwritten.
+      const sourceChanged = !sameSource();
+      const hasAttachments = Boolean(sendComposer && CLF_DOM.hasComposerAttachments());
+      const userDraft = Boolean(sendComposer && ((sendComposer.textContent || '').trim() || hasAttachments));
+      if (sourceChanged || !sendComposer || squeeze(sendComposer.textContent) !== squeeze(prompt) || hasAttachments) {
         CLF_DOM.clearPromptExact(prompt);
         return void (await abandonBeforeSend(
           t(
             'content_compact_message_box_changed_preserved',
             'The message box changed before the handoff could be sent. Its draft was preserved.'
           ),
-          true
+          sourceChanged || userDraft
         ));
       }
       rememberUserSend();
