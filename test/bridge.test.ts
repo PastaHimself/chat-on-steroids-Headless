@@ -16487,6 +16487,64 @@ describe('deleted provider command and replacement fences', () => {
 });
 
 describe('operator recovery of a deleted provider from a saved summary', () => {
+  it.each([false, true])('rejects deletion first confirmed during an ordinary saved-summary read (running tool: %s)', async running => {
+    await pair(); const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const prior = await readyContinuation(session.id, SAMPLE_BRIEF, chat); await abortContinuation(prior, 'cancelled');
+    const source = (await getSession(session.id))!, handoffGate = faultGate(), effectGate = faultGate();
+    const original = sessionStoreModule.readHandoff;
+    const lookup = vi.spyOn(sessionStoreModule, 'readHandoff').mockImplementation(async (...args) => {
+      const answer = await original(...args); await handoffGate.hold(); return answer;
+    });
+    const calls = await import('../src/main/mcp/call-context.js'), bridge = await import('../src/main/bridge.js');
+    const resumed = bridge.resumeFromSavedSummary(session.id, source.lastHandoffId!);
+    let effect: Promise<void> | undefined;
+    try {
+      await handoffGate.entered;
+      if (running) {
+        effect = calls.trackInFlight({ startedAt: Date.now(), transportKey: null, agent: null, outcome: null, evidence: calls.emptyEvidence(),
+          caller: { conversationId: chat, sessionId: session.id, requestId: 'admitted-during-reopen', transportKey: null } }, () => effectGate.hold());
+        await effectGate.entered;
+      }
+      await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+      expect((await getSession(session.id))?.providerUnavailable?.[chat]).toBeDefined();
+      handoffGate.release();
+      await expect(resumed).rejects.toThrow('Reconcile');
+      expect(continuationForSession(session.id)).toBeNull();
+      expect(pendingCommands().some(command => command.what === `resume:${session.id}`)).toBe(false);
+    } finally { handoffGate.release(); effectGate.release(); lookup.mockRestore(); await effect; await resumed.catch(() => undefined); }
+  });
+
+  it.each(['tool', 'browser'] as const)('retains an unresolved %s receipt through unrelated queue trimming and restart', async transport => {
+    await pair(); const chat = randomUUID(), session = await createSession({ conversationId: chat });
+    const prior = await readyContinuation(session.id, SAMPLE_BRIEF, chat); await abortContinuation(prior, 'cancelled');
+    const input = await import('../src/main/session/input.js'); input.resetInputForTests(); await writeDurableNow('session-input', []);
+    const message = (sessionId: string, text = 'Unresolved source instruction') => ({ id: randomUUID(), sessionId, projectId: null,
+      text, mode: 'auto' as const, dueAt: 0, model: null, reasoningEffort: null });
+    const uncertain = await input.enqueueInput(message(session.id));
+    if (transport === 'tool') expect((await input.offerToolInput(session.id, chat, 'unconfirmed-tool', Date.now() + 1)).messages).toHaveLength(1);
+    else {
+      expect(await input.claimBrowserInput(uncertain.id, 'unconfirmed-browser', chat, true)).not.toBeNull();
+      expect(await input.authorizeBrowserInput(uncertain.id, 'unconfirmed-browser', chat)).toBe(true);
+    }
+    await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
+    await expect(compactSession(session.id, chat)).rejects.toThrow('Send remains unconfirmed');
+    const unrelated = await createSession({ conversationId: randomUUID() });
+    for (let count = 0; count < 55; count++) {
+      const row = await input.enqueueInput(message(unrelated.id, `Withdraw task ${count}`)); await input.cancelInput(row.id);
+    }
+    input.resetInputForTests();
+    const retained = (await input.listInputs()).find(row => row.id === uncertain.id);
+    expect(retained).toBeDefined();
+    expect(input.deliveryProof(retained!)).toBe('unconfirmed');
+    expect((await input.listInputs()).filter(row => row.sessionId === unrelated.id)).toHaveLength(51);
+    await expect(compactSession(session.id, chat)).rejects.toThrow('Send remains unconfirmed');
+    expect(continuationForSession(session.id)).toBeNull();
+    if (transport === 'tool') await input.acknowledgeToolInput(session.id, chat, 'late-exact-call', Date.now() + 1000);
+    else expect(await input.acknowledgeBrowserInput(uncertain.id, 'unconfirmed-browser', chat, 'late-native-receipt')).toBe(true);
+    expect(input.deliveryProof((await input.listInputs()).find(row => row.id === uncertain.id)!)).toBe('sent');
+    expect((await compactSession(session.id, chat)).sessionId).toBe(session.id);
+  });
+
   it('requires reconciliation before creating a replacement and preserves the same session and objective', async () => {
     await pair(); const chat = randomUUID();
     const session = await createSession({ conversationId: chat });

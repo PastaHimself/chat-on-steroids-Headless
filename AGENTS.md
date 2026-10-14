@@ -2770,6 +2770,15 @@ for that exact source. The existing continuation WAL must positively prove its p
 was not dispatched; a pruned/missing WAL is not proof. Running effects, invited workers and
 unconfirmed input delivery block replacement, including work accepted during handoff reads.
 No deletion event proves provider cancellation, clears delivery uncertainty or authorizes replay.
+Outbox cancellation is not disposable history while `deliveryProof` remains unconfirmed;
+keep that custody under the existing admission byte budgets. `receiptTransport` identifies
+the actual claim, independently of admission intent. MCP preparation/recording is not response
+publication: the kernel grants `toolPublicationAt` only at its final source fence and persists
+it through the existing outbox/settling owners. Missing publication proof after restart remains
+unknown. A positively withheld first offer records `toolPublicationWithdrawnAt`; neither a
+later call nor a recorded final can turn it into delivery. Withholding a reoffer cannot erase
+an earlier publication. Internal offer IDs never enter the tool payload. Replacement publication
+rechecks current store/outbox custody synchronously after its awaited reads.
 An asynchronous silence sweep may retire only the grant/repair objects it inspected, never
 a newer turn's grant by conversation ID.
 

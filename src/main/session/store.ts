@@ -2965,8 +2965,15 @@ export async function anyConversationUnavailable(): Promise<boolean> {
 
 /** Final synchronous veto after an awaited ownership lookup. This reads the owner's
  * existing live/catalog projections; it creates no second deletion ledger. */
+export function conversationAttachmentKnown(conversationId: string, sessionId: string): 'current' | 'superseded' | 'unavailable' | 'unknown' {
+  const exact = open.get(sessionId)?.summary ?? attachmentCatalog?.summaries.get(sessionId);
+  if (!exact?.chatIds.includes(conversationId)) return 'unknown';
+  if (providerUnavailableFor(exact, conversationId)) return 'unavailable';
+  return exact.conversationId === conversationId ? 'current' : 'superseded';
+}
+
 export function conversationUnavailableKnown(conversationId: string, sessionId?: string | null): boolean {
-  if (sessionId) return !!providerUnavailableFor(open.get(sessionId)?.summary ?? attachmentCatalog?.summaries.get(sessionId), conversationId);
+  if (sessionId) return conversationAttachmentKnown(conversationId, sessionId) === 'unavailable';
   for (const entry of open.values()) if (providerUnavailableFor(entry.summary, conversationId)) return true;
   for (const id of attachmentCatalog?.historical.get(conversationId) ?? [])
     if (providerUnavailableFor(attachmentCatalog?.summaries.get(id), conversationId)) return true;

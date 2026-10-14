@@ -90,6 +90,12 @@ const entrySchema = inputArgs.extend({
   response: z.string().max(16000).optional(),
   state: z.enum(['queued', 'browser', 'tool', 'sent', 'cancelled', 'failed', 'decision']),
   offeredAt: z.number().optional(),
+  /** Actual claim transport survives cancellation; admission intent is not receipt proof. */
+  receiptTransport: z.enum(['tool', 'browser']).optional(),
+  /** Publication was granted, not delivery confirmed. A later exact receipt is still required. */
+  toolPublicationAt: z.number().optional(),
+  /** The first offer was positively withheld before response publication. */
+  toolPublicationWithdrawnAt: z.number().optional(),
   /** Tool-result corrections remain inside their original generation in history. */
   toolTurnId: z.string().min(1).max(256).optional(),
   sendAuthorizedAt: z.number().optional(),
@@ -276,8 +282,8 @@ export function hasEligibleToolInput(sessionId: string, finishBoundary = false):
 }
 let entries: InputEntry[] | null = null;
 let chain: Promise<unknown> = Promise.resolve();
-// A timestamp written before the claim commit cannot prove that its response was
-// available. Restart discards this evidence and repeats the stable message id.
+// Publication, rather than claim preparation, supplies the live receipt barrier.
+// Cancelled claims restore only positively persisted publication proof after restart.
 const offered = new Map<string, number>();
 const terminal = (row: InputEntry): boolean => ['sent', 'cancelled', 'failed'].includes(row.state);
 /** Native Send was never authorized: the row was not claimed, or its claim still awaited authorization. */
@@ -288,19 +294,30 @@ export type DeliveryProof = 'sent' | 'not_sent' | 'unconfirmed' | 'pending';
 /**
  * What the row itself proves about delivery, and nothing more. `sent` needs the receipt
  * (`deliveredAt`, which a late ACK can add to a row already cancelled). `not_sent` needs a
- * terminal row whose Send was never authorized. Any other terminal row, and any claim whose
+ * terminal row whose Send was never authorized, or a positively withheld first tool handout.
+ * Any other terminal row, and any claim whose
  * Send was authorized or whose tool result was handed out, may have reached ChatGPT, so it is
  * `unconfirmed` and is never resent. Turn ids on the row (`completedTurnId`, `queuedTurn`,
  * `silenceBoundary`, `directTurn`) name the source turn, not the message, and prove nothing.
  */
 export function deliveryProof(row: Readonly<InputEntry>): DeliveryProof {
   if (row.deliveredAt !== undefined) return 'sent';
+  if (row.toolPublicationWithdrawnAt !== undefined) return 'not_sent';
   // `sent` says the page or the exact request confirmed it, so a row with that state and no
   // receipt is a gap in the record, not proof that nothing was sent.
   if (row.state === 'sent') return 'unconfirmed';
   if (terminal(row)) return neverAuthorized(row) ? 'not_sent' : 'unconfirmed';
   return row.state === 'queued' || (row.state === 'browser' && neverAuthorized(row)) ? 'pending' : 'unconfirmed';
 }
+/** Unresolved work remains receipt custody, even after local cancellation. */
+const needsReceipt = (row: InputEntry): boolean => row.purpose !== 'decision' && deliveryProof(row) === 'unconfirmed' &&
+  row.error !== 'After-turn pickup was withdrawn before Send.';
+/** Final publication veto from the existing outbox owner, after listInputs loaded it. */
+export function unconfirmedSessionInputKnown(sessionId: string): boolean {
+  return !entries || entries.some(row => (row.sessionId === sessionId || row.deliveredSessionId === sessionId) && needsReceipt(row));
+}
+const pendingToolReceipt = (row: InputEntry): boolean => row.state === 'tool' ||
+  (row.state === 'cancelled' && row.receiptTransport === 'tool' && row.deliveredAt === undefined);
 const preparable = (row: InputEntry): boolean => row.state === 'queued' ||
   (row.state === 'browser' && row.requiresAuthorization === true && row.sendAuthorizedAt === undefined);
 const needsHistory = (row: InputEntry): boolean => row.purpose !== 'decision' && !row.historyRecorded &&
@@ -386,7 +403,9 @@ async function load(): Promise<InputEntry[]> {
   const raw = await readDurable<unknown>(STATE);
   const parsed = z.array(entrySchema).safeParse(raw ?? []);
   if (!parsed.success) throw new Error('The message outbox could not be read safely');
-  entries = parsed.data;
+  // Live legacy claims prove their transport; an ambiguous terminal legacy row does not.
+  entries = parsed.data.map(row => !row.receiptTransport && (row.state === 'tool' || row.state === 'browser')
+    ? { ...row, receiptTransport: row.state } : row);
   const legacyOpeningRepair = await migrateLegacyOpeningOwners(entries);
   // One failed/deleted project must not prevent unrelated accepted work loading.
   let openingRepair = legacyOpeningRepair;
@@ -495,7 +514,7 @@ async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
       if (targetEnded || newerTurn || newerBoundary || ownerChanged) return { ...row, state: 'failed',
         error: 'Not injected: the selected turn ended before an eligible tool call.' };
     }
-    if (row.state === 'tool') return settleToolInputFromFinal(row);
+    if (pendingToolReceipt(row)) return settleToolInputFromFinal(row);
     // Only an ordinary browser attempt has an unclaimed startup deadline. Tool
     // intent survives a later terminal observation/restart; legacy bound-chat
     // rows are ambiguous and cannot safely be reclassified from today's activity.
@@ -649,7 +668,8 @@ function append(current: InputEntry[], entry: InputEntry, stackDirect = false): 
       (!queuedFollowup(row) || row.state === 'browser') && ['queued', 'browser', 'tool'].includes(row.state))) {
     throw new Error('One message is already awaiting delivery. Cancel it before sending another.');
   }
-  const active = current.filter((row) => !terminal(row) || needsHistory(row) || pendingStages(row));
+  const retain = (row: InputEntry): boolean => !terminal(row) || needsHistory(row) || pendingStages(row) || needsReceipt(row);
+  const active = current.filter(retain);
   const reserved = (row: InputEntry) => row.stagesApplied ? [] : row.stages ?? [];
   if ([...active, entry].reduce((sum, row) => sum + Buffer.byteLength(JSON.stringify({ ...row, images: undefined, toolImages: undefined, stages: reserved(row) })), 0) > 1024000) {
     throw new Error('The message queue is full');
@@ -657,7 +677,7 @@ function append(current: InputEntry[], entry: InputEntry, stackDirect = false): 
   const imageBytes = (row: InputEntry): number => [...row.images ?? [], ...row.toolImages ?? []].reduce((sum, image) => sum + image.dataUrl.length, 0) +
     (row.attachments ?? []).reduce((sum, file) => sum + (file.preview?.length ?? 0), 0);
   if ([...active, entry].reduce((sum, row) => sum + imageBytes(row), 0) > 4 * 1024 * 1024) throw new Error('The image queue is full');
-  const history = current.filter((row) => terminal(row) && !needsHistory(row) && !pendingStages(row)).slice(-50);
+  const history = current.filter(row => !retain(row)).slice(-50);
   const bytes = (row: InputEntry): number => Buffer.byteLength(row.text) + Buffer.byteLength(row.deliveryText ?? '') + Buffer.byteLength(row.response ?? '') + Buffer.byteLength(JSON.stringify(row.stages ?? [])) + imageBytes(row);
   let retainedBytes = [...history, ...active, entry].reduce((sum, row) => sum + bytes(row), 0);
   while (history.length && retainedBytes > 2048000) retainedBytes -= bytes(history.shift()!);
@@ -1000,10 +1020,14 @@ async function removeWithdrawnOpening(row: InputEntry, current: InputEntry[]): P
  * Join that final to the recorded exact request, preserving restart proof and rejecting
  * interim prose, old finals, foreign turns and calls still publishing their response. */
 async function settleToolInputFromFinal(row: InputEntry): Promise<InputEntry> {
-  if (!row.sessionId || !row.conversationId || !row.owner || row.offeredAt === undefined ||
+  const publicationAt = offered.get(row.id) ?? row.toolPublicationAt;
+  if (row.toolPublicationWithdrawnAt !== undefined ||
+      publicationAt === undefined ||
+      !row.sessionId || !row.conversationId || !row.owner || row.offeredAt === undefined ||
       inFlightToolCalls(row.conversationId) > 0) return row;
   const session = await getSession(row.sessionId);
-  if (session?.conversationId !== row.conversationId || session.lastAssistantFinalAt == null) return row;
+  if (!session || (session.conversationId !== row.conversationId && !session.chatIds?.includes(row.conversationId)) ||
+      session.lastAssistantFinalAt == null) return row;
   const calls = await readRecentEvents(row.sessionId, 256, { kinds: ['tool_call'] });
   const call = calls.find(event => event.kind === 'tool_call' && event.source === 'mcp' && event.turnId &&
     (!row.toolTurnId || event.turnId === row.toolTurnId) &&
@@ -1011,9 +1035,10 @@ async function settleToolInputFromFinal(row: InputEntry): Promise<InputEntry> {
     event.call.conversationId === row.conversationId && event.time <= row.offeredAt!);
   if (!call?.turnId) return row;
   const final = await readCompletedFinal(row.sessionId, row.conversationId, call.turnId);
-  if (!final || final.completedAt <= row.offeredAt || final.contentSeq <= call.seq ||
+  if (!final || final.completedAt <= Math.max(row.offeredAt, publicationAt) || final.contentSeq <= call.seq ||
       inFlightToolCalls(row.conversationId) > 0) return row;
-  return { ...row, state: 'sent', toolTurnId: call.turnId, messageId: `input:${row.id}`, deliveredAt: final.completedAt, historyRecorded: false };
+  return { ...row, state: row.state === 'cancelled' ? 'cancelled' : 'sent', toolTurnId: call.turnId,
+    messageId: `input:${row.id}`, deliveredAt: final.completedAt, historyRecorded: false };
 }
 
 /** Editing is possible only before handout. Recovery shares delivery custody,
@@ -1584,7 +1609,7 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
     let claimed: InputEntry;
     const prepareClaim = (checkpoint?: InputEntry) => prepare({ ...combinedInput(entry, checkpoint), ...(checkpoint ? { companionInputId: checkpoint.id } : {}), ...(completedTurnId ? { completedTurnId } : {}),
       ...(entry.transportIntent === 'tool' ? { transportIntent: 'browser' } : {}),
-      state: 'browser', owner, conversationId, offeredAt: entry.offeredAt ?? Date.now(), requiresAuthorization }, suffix);
+      state: 'browser', receiptTransport: 'browser', owner, conversationId, offeredAt: entry.offeredAt ?? Date.now(), requiresAuthorization }, suffix);
     try {
       try { claimed = await prepareClaim(companion); }
       catch (error) {
@@ -1726,16 +1751,21 @@ export function acknowledgeBrowserInput(id: string, owner: string, conversationI
 }
 /** A later exact call proves receipt of an earlier tool response, never of a queued task. */
 function toolInputReceipt(entry: InputEntry, sessionId: string, conversationId: string, startedAt: number): InputEntry {
-  const deliveredAt = offered.get(entry.id);
-  return entry.sessionId === sessionId && entry.conversationId === conversationId && entry.state === 'tool' &&
+  // A cancelled tool claim cannot be reoffered after restart. Its persisted publication
+  // still joins a later exact invocation; overlapping live publication grants none.
+  const deliveredAt = offered.get(entry.id) ?? (entry.state === 'cancelled' && entry.receiptTransport === 'tool' &&
+    inFlightToolCalls(conversationId) <= 1 ? entry.toolPublicationAt : undefined);
+  return entry.sessionId === sessionId && entry.conversationId === conversationId && pendingToolReceipt(entry) &&
+    entry.toolPublicationWithdrawnAt === undefined && (entry.state !== 'cancelled' || inFlightToolCalls(conversationId) <= 1) &&
     deliveredAt !== undefined && startedAt > deliveredAt
-    ? { ...entry, state: 'sent', messageId: `input:${entry.id}`, deliveredAt, historyRecorded: false } : entry;
+    ? { ...entry, state: entry.state === 'cancelled' ? 'cancelled' : 'sent', messageId: `input:${entry.id}`, deliveredAt, historyRecorded: false } : entry;
 }
 /** Commit incoming receipt evidence before a handler decides whether user work remains. */
 export function acknowledgeToolInput(sessionId: string | null | undefined, conversationId: string | null | undefined, requestId: string | null | undefined, startedAt: number): Promise<void> {
   return serial(async () => {
     if (!sessionId || !conversationId || !requestId || isChatBlocked(conversationId)) return;
-    if ((await getSession(sessionId))?.conversationId !== conversationId) return;
+    const session = await getSession(sessionId);
+    if (session?.conversationId !== conversationId && !session?.chatIds?.includes(conversationId)) return;
     const current = await load();
     const next = current.map(entry => toolInputReceipt(entry, sessionId, conversationId, startedAt));
     if (!next.some((entry, index) => entry !== current[index])) return;
@@ -1745,8 +1775,34 @@ export function acknowledgeToolInput(sessionId: string | null | undefined, conve
   });
 }
 
-export function offerToolInput(sessionId: string | null | undefined, conversationId: string | null | undefined, requestId: string | null | undefined, startedAt: number, finishBoundary = false): Promise<ToolInputBatch> {
+/** Only the response publisher can distinguish an offer from an actual handout.
+ * Facts stay on the same outbox row; a withheld reoffer never clears an earlier publication. */
+export function completeToolInputPublication(sessionId: string, conversationId: string, requestId: string, ids: string[], published: boolean): Promise<void> {
+  const selected = new Set(ids), at = Date.now();
+  const owns = (row: InputEntry): boolean => selected.has(row.id) && row.sessionId === sessionId &&
+    row.conversationId === conversationId && !!row.owner && (published || row.owner === requestId) &&
+    row.receiptTransport === 'tool' && row.deliveredAt === undefined;
+  // This volatile receipt barrier is set at the synchronous response publication boundary,
+  // never while preparing/recording an appendix. A crash before its write leaves uncertainty.
+  if (published) for (const row of entries ?? []) if (owns(row) && row.toolPublicationWithdrawnAt === undefined && !offered.has(row.id))
+    offered.set(row.id, row.toolPublicationAt ?? at);
   return serial(async () => {
+    const current = await load();
+    const next = current.map(row => {
+      if (!owns(row) || row.toolPublicationWithdrawnAt !== undefined) return row;
+      if (published) return row.toolPublicationAt === undefined ? { ...row, toolPublicationAt: at } : row;
+      if (row.toolPublicationAt !== undefined || offered.has(row.id)) return row;
+      return { ...row, state: 'cancelled' as const, toolPublicationWithdrawnAt: at,
+        error: 'Not sent: the conversation changed before delivery.' };
+    });
+    if (next.some((row, index) => row !== current[index])) await commit(next);
+  });
+}
+
+export function offerToolInput(sessionId: string | null | undefined, conversationId: string | null | undefined, requestId: string | null | undefined, startedAt: number, finishBoundary = false,
+  publication?: (ids: string[], firstOffers: string[]) => void): Promise<ToolInputBatch> {
+  let publicationIds: string[] = [], firstOffers: string[] = [];
+  const offering = serial(async () => {
     const batch: ToolInputBatch = { messages: [], reminder: '' };
     if (!sessionId || !conversationId || !requestId || isChatBlocked(conversationId)) return batch;
     const session = await getSession(sessionId);
@@ -1802,7 +1858,8 @@ export function offerToolInput(sessionId: string | null | undefined, conversatio
         batch.messages.push({ text: message, images });
         batch.reminder = reminder;
         delivered.push(entry.id);
-        return { ...prepared, state: 'tool', toolTurnId: entry.toolTurnId ?? session.activeTurnId ?? deliveryHooks?.activity?.(session).turnId,
+        if (entry.offeredAt === undefined && entry.toolPublicationAt === undefined) firstOffers.push(entry.id);
+        return { ...prepared, state: 'tool', receiptTransport: 'tool', toolTurnId: entry.toolTurnId ?? session.activeTurnId ?? deliveryHooks?.activity?.(session).turnId,
           offeredAt: entry.offeredAt ?? Date.now(), owner: entry.state === 'tool' ? entry.owner : requestId, conversationId };
       }
       return entry;
@@ -1813,12 +1870,21 @@ export function offerToolInput(sessionId: string | null | undefined, conversatio
       const automated = next.filter((entry) => entry.state === 'tool' && entry.automation && current.some((row) => row.id === entry.id && row.state === 'queued'));
       await transition(current, next, automated, 'before-send');
     }
-    for (const id of delivered) if (!offered.has(id)) offered.set(id, Date.now());
     for (const entry of next) if (terminal(entry)) offered.delete(entry.id);
     await publishHistory();
+    publicationIds = delivered;
+    publication?.(publicationIds, firstOffers);
     const currentSession = await getSession(sessionId);
     if (currentSession?.conversationId !== conversationId || providerUnavailableFor(currentSession, conversationId))
       return { messages: [], reminder: '' };
+    return batch;
+  });
+  // Direct callers publish the returned batch. Kernel callers defer this boundary until
+  // their recorded result passes the final source fence; IDs never enter the tool payload.
+  if (publication) return offering;
+  return offering.then(async batch => {
+    if (sessionId && conversationId && requestId && publicationIds.length)
+      await completeToolInputPublication(sessionId, conversationId, requestId, batch.messages.length ? publicationIds : firstOffers, batch.messages.length > 0);
     return batch;
   });
 }

@@ -20,7 +20,7 @@ import type { SessionSummary } from '../shared/session.js';
 import { runningExecProcesses } from './codex/ownership.js';
 import { messageReferences, providerUnavailableFor } from '../shared/session.js';
 import { turnTrace } from '../shared/turn-trace.js';
-import { publishBrowserDecision, authorizeBrowserInput, sessionInputPolicy, collectRecordedBrowserDecision, type InputActivity } from './session/input.js';
+import { publishBrowserDecision, authorizeBrowserInput, sessionInputPolicy, collectRecordedBrowserDecision, unconfirmedSessionInputKnown, type InputActivity } from './session/input.js';
 import { pluginRefreshPublications, pendingPluginRefreshes, claimPluginRefresh, requireManualPluginRefresh, completePluginRefresh, failPluginRefresh } from './plugin-refresh.js';
 import { attachBrowserWake, wakeBrowserWork } from './browser-wake.js';
 import { tunnelRouteSettling } from './tunnel/route-settle.js';
@@ -127,6 +127,7 @@ import {
   automaticCompactionAllowed,
   conversationWasSuperseded,
   conversationAttachment,
+  conversationAttachmentKnown,
   conversationUnavailableKnown,
   anyConversationUnavailable,
   markConversationDeleted,
@@ -2117,7 +2118,6 @@ export async function compactSession(sessionId: string, recoverDeletedConversati
 /** Compact & Resume again from the summary an abandoned run already captured (#1215). */
 export async function resumeFromSavedSummary(sessionId: string, handoffId: string, reconciledDeletedConversationId?: string): Promise<SessionControlsView> {
   const id = await controlledConversation(sessionId);
-  const session = await getSession(sessionId);
   const assertQuiescent = (): void => {
     const workers = swarmState().agents.filter(agent => agent.role === 'worker' && agent.primeConversationId === id);
     if (inFlightToolCalls(id) > 0 || runningExecProcesses(sessionId).length ||
@@ -2126,22 +2126,27 @@ export async function resumeFromSavedSummary(sessionId: string, handoffId: strin
             knownSessionIdsForConversation(agent.conversationId).some(workerSessionId => runningExecProcesses(workerSessionId).length > 0)))))
       throw new Error('Source tools, processes or workers are still running; reconcile them before replacement.');
   };
-  if (providerUnavailableFor(session, id)) {
-    if (reconciledDeletedConversationId !== id) throw new Error('Reconcile the deleted source before requesting a replacement.');
-    // Explicit reconciliation does not override currently observed execution or delivery.
-    assertQuiescent();
-    if ((await listInputs()).some(row => (row.sessionId === sessionId || row.deliveredSessionId === sessionId) &&
-        (row.sendAuthorizedAt !== undefined || (row.offeredAt !== undefined && row.requiresAuthorization !== true && row.state !== 'tool')) &&
-        row.deliveredAt === undefined && row.error !== 'After-turn pickup was withdrawn before Send.'))
-      throw new Error('A Send remains unconfirmed. Reconcile its exact receipt before replacement.');
-    if ((await getSession(sessionId))?.conversationId !== id) throw new Error('The provider binding changed.');
-  }
+  const assertSource = (): void => {
+    const attachment = conversationAttachmentKnown(id, sessionId);
+    if (attachment !== 'current' && attachment !== 'unavailable') throw new Error('The provider binding changed.');
+    if (attachment === 'unavailable') {
+      if (reconciledDeletedConversationId !== id) throw new Error('Reconcile the deleted source before requesting a replacement.');
+      // Explicit reconciliation does not override currently observed execution or delivery.
+      assertQuiescent();
+      if (unconfirmedSessionInputKnown(sessionId))
+        throw new Error('A Send remains unconfirmed. Reconcile its exact receipt before replacement.');
+    }
+  };
+  const assertCurrent = async (): Promise<void> => {
+    await listInputs();
+    await getSession(sessionId);
+    assertSource();
+  };
+  await assertCurrent();
   const opened = await reopenWithHandoffNow(sessionId, handoffId);
   if (!opened) throw new Error('This summary can no longer be used. Start Compact & Resume again.');
-  if (providerUnavailableFor(session, id)) {
-    try { assertQuiescent(); }
-    catch (error) { await abortContinuationNow(opened.token, 'source execution changed before replacement delivery'); throw error; }
-  }
+  try { await assertCurrent(); assertSource(); }
+  catch (error) { await abortContinuationNow(opened.token, 'source authority changed before replacement delivery'); throw error; }
   queueResumeCommand(sessionId, opened.token);
   await deliver();
   changed();

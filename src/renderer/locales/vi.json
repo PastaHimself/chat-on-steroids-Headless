@@ -2110,6 +2110,7 @@
   "Cancelled locally; delivery was later confirmed in ChatGPT.": "Đã hủy cục bộ; việc gửi sau đó đã được xác nhận trong ChatGPT.",
   "Not injected: the selected turn ended before an eligible tool call.": "Chưa chèn: lượt đã chọn kết thúc trước một lệnh gọi công cụ phù hợp.",
   "Not sent: ChatGPT did not accept the message.": "Chưa gửi: ChatGPT không nhận tin nhắn.",
+  "Not sent: the conversation changed before delivery.": "Chưa gửi: cuộc trò chuyện đã thay đổi trước khi tin nhắn được chuyển đến.",
   "Not sent: the browser did not pick up this message within 60 seconds.": "Chưa gửi: trình duyệt không nhận tin nhắn này trong vòng 60 giây.",
   "Replaced by your new instruction before delivery.": "Đã được thay bằng chỉ dẫn mới của bạn trước khi gửi.",
   "Stopped waiting for delivery confirmation. The message may already have been sent; it will not be resent.": "Đã ngừng chờ xác nhận gửi. Tin nhắn có thể đã được gửi; sẽ không gửi lại.",

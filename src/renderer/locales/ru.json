@@ -2110,6 +2110,7 @@
   "Cancelled locally; delivery was later confirmed in ChatGPT.": "Отменено локально; доставка позже подтвердилась в ChatGPT.",
   "Not injected: the selected turn ended before an eligible tool call.": "Не вставлено: выбранный ход завершился до подходящего вызова инструмента.",
   "Not sent: ChatGPT did not accept the message.": "Не отправлено: ChatGPT не принял сообщение.",
+  "Not sent: the conversation changed before delivery.": "Не отправлено: разговор изменился до доставки.",
   "Not sent: the browser did not pick up this message within 60 seconds.": "Не отправлено: браузер не забрал это сообщение в течение 60 секунд.",
   "Replaced by your new instruction before delivery.": "Заменено вашей новой инструкцией до доставки.",
   "Stopped waiting for delivery confirmation. The message may already have been sent; it will not be resent.": "Ожидание подтверждения доставки прекращено. Сообщение, возможно, уже отправлено; повторно оно отправлено не будет.",

@@ -2110,6 +2110,7 @@
   "Cancelled locally; delivery was later confirmed in ChatGPT.": "已在本機取消；之後在 ChatGPT 中確認已送達。",
   "Not injected: the selected turn ended before an eligible tool call.": "未插入：所選回合在合適的工具呼叫之前就結束了。",
   "Not sent: ChatGPT did not accept the message.": "未傳送：ChatGPT 沒有接受這則訊息。",
+  "Not sent: the conversation changed before delivery.": "未傳送：送達前對話已發生變化。",
   "Not sent: the browser did not pick up this message within 60 seconds.": "未傳送：瀏覽器沒有在 60 秒內接收這則訊息。",
   "Replaced by your new instruction before delivery.": "送達前已被你的新指示取代。",
   "Stopped waiting for delivery confirmation. The message may already have been sent; it will not be resent.": "已停止等待送達確認。這則訊息可能已經傳送；不會重新傳送。",

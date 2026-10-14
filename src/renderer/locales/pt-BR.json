@@ -2110,6 +2110,7 @@
   "Cancelled locally; delivery was later confirmed in ChatGPT.": "Cancelado localmente; a entrega foi confirmada depois no ChatGPT.",
   "Not injected: the selected turn ended before an eligible tool call.": "Não injetado: o turno selecionado terminou antes de uma chamada de ferramenta adequada.",
   "Not sent: ChatGPT did not accept the message.": "Não enviado: o ChatGPT não aceitou a mensagem.",
+  "Not sent: the conversation changed before delivery.": "Não enviado: a conversa mudou antes da entrega.",
   "Not sent: the browser did not pick up this message within 60 seconds.": "Não enviado: o navegador não pegou esta mensagem em 60 segundos.",
   "Replaced by your new instruction before delivery.": "Substituído pela sua nova instrução antes da entrega.",
   "Stopped waiting for delivery confirmation. The message may already have been sent; it will not be resent.": "Parou de esperar a confirmação de entrega. A mensagem pode já ter sido enviada; ela não será reenviada.",

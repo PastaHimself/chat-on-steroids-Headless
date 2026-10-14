@@ -134,7 +134,91 @@ matrix advances each duration, restarts store/recorder/bridge, polls the unavail
 and verifies preserved identity/objective/history and zero recovery handouts. No real-time
 24-hour authenticated provider run was performed.
 
-## Verification
+## Independent audit follow-up
+
+An independent audit of initial PR head `114dc3c0` reproduced four additional defects:
+a healthy source snapshot survived deletion during a handoff read; MCP instructions escaped
+a deletion/rebind during recorder completion; cancelled tool inputs rejected valid late receipts;
+and global terminal-history trimming removed unresolved delivery custody, allowing replacement.
+The follow-up corrects these owners without adding a recovery controller or retry budget.
+
+- Saved-summary recovery loads the current store and outbox owners again after handoff work,
+  then performs synchronous binding, deletion, execution and delivery checks before queueing
+  a replacement. A changed source aborts the staged continuation without publishing a command.
+- MCP rechecks the current attachment after recording. Revocation preserves the admitted
+  effect result and removes new instructions from both text and structured content. It also
+  prevents stale run retirement.
+- The outbox retains unconfirmed work through cancellation, unrelated queue trimming and
+  restart. Those rows count against the existing admission byte budgets; a full queue rejects
+  new admission instead of discarding custody. Confirmed/disposable history remains bounded.
+- Actual claim transport is retained independently of admission intent. Cancelled tool rows
+  can reconcile later exact evidence without regaining execution or replay authority; browser
+  claims, foreign sources, overlapping calls, interim prose and foreign finals cannot lend proof.
+
+Follow-up review also caught a false-receipt interaction: the recorder can contain a prepared
+appendix which the final response fence later withholds. Recording/offer time alone therefore
+cannot certify publication. The kernel now grants publication at its synchronous return
+boundary; the existing outbox serializes the `toolPublicationAt` fact and existing settling
+custody holds its pending write. Publication alone is still not delivery. A later exact receipt
+is required. A crash or failed write before publication proof is retained leaves uncertainty.
+A positively withheld first offer records a negative publication receipt; both MCP-arrival and
+native-final settlement refuse to call it sent. Withholding a reoffer does not clear an earlier
+publication. No automatic replay follows either outcome. Internal input IDs stay out of tool text.
+Older cancelled claims without positive transport/publication proof remain blocked rather than
+being guessed delivered from timestamps or recorded appendices.
+
+Native-final reconciliation also requires the exact final to follow the retained publication,
+not merely claim preparation. Provider request IDs may be reused inside a turn: an earlier
+final cannot certify a later reoffer whose only publication proof is newer. Conversely, a
+reoffer preserves an earlier durable publication and original claim owner, so an already
+valid late final has the same result before and after restart. A failed publication write
+cannot be repaired by guessing; a subsequent positively published reoffer of the same exact
+input can supply the missing fact. Legacy rows lacking that fact remain unconfirmed.
+
+Regressions cover healthy/deleted/rebound publication, healthy-to-deleted handoff ordering,
+late MCP and exact native-final receipts, foreign/overlapping evidence, both browser/tool
+uncertainty after 55 unrelated cancellations and restart, withheld-response receipt attempts,
+publication-write failures, reused request IDs, retained earliest publication and bounded
+retention. The follow-up adds 25 tracked cases (21 input integration and four bridge cases)
+and strengthens the control API positive/negative publication fixture. An independent
+reviewer reran 12 adversarial cases on the final correction: all passed, with no remaining
+concrete blocker found in the scoped review. Initial fail-first runs reported eight intended
+failures; the withheld-response follow-up reported four more intended failures. A broader run
+initially exposed missing lineage in lightweight unit fixtures and an incorrect expectation that
+confirmed receipts could be pruned before canonical history was saved. The owner check and
+test expectation were corrected; the six relevant suites subsequently passed all 1,542 cases.
+
+### Verification of the audited corrections
+
+The final unchanged implementation passed the complete verification command: **8,561 passed,
+159 skipped**, with no retries. The main suite passed 8,555 cases across 327 passed / 14
+skipped files; the serial suite passed six cases with 22 platform-dependent skips. The same
+source passed both production builds and the independent 12-case adversarial review.
+
+| Exact command | Result |
+| --- | --- |
+| `TAR_OPTIONS=--no-same-owner COS_TEST_WORKERS=2 npm run verify` | Exit 0: privacy/notices, root and Discord TypeScript, Electron module load, main 8,555 passed / 137 skipped and serial 6 passed / 22 skipped. |
+| `npm run build` | Exit 0 on final source. |
+| `npm run discord:build` | Exit 0 on final source. |
+| `COS_TEST_WORKERS=2 npm test -- --run test/control-api-actions.test.ts test/input-delivery-integration.test.ts test/session-input.test.ts -t 'joins a reoffer receipt\|settles an injected message\|reoffers the same input after restart\|MCP publication after recording'` | Exit 0: 16 selected cases passed before the full final verification. |
+| `node scripts/generate-discord-reference.mjs --check` | Passed: all 34 implemented commands. |
+| `git diff --check` | Passed after the complete correction. |
+
+Intermediate complete runs were not accepted as green. The first reported 8,549 passed / two
+failed / 137 skipped: a failed negative publication write still allowed native-final settlement,
+and the new withheld-delivery status lacked translations. The second reported 8,552 passed /
+two failed / 137 skipped: an old control API fixture lacked positive publication evidence, and
+a reused request ID exposed the stale-final/reoffer ordering. Each was investigated; the final
+guard and explicit positive/negative fixture corrected them. A further fail-first regression
+caught volatile reoffer time overriding earlier durable publication; preserving the earliest
+fact resolved the live/restart disagreement. Serial verification ran only on the successful
+final complete command. No failed check was skipped or retried into a passing result.
+
+The deployment/headless smoke and maintenance limitations below still apply. This follow-up
+does not bypass the unprivileged-user or socket guards, deploy anything, use a production
+profile, or claim authenticated long-duration stability.
+
+## Verification of the initial PR head
 
 Final verification exited 0: **8,536 tests passed, 159 skipped**, across the main and serial
 test runs. No test retries were enabled. Earlier fail-first

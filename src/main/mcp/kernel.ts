@@ -1,6 +1,6 @@
 import { CONVERSATION_DELETED } from '../../shared/chat-error.js';
 import { recoveryHeld } from '../recovery-hold.js';
-import { offerToolInput, acknowledgeToolInput, TOOL_INPUT_HEADER } from '../session/input.js';
+import { offerToolInput, acknowledgeToolInput, completeToolInputPublication, TOOL_INPUT_HEADER } from '../session/input.js';
 import { noteConnectorUse } from '../connector-proof.js';
 import { pluginManager } from '../plugins/manager.js';
 import { WINDOWS_COMPUTER_STATE_INPUT_METHODS } from '../../shared/windows-computer.js';
@@ -123,6 +123,7 @@ import { unattributedRepairEta } from '../bridge.js';
 import {
   anyConversationUnavailable,
   conversationUnavailableKnown,
+  conversationAttachmentKnown,
   conversationAttachment,
   findSessionByConversation,
   getSession,
@@ -957,7 +958,10 @@ async function dispatchTracked(
   // Refuse and let the model retry once page evidence is healthy instead.
   // The arrival of this exact call acknowledges earlier injected input before the
   // handler reads the queue. New queued input is still offered only with its result.
-  if (!nested && !conversationPolicyRefusal && !supersededConversation) await acknowledgeToolInput(context.caller.sessionId, context.caller.conversationId, requestId, startedAt)
+  // Exact receipt evidence is independent of permission to execute a new effect.
+  // Deletion still refuses the handler and all new input; it cannot erase a late ACK.
+  if (!nested && !workerConnectionProfileRefusal(context.caller) && (!conversationPolicyRefusal || unavailableRefusal) && !supersededConversation)
+    await acknowledgeToolInput(context.caller.sessionId, context.caller.conversationId, requestId, startedAt)
     .catch(() => logWarn('Prior user input receipt could not be saved; its existing claim is preserved'));
   // Permission can change while the liveness/recovery bookkeeping above awaits disk or browser
   // evidence. A prior refusal is monotonic, while a new revoke must take effect before any
@@ -1057,7 +1061,7 @@ async function dispatchTracked(
     ? await conversationAccessRefusal(context.caller.conversationId)
     : isChatBlocked(context.caller.conversationId) ? BLOCKED_CHAT_REFUSAL : null) ??
     workerConnectionProfileRefusal(context.caller);
-  const deliveryFenced = Boolean(conversationPolicyRefusal) || compacting || supersededConversation || Boolean(silentCeilingWorker) ||
+  let deliveryFenced = Boolean(conversationPolicyRefusal) || compacting || supersededConversation || Boolean(silentCeilingWorker) ||
     Boolean(deliveryPolicyRefusal) ||
     compactingConversation(context.caller.conversationId) !== null || Boolean(context.caller.conversationId &&
       ['superseded', 'unavailable'].includes(await conversationAttachment(context.caller.conversationId, context.caller.sessionId ?? null)));
@@ -1117,7 +1121,9 @@ async function dispatchTracked(
   };
   // Ordinary tools carry direct user input, but only the explicit finish signal
   // advances a planned stage. Successful work is not evidence that a stage is done.
-  const userInput = nested || deliveryFenced ? { messages: [], reminder: '' } : await offerToolInput(context.caller.sessionId, context.caller.conversationId, context.caller.requestId, startedAt, name === 'session_finish' && !result.isError).catch(() => {
+  let publicationIds: string[] = [], firstOffers: string[] = [];
+  const userInput = nested || deliveryFenced ? { messages: [], reminder: '' } : await offerToolInput(context.caller.sessionId, context.caller.conversationId, context.caller.requestId, startedAt, name === 'session_finish' && !result.isError,
+    (ids, first) => { publicationIds = ids; firstOffers = first; }).catch(() => {
     logWarn('User input could not be attached; the completed tool result is preserved');
     return { messages: [], reminder: '' };
   });
@@ -1138,7 +1144,7 @@ async function dispatchTracked(
   // fences new instructions, while retaining the actual result of an admitted effect.
   if (context.caller.conversationId) {
     const currentAttachment = await conversationAttachment(context.caller.conversationId, context.caller.sessionId ?? null);
-    if (currentAttachment === 'unavailable' || currentAttachment === 'superseded') delivered = baseResult;
+    if (currentAttachment === 'unavailable' || currentAttachment === 'superseded') { deliveryFenced = true; delivered = baseResult; }
   }
   if (surface === 'plugins' && delivered.content.length > baseResult.content.length) {
     // All delivery projections above append to the immutable handler result. Only these
@@ -1192,6 +1198,21 @@ async function dispatchTracked(
     void recording.then(() => logInfo(`mcp recording surface=${surface} recorder_async_ms=${Date.now() - recorderStartedAt}`));
     holdWhileSettling(context, recording);
   }
+  // Recording awaits an independent owner. No new instruction or run retirement
+  // may escape a source revoked during that commit. The admitted effect is retained.
+  if (context.caller.conversationId) {
+    const attachment = context.caller.sessionId
+      ? conversationAttachmentKnown(context.caller.conversationId, context.caller.sessionId)
+      : await conversationAttachment(context.caller.conversationId);
+    if (attachment === 'superseded' || attachment === 'unavailable' ||
+        conversationUnavailableKnown(context.caller.conversationId, context.caller.sessionId)) {
+      deliveryFenced = true;
+      delivered = baseResult;
+    }
+  }
+  if (deliveryFenced && firstOffers.length && context.caller.sessionId && context.caller.conversationId && context.caller.requestId)
+    await completeToolInputPublication(context.caller.sessionId, context.caller.conversationId, context.caller.requestId, firstOffers, false)
+      .catch(() => logWarn('Withheld input publication could not be saved; no publication receipt was granted'));
   // Retire a completed run only after this call has had every chance to acknowledge and
   // receive its inbox. Doing it inside acknowledgeOffers would let `agents status` destroy
   // the run halfway through identifying itself; here the handler and result are already done.
@@ -1201,6 +1222,13 @@ async function dispatchTracked(
     for (const family of agentFamiliesForCaller(context.caller)) if (family.running) releaseQuiescentRun({}, family.run_id);
   }
   markTiming('recorder', true);
+  if (!deliveryFenced && publicationIds.length && context.caller.sessionId && context.caller.conversationId && context.caller.requestId) {
+    // No awaited policy work remains: this grant describes the result being returned,
+    // not receipt by the provider. Persist through the existing outbox/settling owners.
+    const publication = completeToolInputPublication(context.caller.sessionId, context.caller.conversationId, context.caller.requestId, publicationIds, true)
+      .catch(() => logWarn('Input publication could not be saved; restart must retain its uncertainty'));
+    holdWhileSettling(context, publication);
+  }
   return delivered;
 }
 
