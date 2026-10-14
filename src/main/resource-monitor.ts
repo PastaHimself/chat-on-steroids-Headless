@@ -10,9 +10,21 @@ export async function serviceSnapshot() {
   try {
     const { stdout } = await execute('systemctl', ['show', '--property=Id,LoadState,ActiveState,SubState', ...managedServices.map(name => `${name}.service`)],
       { timeout: 2000, maxBuffer: 16384, encoding: 'utf8' });
-    const services = stdout.trim().split(/\n\n/).map(block => {
-      const fields = Object.fromEntries(block.split('\n').map(line => line.split('=', 2)));
-      return { name: fields.Id ?? 'unknown', active: fields.LoadState === 'not-found' ? 'not installed' : fields.ActiveState ?? 'unknown', state: fields.SubState ?? 'unknown' };
+    const normalized = stdout.replace(/\r\n/g, '\n').trim();
+    if (!normalized) return { available: true, services: [] };
+    const services = normalized.split(/\n\n+/).map(block => {
+      const fields = Object.fromEntries(
+        block.split('\n').map(line => {
+          const idx = line.indexOf('=');
+          if (idx === -1) return [line.trim(), ''];
+          return [line.slice(0, idx).trim(), line.slice(idx + 1).trim()];
+        })
+      );
+      return {
+        name: fields.Id ?? 'unknown',
+        active: fields.LoadState === 'not-found' ? 'not installed' : (fields.ActiveState ?? 'unknown'),
+        state: fields.SubState ?? 'unknown'
+      };
     });
     return { available: true, services };
   } catch { return { available: false, services: [], note: 'Service manager unavailable; check locally with systemctl.' }; }

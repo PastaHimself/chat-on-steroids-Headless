@@ -8,17 +8,48 @@ export class ApiError extends Error {
 }
 export class ControlClient {
   constructor(readonly directory: string, private readonly transport: typeof fetch = fetch) {}
+  private async readCredentials(retries = 4, delayMs = 400): Promise<{ port: number; token: string }> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const endpointRaw = await fs.readFile(path.join(this.directory, 'endpoint.json'), 'utf8');
+        const tokenRaw = await fs.readFile(path.join(this.directory, 'token'), 'utf8');
+        const endpoint = z.object({ protocol: z.literal(1), port: z.number().int().min(1).max(65535) }).passthrough()
+          .parse(JSON.parse(endpointRaw));
+        const token = tokenRaw.trim();
+        if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Invalid control credential format');
+        return { port: endpoint.port, token };
+      } catch (err) {
+        lastError = err;
+        if (attempt < retries) {
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Failed to read control credentials');
+  }
+
   async request<T = any>(route: string, body?: unknown, timeoutMs = 25_000): Promise<T> {
     if (!/^\/v1\/[a-zA-Z0-9/?=&%_.,-]+$/.test(route) || route.includes('//')) throw new Error('Invalid control route');
     // Re-read per request: the backend rotates credentials/port after each restart.
-    const endpoint = z.object({ protocol: z.literal(1), port: z.number().int().min(1).max(65535) }).passthrough()
-      .parse(JSON.parse(await fs.readFile(path.join(this.directory, 'endpoint.json'), 'utf8')));
-    const token = (await fs.readFile(path.join(this.directory, 'token'), 'utf8')).trim();
-    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Invalid control credential');
-    rememberSecret(token);
-    const response = await this.transport(`http://127.0.0.1:${endpoint.port}${route}`, { method: body === undefined ? 'GET' : 'POST',
-      redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    let credentials = await this.readCredentials();
+    rememberSecret(credentials.token);
+    let response: Response;
+    try {
+      response = await this.transport(`http://127.0.0.1:${credentials.port}${route}`, { method: body === undefined ? 'GET' : 'POST',
+        redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${credentials.token}`,
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    } catch (netErr) {
+      if (body === undefined) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        credentials = await this.readCredentials();
+        rememberSecret(credentials.token);
+        response = await this.transport(`http://127.0.0.1:${credentials.port}${route}`, { method: 'GET',
+          redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${credentials.token}` } });
+      } else {
+        throw netErr;
+      }
+    }
     const reader = response.body?.getReader();
     if (!reader) throw new Error('Empty backend response');
     const chunks: Uint8Array[] = []; let bytes = 0;

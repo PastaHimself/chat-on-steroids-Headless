@@ -92,9 +92,10 @@ export class StateStore {
     this.chain = operation.catch(() => undefined);
     return operation;
   }
-  private async archiveSettled(state: BotState, now: number): Promise<void> {
+  async archiveSettled(state: BotState, now: number, forceAllSettled = false): Promise<void> {
+    const isElevated = forceAllSettled || Object.keys(state.interactions).length >= 1000;
     const expired = Object.entries(state.interactions).filter(([, row]) =>
-      row.state !== 'started' && (row.settledAt ?? row.createdAt) <= now - RECEIPT_AGE_MS);
+      row.state !== 'started' && (isElevated || (row.settledAt ?? row.createdAt) <= now - RECEIPT_AGE_MS));
     // Each archive.put() durably syncs the payload and replay fence. Thousands of serial
     // writes can exceed Discord's maintenance budget on Windows. Archive independent IDs
     // in small batches, but settle every in-flight write before an error can escape: no
@@ -117,8 +118,40 @@ export class StateStore {
       for (const outcome of outcomes) if (outcome.status === 'fulfilled') delete state.interactions[outcome.value];
     }
   }
+  pruneMonitors(state: BotState, now: number, forceCapacity = false): void {
+    const entries = Object.entries(state.monitors);
+    const STALE_COMPLETED_MS = 30 * 60_000; // 30 minutes
+    const MAX_AGE_MS = 24 * 60 * 60_000; // 24 hours
+
+    for (const [id, monitor] of entries) {
+      const isDone = monitor.notifiedFinal !== null || monitor.final !== undefined;
+      const age = now - monitor.createdAt;
+      const idleTime = now - Math.max(monitor.lastUpdate, monitor.createdAt);
+
+      if ((isDone && idleTime > STALE_COMPLETED_MS) || age > MAX_AGE_MS) {
+        delete state.monitors[id];
+      }
+    }
+
+    const remaining = Object.entries(state.monitors);
+    if (forceCapacity || remaining.length >= 16) {
+      remaining.sort(([, a], [, b]) => {
+        const aDone = a.notifiedFinal !== null || a.final !== undefined ? 0 : 1;
+        const bDone = b.notifiedFinal !== null || b.final !== undefined ? 0 : 1;
+        if (aDone !== bDone) return aDone - bDone;
+        return a.createdAt - b.createdAt;
+      });
+      while (remaining.length >= 16) {
+        const [id] = remaining.shift()!;
+        delete state.monitors[id];
+      }
+    }
+  }
   async upkeep(now = Date.now()): Promise<void> {
-    await this.update(async state => { await this.archiveSettled(state, now); });
+    await this.update(async state => {
+      await this.archiveSettled(state, now);
+      this.pruneMonitors(state, now);
+    });
     await this.archive.expire(now);
   }
   async view(view: Omit<View, 'expiresAt'>): Promise<string> {

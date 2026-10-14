@@ -198,8 +198,8 @@ export class DiscordController {
         if (!worker?.conversationId) throw new Error('This worker is not owned by the selected prime, or has no recorded conversation.');
         // Discover its local session through bounded session pages; never use conversation ID as session ID.
         let cursor: string | null = null; let target: any;
-        for (let page = 0; page < 20 && !target; page++) {
-          const rows: any = await this.api.request(`/v1/sessions?limit=50${cursor ? `&cursor=${encode(cursor)}` : ''}`);
+        for (let page = 0; page < 5 && !target; page++) {
+          const rows: any = await this.api.request(`/v1/sessions?limit=200${cursor ? `&cursor=${encode(cursor)}` : ''}`);
           target = rows.sessions.find((row: any) => row.conversationId === worker.conversationId && row.origin?.kind === 'worker');
           cursor = rows.nextCursor; if (!cursor) break;
         }
@@ -268,6 +268,7 @@ export class DiscordController {
     if (!authorized(this.config, settings, interaction.user.id, interaction.guildId, settings.notificationChannel, 'read'))
       throw new Error('The notification channel is outside the allowed channel scope.');
     await this.store.update(state => {
+      this.store.pruneMonitors(state, Date.now(), true);
       const existing = Object.values(state.monitors).find(row => row.sessionId === sessionId && row.channelId === settings.notificationChannel);
       if (existing) { existing.inputId = inputId; existing.createdAt = createdAt; existing.notifiedFinal = null; existing.from = from; existing.lastUpdate = 0;
         existing.activeTurnId = null; delete existing.final; delete existing.completedTurnId; delete existing.questionSeq; delete existing.deliveryConfirmed; delete existing.tools; return; }
