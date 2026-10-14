@@ -4405,7 +4405,13 @@ The read routes (`control-reads.ts`) are `GET /v1/sessions`, `/v1/sessions/{id}`
 `/v1/sessions/{id}/events`, `/v1/inputs`, `/v1/agents` and `/v1/log`. Each asks the owner that
 already feeds the renderer (`session/read-model.ts`, `listInputs`, `swarmState`, `getLog`) and
 projects the answer through an allowlist, so a field an owner grows later stays private until
-it is named there. `/v1/agents` mirrors the broker's `retainedHistory` boolean so a watcher can
+it is named there. The live session job projects a boolean `needsAttention` only when the
+bridge reports a durable Compact & Resume pre-Send refusal or exhausted pickup; the
+source/destination send-state enums and the previously redacted/capped diagnostic are exposed,
+never the continuation token, message IDs, drafts, or unredacted handoff text. Discord `/status`
+shows both send-state enums and this retained blocker, but is read-only: no status projection
+grants retries, another Send, cancellation, or a provider-completion claim.
+`/v1/agents` mirrors the broker's `retainedHistory` boolean so a watcher can
 distinguish parked worker history from no retained history; it does not expose dormant family
 identities or infer health/revivability. An event kind added later is published by name only; the kind, input-state
 and log-level tables are exhaustive by type. Message, tool argument/result, outbox and log text

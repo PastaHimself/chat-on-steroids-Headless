@@ -21,7 +21,14 @@ export function sessionDescription(detail: any): string {
   return [`Session: ${session.title || 'Untitled session'}`,
     `Observed model: ${session.model ?? 'unknown'}`, `State: ${live?.activeTurnId ? 'working' : live?.stopPending ? 'stop requested' : 'no proven active turn'}`,
     `Automation: ${live?.automation ?? 'unavailable'}`, live?.blocked ? `Blocked: ${live.blocked}` : '',
-    live?.goalWait ? `Waiting: ${live.goalWait.reason}` : '', live?.job ? `Compact & Resume: ${live.job.stage}` : '',
+    live?.goalWait ? `Waiting: ${live.goalWait.reason}` : '',
+    ...(live?.job ? [
+      `Compact & Resume: ${live.job.stage}`,
+      `Handoff Send: ${live.job.sourceSend ?? 'unknown'}`,
+      `Replacement Send: ${live.job.destinationSend ?? 'unknown'}`,
+      live.job.needsAttention ? `Compaction needs attention: ${live.job.error ?? 'Inspect the paired browser and existing handoff receipts.'}` :
+        live.job.error ? `Compaction note: ${live.job.error}` : ''
+    ] : []),
     `Last recorded outcome: ${session.lastTurnOutcome ?? 'unknown'}`, `Updated: ${new Date(session.updatedAt).toISOString()}`,
     'A stopped generation alone does not prove task success.'].filter(Boolean).join('\n');
 }

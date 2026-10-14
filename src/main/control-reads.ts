@@ -242,6 +242,7 @@ export function projectLive(controls: SessionControlsView): ControlApiLive {
           busy: job.busy,
           sourceSend: job.sourceSend.state,
           destinationSend: job.destinationSend.state,
+          ...(job.needsAttention === true ? { needsAttention: true as const } : {}),
           error: job.error ? line(job.error, SUMMARY_CAP) : null
         }
       : null

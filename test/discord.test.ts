@@ -92,6 +92,30 @@ describe('Discord commands and authorization', () => {
     await controller.command(interaction('status'));
     expect(store.snapshot().selected[admin]).toBe(session);
   });
+  it('shows source and replacement send evidence when Compact & Resume needs attention', async () => {
+    const api = backend();
+    const original = api.request;
+    api.request = vi.fn(async (route: string) => {
+      if (route === `/v1/sessions/${session}?live=1`) return {
+        session: { id: session, title: 'recorded', updatedAt: 1, origin: null, model: 'observed' },
+        live: {
+          activeTurnId: null, automation: 'goal', job: {
+            stage: 'handoff-pending', sourceSend: 'not-attempted',
+            destinationSend: 'not-attempted', needsAttention: true, error: 'composer_missing'
+          }
+        }
+      };
+      return original(route);
+    });
+    const controller = new DiscordController(config, store, api as unknown as ControlClient);
+    const result = await controller.command(interaction('status'));
+    const description = result.embeds[0].toJSON().description ?? '';
+    expect(description).toContain('Handoff Send: not-attempted');
+    expect(description).toContain('Replacement Send: not-attempted');
+    expect(description).toContain('Compaction needs attention: composer_missing');
+    expect(description).toContain('Recovery: Compact & Resume needs attention');
+    expect(description).toContain('Never manually resend an unconfirmed handoff');
+  });
   it('discovers help from registered definitions and hides administrator commands from read-only users', async () => {
     await store.update(state => { state.settings.users[other] = ['read']; });
     const controller = new DiscordController(config, store, backend() as unknown as ControlClient);
