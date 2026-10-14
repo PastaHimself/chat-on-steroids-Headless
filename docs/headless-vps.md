@@ -167,10 +167,10 @@ Stop bootstrap before starting the windowless backend:
 ```sh
 sudo systemctl stop cos-bootstrap.service
 sudo systemctl start cos-backend.service
-sudo -u cos-backend env COS_CONTROL_DIRECTORY=/run/cos-control /usr/local/bin/node /opt/chat-on-steroids/current/deploy/healthcheck.mjs --ready
+sudo -u cos-backend env COS_CONTROL_DIRECTORY=/run/cos-control /usr/local/bin/node /opt/chat-on-steroids/current/deploy/healthcheck.mjs --connected
 ```
 
-`--ready` checks authenticated API, extension pairing/presence and MCP connection. It does not prove ChatGPT authentication or account eligibility. A login error, absent extension or unavailable catalog is a reason to reopen the private browser and inspect the actual provider state.
+`--connected` checks authenticated backend API availability, companion pairing/presence and MCP connection. It does **not** prove ChatGPT authentication, account eligibility or successful task delivery. `--service` checks only backend liveness; `--ready` remains a strict, fail-closed check for task-readiness evidence and currently returns exit code 2 because the API cannot establish provider readiness. A login error, absent companion or unavailable catalog is a reason to reopen the private browser and inspect the actual provider state.
 
 ## 5. Register commands and enable the stack
 

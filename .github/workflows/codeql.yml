@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   analyze:
-    if: github.repository == 'totec448-spec/chat-on-steroids'
+    # Run CodeQL for this public fork instead of restricting analysis to upstream.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
