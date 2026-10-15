@@ -70,6 +70,9 @@ function page(options: {
     },
     t: (_key: string, fallback: string, detail?: string) => detail ? fallback.replace('$1', detail) : fallback,
     renderControl: vi.fn(), pullActivity: vi.fn(), rememberUserSend: vi.fn(),
+    // The full recorder suite exercises receipt matching; these pre-Send cases
+    // never obtain a native message to compare.
+    matchesSubmittedBootstrap: vi.fn(),
     waitPageView: vi.fn(async () => null),
     INTERRUPT_WAIT_MS: 1,
     handoffResidue: () => false,
@@ -77,7 +80,8 @@ function page(options: {
     reportPendingCompaction: reported,
     ask,
     sendSubmittedText: vi.fn(async (
-      current: () => boolean, _clear: boolean, beforeSend: (current: () => boolean) => Promise<boolean>
+      current: () => boolean, _clear: boolean, beforeSend: (current: () => boolean) => Promise<boolean>,
+      _onWithdraw: unknown, _matches: unknown
     ) => {
       if (options.send === 'authorized-but-no-receipt') await beforeSend(current);
       // Native Send was not observed. Only the durable dispatch claim can make
@@ -129,6 +133,8 @@ describe('automatic Compact & Resume native pre-Send recovery (PR #5 follow-up)'
     expect(f.retired).not.toHaveBeenCalled();
     expect(f.ask).toHaveBeenCalledWith(expect.objectContaining({ sourceAttempt: true, token: TOKEN }));
     expect(f.ask.mock.calls.some(([request]) => request.sourceDispatch === true)).toBe(false);
+    expect(f.context.rememberUserSend).toHaveBeenCalledWith(true);
+    expect(f.context.sendSubmittedText.mock.calls[0]?.[4]).toBe(f.context.matchesSubmittedBootstrap);
   });
 
   it('retains the existing draft and safely abandons automatic pre-Send custody', async () => {

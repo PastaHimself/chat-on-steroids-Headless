@@ -1,7 +1,7 @@
 # Headless long-run reliability upgrade — 2026-10-15
 
 Development targets `PastaHimself/chat-on-steroids-Headless:main`. Upstream was read only.
-Production investigation used read-only SSH diagnostics. No deployment, service restart,
+Production investigation used read-only SSH diagnostics and DOM inspection of existing tabs. No deployment, service restart,
 configuration change, session repair, queue rewrite or provider prompt was performed on the VPS.
 
 ## Evidence and implemented fixes
@@ -92,6 +92,10 @@ snapshots, not a complete incident history. Private identifiers and task text ar
   refusal is correct under the identity contract. The saved data cannot establish why those
   boundaries were missed. Two other pending sources remained `dispatched-unresolved` with
   no exact source message receipt; they were neither reset nor resent.
+- A later read-only inspection reached an existing signed-in source tab. Its native composer
+  showed “Chat blocked” and the retained-custody message that the handoff deadline had passed.
+  The inspection created no input references and did not attach, focus, reload or send. It
+  confirms a visible blocker, not assistant recovery or validation of the patched recorder.
 - Outbox snapshot: 55 rows (38 sent, 10 failed, three cancelled, four queued). Those state
   counts are not whole-task completion claims. No outstanding browser commands or active
   broker runs were in the sampled ledgers; dormant history and user progress were preserved.
@@ -112,7 +116,8 @@ missing handoff generation after escaping, and incorrect Discord restricted stat
 Automated evidence includes real local SDK subprocesses and Git repositories; bridge HTTP,
 durable ledgers and fault injection; shipped extension scripts against DOM fixtures; renderer
 checks in Electron; and a disposable Electron/Xvfb/Brave profile. Provider behavior in bridge
-and DOM tests is simulated. No signed-in ChatGPT browser or live Discord delivery was used.
+and DOM tests is simulated. The signed-in production page was inspected read only; no patched
+signed-in Send, authenticated task cycle or live Discord delivery was tested.
 
 Two short soaks exercise actual local persistence and control code:
 

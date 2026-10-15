@@ -516,7 +516,7 @@ async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
     if (row.purpose === 'decision') return row;
     if (row.purpose === 'rotation' && !terminal(row) && row.sendAuthorizedAt === undefined &&
         !await rotationInputCurrent(row))
-      return { ...row, state: 'cancelled', error: 'Automatic fresh turn cancelled because its source or setting changed.' };
+      return { ...row, state: 'cancelled', error: 'Automatic follow-up cancelled because its active turn or setting changed.' };
     if (row.state === 'queued' && row.delivery === 'tool' && row.toolTurnId) {
       const session = row.sessionId ? await getSession(row.sessionId) : null;
       const activity = session ? deliveryHooks?.activity?.(session) : null;
