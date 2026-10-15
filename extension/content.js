@@ -36,7 +36,7 @@
   // before touching the shared DOM. Otherwise old and new composer observers can continually
   // remove and reinsert each other's controls, starving transport/timers and freezing the tab.
   // A healthy incumbent in this context still wins the static/recovery injection race.
-  const RECORDER_VERSION = 22;
+  const RECORDER_VERSION = 23;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -2689,15 +2689,13 @@
       });
     }
     const nativeEnd = result.outcome === 'completed' ? fiberTurnFor(ended) : null;
-    const imageEnd = nativeEnd?.endMessageId && nativeEnd.images?.some(image =>
-      image.messageId === nativeEnd.endMessageId && image.providerStatus === 'finished_successfully');
     if (endedTurnId) {
       // The same turn ending again keeps the reopening it already followed (reconcileReopenedStop).
       const resumedFor = stoppedEnd?.turnId === endedTurnId ? stoppedEnd.resumedFor : undefined;
       stoppedEnd = result.outcome === 'stopped' ? { turnId: endedTurnId, detail: result.detail, resumedFor } : null;
     }
     if (endedTurnId) emit({ kind: 'turn_end', turnId: endedTurnId, ...result,
-      ...(imageEnd ? { providerMessageId: nativeEnd.endMessageId } : {}) });
+      ...(nativeEnd?.endMessageId ? { providerMessageId: nativeEnd.endMessageId } : {}) });
     // Same moment, the other reader: the goal loop wants this turn's answer while `ended`
     // still names its section. It decides for itself whether the turn is one to answer —
     // and waits for it to hold still first. See noteGoalTurn.
@@ -5049,7 +5047,7 @@
           ...(message.resolvedModel ? { resolvedModel: message.resolvedModel } : {}),
           ...(message.references ? { references: message.references } : {}),
           ...(message.createTime ? { authoredAt: message.createTime } : {}),
-          turnId: localOwner || undefined,
+          turnId: owner || undefined,
           text: message.rawText,
           textIncomplete: message.textIncomplete,
           renderedHtml: message.renderedHtml,

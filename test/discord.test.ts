@@ -134,6 +134,44 @@ describe('Discord commands and authorization', () => {
     expect(description).toContain('Recovery: Compact & Resume needs attention');
     expect(description).toContain('Never manually resend an unconfirmed handoff');
   });
+  it.each([
+    { state: 'queued', delivery: 'pending', phrase: 'waiting for browser claim' },
+    { state: 'browser', delivery: 'pending', offeredAt: 10, phrase: 'Browser claimed' },
+    { state: 'queued', delivery: 'pending', mode: 'after-turn', phrase: 'waiting for turn completion' },
+    { state: 'queued', delivery: 'pending', mode: 'finish', phrase: 'waiting for a finish boundary' },
+    { state: 'queued', delivery: 'pending', transportIntent: 'tool', phrase: 'waiting for its exact tool recipient' },
+    { state: 'browser', delivery: 'unconfirmed', sendAuthorizedAt: 11, phrase: 'receipt unconfirmed' },
+    { state: 'cancelled', delivery: 'unconfirmed', sendAuthorizedAt: 11, phrase: 'receipt unconfirmed' },
+    { state: 'failed', delivery: 'not_sent', error: 'Message queued. Finish Setup to send: Add a folder', phrase: 'Add a folder' },
+    { state: 'sent', delivery: 'sent', deliveredAt: 12, bound: true, phrase: 'receipt confirmed' }
+  ])('inspects an admitted opening without requiring provider workers ($state/$delivery)', async entry => {
+    const api = backend(), original = api.request;
+    api.request = vi.fn(async (route: string): Promise<any> => {
+      if (route === `/v1/sessions/${session}?live=1`) return {
+        session: { id: session, conversationId: entry.bound ? 'provider-chat' : null, title: 'opening', updatedAt: 1 }, live: null
+      };
+      if (route.includes('/workers') && !entry.bound) throw new Error('Backend 409: no_chat');
+      if (route.startsWith('/v1/inputs?')) return { inputs: [{ id: 'opening-input', sessionId: session, ...entry }] };
+      return original(route);
+    });
+    const controller = new DiscordController(config, store, api as unknown as ControlClient);
+    const result = await controller.command(interaction('status'));
+    expect(result.embeds[0].toJSON().description).toContain(entry.phrase);
+    expect(api.action).not.toHaveBeenCalled();
+    expect(store.snapshot().settings.defaultSession).toBe(session);
+    if (!entry.bound) expect(api.request.mock.calls.some(([route]) => route.endsWith('/workers'))).toBe(false);
+  });
+  it('explains empty /chat history while its admitted opening awaits a receipt', async () => {
+    const api = backend(), original = api.request;
+    api.request = vi.fn(async (route: string): Promise<any> => {
+      if (route.startsWith('/v1/inputs?')) return { inputs: [{ id: 'opening-input', sessionId: session,
+        state: 'browser', delivery: 'unconfirmed', sendAuthorizedAt: 11 }] };
+      return original(route);
+    });
+    const result = await new DiscordController(config, store, api as unknown as ControlClient).command(interaction('chat'));
+    expect(result.embeds[0].toJSON().description).toContain('receipt unconfirmed');
+    expect(api.action).not.toHaveBeenCalled();
+  });
   it('formats /status with embed colors, status emojis, and embed fields', async () => {
     const api = backend();
     const controller = new DiscordController(config, store, api as unknown as ControlClient);

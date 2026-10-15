@@ -4214,13 +4214,21 @@ describe('capturing a sent handoff from the recorder', () => {
       sourceSend: { state: 'sent', messageId: anchor }, captureIssue: 'brief-too-short' });
   });
 
-  it('collects late recorder evidence after three exhausted writing pickups without a fourth reload', async () => {
+  it.each([false, true])('collects late recorder evidence after three exhausted writing pickups without a fourth reload (native recovery=%s)', async nativeRecovery => {
     vi.useFakeTimers();
     try {
       await pair();
-      const conversationId = 'c0c0c0c0-7870-4000-8000-000000000007';
+      const conversationId = randomUUID();
       const { token, anchor } = await sentHandoff(conversationId);
       await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+      if (nativeRecovery) {
+        await sessionStoreModule.flushSessions(); await flushDurable();
+        const snapshot = await readDurable<ContinuationSnapshot>(CONTINUATIONS_STATE);
+        resetBridgeForTests(); resetRecorderForTests(); resetSessionStoreForTests(); initSessionStore(dir);
+        await restoreContinuations(snapshot); await pair();
+        setBrowserOpener(async url => { opened.push(url); });
+        expect(continuationByToken(token)?.sourceSend).toMatchObject({ state: 'sent', messageId: anchor });
+      }
       for (let attempt = 0; attempt < 3; attempt++) {
         await vi.advanceTimersByTimeAsync(5 * 60_000);
         await sweepStaleSwarm();
@@ -4232,9 +4240,17 @@ describe('capturing a sent handoff from the recorder', () => {
       await sweepStaleSwarm();
       expect(continuationByToken(token)?.pickup).toMatchObject({ attempts: 3, told: true });
       // Recorder restoration/late journal publication need not send another /compact checkpoint.
-      await recordChatObservations(conversationId, generation('handoff-exhausted-turn', 'handoff-exhausted-final', SAMPLE_BRIEF));
+      const events = generation('handoff-exhausted-turn', 'handoff-exhausted-final', SAMPLE_BRIEF);
+      if (nativeRecovery) for (const event of events) {
+        if (event.kind === 'assistant_message' && event.final) { delete event.turnId; event.providerMessageId = '11111111-2222-4333-8444-555555555555'; }
+        if (event.kind === 'turn_end') event.providerMessageId = '11111111-2222-4333-8444-555555555555';
+      }
+      await recordChatObservations(conversationId, events);
       await sweepStaleSwarm();
-      expect(continuationByToken(token)?.handoffId).toBeTruthy();
+      const captured = continuationByToken(token)?.handoffId;
+      expect(captured).toBeTruthy();
+      await sweepStaleSwarm();
+      expect(continuationByToken(token)?.handoffId).toBe(captured);
       expect(continuationByToken(token)?.sourceSend).toMatchObject({ state: 'sent', messageId: anchor });
       expect((await request('GET', '/status')).body.repairs ?? []).toHaveLength(0);
       expect(pendingCommands().filter(command => command.what.startsWith('resume:'))).toHaveLength(1);

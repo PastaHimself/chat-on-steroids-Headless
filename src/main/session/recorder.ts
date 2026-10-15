@@ -2435,11 +2435,25 @@ async function recordChatObservationsNow(
         if (!item.turnId) continue;
         const stopOverride = live?.knownTurnEnds.has(item.turnId) && item.outcome === 'stopped';
         if (live?.knownTurnEnds.has(item.turnId)) {
+          // The local quiet verdict can precede MAIN's terminal identity. Retain
+          // that late exact proof once, without re-ending the turn or renewing work.
+          // A newer question/reopen, failed end or contradictory UUID vetoes it.
+          const terminalProof = item.outcome === 'completed' && item.providerMessageId;
+          if (!stopOverride && !terminalProof) continue;
+          const [latest] = await readRecentEvents(sessionId, 1, { kinds: ['turn_start', 'turn_end', 'user_message'] });
+          if (terminalProof && latest?.kind === 'turn_end' && latest.turnId === item.turnId &&
+              latest.outcome === 'completed' && !latest.providerMessageId) {
+            await appendEvent(sessionId, { kind: 'turn_end', source: latest.source, time: latest.time,
+              turnId: latest.turnId, outcome: 'completed', providerMessageId: item.providerMessageId,
+              ...(latest.agent ? { agent: latest.agent } : {}), ...(latest.detail ? { detail: latest.detail } : {}),
+              ...(latest.continued ? { continued: latest.continued } : {}) });
+            stored++;
+            continue;
+          }
           // An explicit Stop can arrive after automation's interrupted end or a
           // failed view. The latest exact source may strengthen to stopped once;
           // an old stop must never close a new question or generation.
           if (!stopOverride || (live.turnId && live.turnId !== item.turnId)) continue;
-          const [latest] = await readRecentEvents(sessionId, 1, { kinds: ['turn_start', 'turn_end', 'user_message'] });
           if (latest?.kind !== 'turn_end' || latest.turnId !== item.turnId ||
               latest.outcome === 'stopped' || item.time < latest.time) continue;
         }

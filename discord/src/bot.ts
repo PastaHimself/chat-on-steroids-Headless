@@ -5,7 +5,7 @@ import { ApiError, ControlClient } from './api.js';
 import { authorized, safeText, rememberSecret, type Bootstrap } from './config.js';
 import { definitions, helpDescription } from './commands.js';
 import { StateStore, snowflake, type Permission, type View } from './state.js';
-import { panel, buttons, select, sessionDescription, historyDescription, taskPlanDescription, resourceDescription, sessionStatusIndicator, EmbedColor } from './ui.js';
+import { panel, buttons, select, sessionDescription, historyDescription, taskPlanDescription, resourceDescription, sessionStatusIndicator, inputDeliveryDescription, EmbedColor } from './ui.js';
 
 const sessionPath = (id: string) => {
   if (!/^[0-9a-z-]{8,64}$/.test(id)) throw new Error('Invalid local session ID');
@@ -282,15 +282,19 @@ export class DiscordController {
     const detail = await this.api.request(`${sessionPath(id)}?live=1`);
     const view = await this.makeView(interaction, { kind: 'status', sessionId: id });
     const requested = this.selection(interaction, id);
-    const workers = await this.api.request(`${sessionPath(id)}/workers`);
+    // An admitted opening already has a local session, but caller-scoped worker
+    // state requires a concrete provider conversation. Do not hide its outbox
+    // behind the legitimate no_chat refusal at that separate boundary.
+    const workers = detail.session.conversationId ? await this.api.request(`${sessionPath(id)}/workers`) : { agents: [] };
     const workerSummary = Object.entries((workers.agents ?? []).reduce((counts: Record<string, number>, row: any) => { counts[row.state] = (counts[row.state] ?? 0) + 1; return counts; }, {})).map(([state, count]) => `${count} ${state}`).join(', ') || 'None';
     const queue = await this.api.request('/v1/inputs?limit=100');
     const input = queue.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id).at(-1);
     const projects = await this.api.request('/v1/remote/projects');
     const project = projects.projects.find((row: any) => row.id === detail.session.projectId);
     const status = sessionStatusIndicator(detail);
+    const delivery = `${input?.delivery ?? 'No recent input proof'}\n${inputDeliveryDescription(input)}\nProvider binding: ${detail.session.conversationId ? 'attributed' : 'not yet attributed'}`;
 
-    return panel('Session status', `${sessionDescription(detail)}\nProject: ${project?.name ?? 'Unfiled or unavailable'}\nNext prompt model: ${requested.model ?? 'Current provider selection'}\nDelivery: ${input?.delivery ?? 'No recent input proof'}\nWorkers: ${workerSummary}\nRecovery: ${detail.live?.providerUnavailable?.reason === 'conversation_deleted' ? 'ChatGPT confirmed deletion. Local work and objective are retained. Review /queue, /operations, /history and workers; after reconciliation, /compact can recover from a saved summary. A stream resume 404 alone does not prove deletion.' : detail.live?.recordingIncompleteAt !== undefined ? 'Recording history is incomplete. Inspect and reconcile it locally before requesting automatic continuation.' : detail.live?.blocked ? 'Review the session block in Details.' : detail.live?.job?.needsAttention ? 'Compact & Resume needs attention; inspect the source and replacement Send checkpoints above. Never manually resend an unconfirmed handoff.' : detail.live?.recovery?.length ? 'The backend is recovering this session. Review Details and inspect its receipt before requesting more work.' : input?.delivery === 'unconfirmed' ? 'Inspect queue and history before submitting another request.' : 'No current recovery action reported.'}`,
+    return panel('Session status', `${sessionDescription(detail)}\nProject: ${project?.name ?? 'Unfiled or unavailable'}\nNext prompt model: ${requested.model ?? 'Current provider selection'}\nDelivery: ${delivery}\nWorkers: ${workerSummary}\nRecovery: ${detail.live?.providerUnavailable?.reason === 'conversation_deleted' ? 'ChatGPT confirmed deletion. Local work and objective are retained. Review /queue, /operations, /history and workers; after reconciliation, /compact can recover from a saved summary. A stream resume 404 alone does not prove deletion.' : detail.live?.recordingIncompleteAt !== undefined ? 'Recording history is incomplete. Inspect and reconcile it locally before requesting automatic continuation.' : detail.live?.blocked ? 'Review the session block in Details.' : detail.live?.job?.needsAttention ? 'Compact & Resume needs attention; inspect the source and replacement Send checkpoints above. Never manually resend an unconfirmed handoff.' : detail.live?.recovery?.length ? 'The backend is recovering this session. Review Details and inspect its receipt before requesting more work.' : input?.delivery === 'unconfirmed' ? 'Inspect queue and history before submitting another request.' : 'No current recovery action reported.'}`,
       [buttons(view, [['refresh', 'Refresh', ButtonStyle.Primary], ['taskplan', 'View Plan', ButtonStyle.Secondary], ['queue', 'View queue', ButtonStyle.Secondary], ['history', 'View history', ButtonStyle.Secondary], ['details', 'Details', ButtonStyle.Secondary]])],
       [],
       {
@@ -327,7 +331,10 @@ export class DiscordController {
   private async historyPanel(interaction: any, id: string, before?: number, recent = false) {
     const result = await this.api.request(`${sessionPath(id)}/events?limit=6${before !== undefined ? `&before=${before}` : ''}${recent ? '&kinds=user_message,assistant_message' : ''}`);
     const view = await this.makeView(interaction, { kind: 'history', sessionId: id, before: result.events[0]?.position });
-    return panel('Recorded history', historyDescription(result.events), [buttons(view, [['older', 'Older', ButtonStyle.Secondary], ['latest', 'Latest', ButtonStyle.Secondary]])], [], { color: EmbedColor.Info });
+    const queue = !result.events.length ? await this.api.request('/v1/inputs?limit=100') : null;
+    const input = queue?.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id).at(-1);
+    const description = historyDescription(result.events) + (!result.events.length ? `\n${inputDeliveryDescription(input)}\nUse /status to inspect provider binding; empty history alone proves no delivery outcome.` : '');
+    return panel('Recorded history', description, [buttons(view, [['older', 'Older', ButtonStyle.Secondary], ['latest', 'Latest', ButtonStyle.Secondary]])], [], { color: EmbedColor.Info });
   }
   private async sessionsPanel(interaction: any, cursor?: string | null) {
     const result = await this.api.request(`/v1/sessions?limit=10${cursor ? `&cursor=${encode(cursor)}` : ''}`);

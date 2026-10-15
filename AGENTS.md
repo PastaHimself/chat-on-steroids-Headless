@@ -710,7 +710,7 @@ has no native final or Stop. Idle-load 404s, late/foreign requests and ordinary 
 The fact neither closes the turn nor renews activity. A newer resume's SSE-open headers,
 terminal evidence or navigation retires its page projection; local tool work behind a broken
 stream does not. Older 404s cannot resurrect failure after a newer successful resume.
-Recorder protocol 22 installs the matching isolated handler; MAIN observer replacement keeps
+Recorder protocol 23 installs the matching isolated handler; MAIN observer replacement keeps
 its existing nonstreaming disposal gate. Tests: `usage-observer`, `content-script`, `bridge`.
 Replacing a versioned instance cancels its readers and retires listeners; a provider's wrapper
 can still delegate through an inactive instance. A legacy boolean has no disposal handle and
@@ -2325,8 +2325,8 @@ a fixed `gpt-6-instant` ("immediate answers"), but no picker view offers it and 
 select it; the app offers exactly what the native picker offers and never substitutes a hidden slug.
 Ambiguous triggers and unrecognized state remain unknown. MAIN helper replacement removes the
 previous listener across protocol versions, because the picker/plugin reply protocols are shared.
-The matched recorder/MAIN helper version is 22. Shell exchanges are read only under the native
-main/thread anchors. Their `entry.turn.items` supply actual user/assistant ids, public text and
+The isolated recorder version is 23; the MAIN helper remains version 22. Shell exchanges are
+read only under the native main/thread anchors. Their `entry.turn.items` supply actual user/assistant ids, public text and
 per-call completion; DOM slot keys only join those exact items to the current scan. Missing ids
 do not become invented messages. Only a completed final item in a successfully completed turn
 can end it; cancellation or an unknown turn status never acknowledges unfinished tool calls.
@@ -3062,7 +3062,16 @@ awaiting-summary -> awaiting-chat -> claimed -> committing -> committed
    `turn_end`, exactly one nonempty final. That outranks the mounted Fiber shape, which can
    lose the terminal when ChatGPT remounts a long answer under another assistant id. A second
    generation for the same user message (Retry/regenerate) fails closed; never pick the
-   newest final. The recorder is authoritative at every sent/uncertain summary ingress, including
+   newest final. An unowned final may recover its capture generation only when an independently
+   recorded current completed boundary names that exact native final UUID inside this same
+   anchored interval. Publication sequence owns lifecycle; a same-id reopen retires earlier
+   terminal proof and requires fresh final content. Conflicting positive final UUIDs are refused
+   even for a named final. Missing UUIDs or multiple generations remain unresolved. This read-only
+   join changes neither historical turn ids nor live lifecycle authority. The recorder accepts one
+   late UUID enrichment of the same latest completed boundary without renewing activity; a newer
+   question/reopen or contradictory existing UUID vetoes enrichment. Text and image completions
+   both retain the native terminal UUID. The recorder is authoritative at every sent/uncertain
+   summary ingress, including
    older pages' mounted-text fallback. `/events` and the existing maintenance sweep reconcile
    complete evidence without another page checkpoint, including after pickup exhaustion/restart.
    Carry the recorder revision through overflow/preparation reads; publish capture under the
@@ -3717,7 +3726,12 @@ in shared `worker-admission.ts`, retaining staged broker publication, durable ro
 leases, approved-root revalidation and caller incarnation; MCP and remote controls use that owner.
 
 `discord/src/state.ts` owns only bot grants, setup drafts, local session mappings and notification
-checkpoints. It never reads backend ledgers. Local bootstrap establishes administrators/guilds/
+checkpoints. It never reads backend ledgers. Discord status skips provider-scoped worker reads
+for an unbound admitted local session, so a legitimate `no_chat` cannot hide its input status.
+Status and empty history project the existing outbox proof (queued awaiting claim, claimed before
+authorization, unconfirmed Send, confirmed receipt, or terminal non-delivery), startup diagnostics
+and provider attribution separately. These projections never retry or grant delivery authority.
+Local bootstrap establishes administrators/guilds/
 channels; roles cannot grant access. Every interaction rechecks permission and panel ownership.
 Setup publishes after validation/confirmation, rejects a draft based on superseded settings and
 preserves published state on a failed file write. Backend/bot writes are separate authorities;
