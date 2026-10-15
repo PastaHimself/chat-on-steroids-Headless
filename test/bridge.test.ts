@@ -408,6 +408,7 @@ beforeEach(async () => {
   });
   resetRecorderForTests();
   writeDurableSoon('bridge-commands', null);
+  writeDurableSoon('provider-history-backoff', null);
   await flushDurable();
   await setSecret('bridgeToken', '');
   token = null;
@@ -11073,6 +11074,35 @@ describe('unattributed activity recovery', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await sweepStaleSwarm(Date.now());
       expect(await maintenanceBatch()).toContainEqual(expect.objectContaining({ conversationId: PRIME, reason: 'silence' }));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('restores the newest history Retry-After across a full backend restart even when notices coalesce', async () => {
+    vi.useFakeTimers();
+    try {
+      await pair();
+      const { setGoalSwitchNow } = await import('../src/main/goal.js');
+      await setGoalSwitchNow(PRIME, 'loop', true, true);
+      await events(PRIME, [{ kind: 'model_selection', time: Date.now(), model: 'GPT-6 Thinking', reasoningEffort: 'high' },
+        openTurn('durable-history-limit')]);
+      await attributed(PRIME, false, Date.now());
+      const retryAt = Date.now() + 20 * 60_000;
+      for (const deadline of [retryAt - 60_000, retryAt]) await events(PRIME, [{
+        kind: 'chat_error', time: Date.now(), turnId: 'durable-history-limit', recoverable: false, blocking: true,
+        retryAt: deadline, text: 'ChatGPT temporarily rate-limited loading this conversation history.'
+      }]);
+      const session = (await findSessionByConversation(PRIME))!;
+      expect((await readEvents(session.id, { kinds: ['chat_error'] })).filter(event =>
+        event.kind === 'chat_error' && event.turnId === 'durable-history-limit')).toHaveLength(1);
+      await stopBridge();
+      resetBridgeForTests();
+      const restarted = await startBridge();
+      expect(restarted).not.toBeNull();
+      base = `http://127.0.0.1:${restarted}`;
+      expect((await sessionControlsFor(session.id)).recovery).toEqual([{ kind: 'provider-limit', deadline: retryAt }]);
+      await vi.advanceTimersByTimeAsync(CHAT_SILENCE_MS + 1);
+      await sweepStaleSwarm(Date.now());
+      expect((await maintenanceBatch()).filter(repair => repair.conversationId === PRIME)).toEqual([]);
     } finally { vi.useRealTimers(); }
   });
 

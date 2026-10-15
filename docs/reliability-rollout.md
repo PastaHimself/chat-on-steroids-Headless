@@ -12,6 +12,11 @@ decision to keep timed rotation disabled. Recording quota pressure and incomplet
 appear in health; an incomplete history blocks automated decisions without discarding intent.
 Authenticated 4/8/12/24-hour acceptance and server-side cancellation proof remain pending.
 
+The [October 15 follow-up](reliability/long-run-upgrade-2026-10-15.md) adds durable provider
+deadlines, handoff send-receipt repair, plugin/worktree fixes and optional ordinary fresh turns
+(still Off by default). Its [reviewed rollout](headless-long-run-rollout.md) retains the same
+backup and reconciliation requirements; no production deployment was performed.
+
 ## Health and operator controls
 
 `GET /v1/remote/health` is authenticated and read only. Every component includes a state,

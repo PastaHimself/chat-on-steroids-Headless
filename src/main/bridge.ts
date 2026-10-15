@@ -241,6 +241,9 @@ import {
 import type { ContinuationView } from './session/continuation.js';
 import { noteResumeOpening } from './session/resume-gate.js';
 import { readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
+import { providerHistoryRetryAt as providerHistoryBackoff, restoreProviderHistoryBackoff, recordProviderHistoryBackoff, resetProviderHistoryBackoffForTests } from './provider-history-backoff.js';
+import { considerTurnRotation } from './turn-rotation.js';
+import { fileRotationInput } from './session/input.js';
 import { APP_VERSION, BRIDGE_PROTOCOL } from './version.js';
 import { conversationHasMcpCallSince, readHandoffResponse, handoffResponseUnchanged, withSessionMutationFence } from './session/store.js';
 import { sessionWorkingAt } from '../shared/session-activity.js';
@@ -5579,6 +5582,7 @@ async function startBridgeOnce(epoch: number, prepared?: PreparedBridge): Promis
   // has nobody to ask until this moment — and queue() folds a replayed worker into
   // the restored command for the same worker rather than opening a second tab.
   try {
+    await restoreProviderHistoryBackoff();
     await restoreCommands();
     // Rebuild unfinished Goal/Loop watches from their existing durable execution proof.
     // No repair token, Send lease or live-provider verdict survives a process restart.
@@ -7665,8 +7669,7 @@ interface Repair {
 const TURN_SCOPED_REPAIRS: ReadonlySet<Repair['reason']> = new Set(['unattributed', 'assistant-error']);
 
 const repairsInFlight = new Map<string, Repair>();
-/** Exact provider Retry-After deadline for conversation-history reads. It delays browser recovery; it never creates one. */
-const providerHistoryBackoffUntil = new Map<string, number>();
+/** A cold start deferred by the canonical provider deadline; it creates no retry authority. */
 type ProviderDeferredColdStart = {
   repair: Repair;
   pickup: { replyId: string; dueAt: number; attempts: number; expiresAt: number; stoppedAt?: number } | null;
@@ -7675,29 +7678,10 @@ type ProviderDeferredColdStart = {
 /** Queue-time authority snapshots only for Goal/compaction work actually deferred by Retry-After. */
 const providerDeferredColdStarts = new Map<string, ProviderDeferredColdStart>();
 
-function providerHistoryBackoff(conversationId: string, now = Date.now()): number | null {
-  const until = providerHistoryBackoffUntil.get(conversationId);
-  if (!until) return null;
-  if (until <= now) {
-    providerHistoryBackoffUntil.delete(conversationId);
-    return null;
-  }
-  return until;
-}
-
-function noteProviderHistoryBackoff(conversationId: string, observations: readonly ChatObservation[]): void {
-  const now = Date.now();
-  for (const [id, deadline] of providerHistoryBackoffUntil) if (deadline <= now) providerHistoryBackoffUntil.delete(id);
-  let until = providerHistoryBackoff(conversationId, now) ?? 0;
-  for (const item of observations) {
-    if (item.kind !== 'chat_error' || item.blocking !== true || !Number.isFinite(item.retryAt) ||
-        item.retryAt! <= now || item.retryAt! - item.time > 24 * 60 * 60_000) continue;
-    until = Math.max(until, item.retryAt!);
-  }
-  if (!until) return;
-  providerHistoryBackoffUntil.set(conversationId, until);
-  // Expired entries are purged above. Never evict a live rate-limit fence,
-  // even if more than 500 distinct conversations were throttled.
+async function noteProviderHistoryBackoff(conversationId: string, observations: readonly ChatObservation[]): Promise<void> {
+  const until = await recordProviderHistoryBackoff(conversationId, observations);
+  if (until === null) return;
+  // The durable deadline owner retains every live provider restriction.
   const repair = repairsInFlight.get(conversationId);
   if (repair && repair.state !== 'done') {
     repair.notBefore = Math.max(repair.notBefore, until);
@@ -7706,7 +7690,7 @@ function noteProviderHistoryBackoff(conversationId: string, observations: readon
       rememberProviderDeferredColdStart(conversationId, repair);
     }
   }
-  armSilenceSweep(now);
+  armSilenceSweep();
 }
 
 /** Replayed transcript markers are diagnostics, not new continuation attempts. */
@@ -8175,7 +8159,7 @@ async function noteRecoveryObservations(
   const accessLimit = (item: ChatObservation): boolean => item.kind === 'chat_error' &&
     (item.blocking === true ||
       /^too many requests\b.*temporarily limited.*access.*few minutes/i.test((item.text ?? '').replace(/\s+/g, ' ')));
-  noteProviderHistoryBackoff(conversationId, observations);
+  await noteProviderHistoryBackoff(conversationId, observations);
   // The recorder owns idempotency. Raw batches may contain a historical user row or turn_start
   // beside a newly accepted title, so inferring activity from `stored > 0` re-armed completed
   // chats on every recovery reload. Only the recorder's per-event acceptance verdict may move
@@ -9562,6 +9546,24 @@ function noteCallAttribution(
     // Exact calls are visible work even without a page. They cannot turn that
     // display into a worker wake, browser repair or continuation after departure.
     if (filedSession?.browserRecoveryDismissedAt !== undefined || filedSession?.endedAt !== null) return;
+    // v2.1.38 #1402: consider a fresh turn only after an exactly attributed
+    // tool result. The outbox rechecks all mode/role/tool/source fences at Send.
+    if (!pro && sourceTurnId && filedSession?.activeTurnId === sourceTurnId &&
+        !providerHistoryBackoff(conversationId)) {
+      const rotationEpoch = bridgeLifecycleEpoch;
+      void considerTurnRotation(conversationId, sessionId, sourceTurnId, {
+        now: () => Date.now(), minutes: () => getConfig().ui.rotateTurnMinutes ?? 0,
+        turnStartedAt: async (id, turn) => {
+          const session = await getSession(id);
+          return session?.conversationId === conversationId && session.activeTurnId === turn
+            ? session.timelineTurns?.[turn]?.time ?? null : null;
+        },
+        file: (id, turn) => fileRotationInput(id, turn, () =>
+          rotationEpoch === bridgeLifecycleEpoch && !bridgeShutdownRequested && server !== null &&
+          !stopRequestedFor(conversationId) && providerHistoryBackoff(conversationId) === null),
+        log: logInfo
+      }).catch(error => logWarn(`turn rotation: could not queue fresh turn: ${String(error)}`));
+    }
     // A completed tool is real work too. Long-running calls must leave a full quiet
     // window for the model to process their result, without reviving historical finals.
     if (!isChatBlocked(conversationId)) {
@@ -11240,7 +11242,7 @@ export function resetBridgeForTests(): void {
   bridgeShutdownRequested = false;
   bridgeError = null;
   clearUnattributedIncident();
-  providerHistoryBackoffUntil.clear();
+  resetProviderHistoryBackoffForTests();
   providerDeferredColdStarts.clear();
   activeUntil.clear();
   awaitingReturn.clear();

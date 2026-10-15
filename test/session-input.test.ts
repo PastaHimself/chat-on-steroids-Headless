@@ -9,13 +9,14 @@ import {
   fileSilenceInput, deferSilenceInput, revokeSilenceInputs, pendingQueuedPickups, inputBeforeGoal, inputArgs, acknowledgeBrowserInput, cancelInput, claimBrowserInput, completeBrowserDecision, enqueueInput,
   failBrowserInput, listInputs, offerToolInput as offerToolInputBatch, acknowledgeToolInput, pendingBrowserInputs, requestBrowserDecision, resetInputForTests, configureInputDelivery,
   authorizeBrowserHelperRetry, pausedBrowserHelpers, hasEligibleToolInput, editQueuedInput, reorderQueuedInputs, setInputAutomation, authorizeBrowserInput, sessionInputPolicy, retryUnclaimedInput,
-  noteInputStartupError
+  noteInputStartupError, fileRotationInput
 } from '../src/main/session/input.js';
 import type { InputArgs, InputEntry } from '../src/main/session/input.js';
 import { noteChatOrigin } from '../src/main/session/recorder.js';
 import { stageInputAttachment } from '../src/main/session/input-attachments.js';
 import { listUsageSessions, questionHasMcpCall } from '../src/main/session/store.js';
 import { trackInFlight, emptyEvidence, type CallContext } from '../src/main/mcp/call-context.js';
+import * as agents from '../src/main/agents.js';
 // Ownership tests inspect messages; batch-specific assertions use the complete delivery below.
 const offerToolInput = async (...args: Parameters<typeof offerToolInputBatch>) => (await offerToolInputBatch(...args)).messages;
 vi.mock('../src/main/session/recorder.js', () => ({ noteChatOrigin: vi.fn(async () => undefined) }));
@@ -40,7 +41,7 @@ vi.mock('../src/main/session/store.js', () => ({
   findSessionByConversation: vi.fn(async (id: string) => [...openings.values()].find(row => row.conversationId === id) ?? (binding.recorded && id === binding.conversationId ? { id: 'session-one', conversationId: id } : null))
 }));
 vi.mock('../src/main/config.js', () => ({ getConfig: () => ({
-  ui: { finishTool: binding.finishEnabled, finishAction: 'goal', finishLeadMinutes: binding.leadMinutes },
+  ui: { finishTool: binding.finishEnabled, finishAction: 'goal', finishLeadMinutes: binding.leadMinutes, rotateTurnMinutes: 30 },
   goal: { enabled: binding.goalEnabled, mode: 'goal', impulseMinutes: binding.impulseMinutes },
   multiAgent: { strictChatAllowlist: false }
 }) }));
@@ -274,6 +275,95 @@ describe('durable user input ownership', () => {
     expect((await listInputs()).find(row => row.id === direct.id)).toMatchObject({ state: 'cancelled' });
     expect(await pendingBrowserInputs()).toEqual([]);
   });
+  it('files one rotation into the running turn as an automatic message, only when nothing else waits', async () => {
+    binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'plain-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'plain-turn', time: 900 };
+    expect(await fileRotationInput(sessionId, 'other-turn')).toBeNull();
+    const row = await fileRotationInput(sessionId, 'plain-turn');
+    expect(row).toMatchObject({ purpose: 'rotation', authoredSource: 'none', mode: 'auto', transportIntent: 'browser',
+      directTurn: { id: 'plain-turn' }, conversationId: binding.conversationId, state: 'queued' });
+    expect(row!.text).toMatch(/continue/i);
+    // One at a time: a second rotation, or one beside another pending message, is not filed.
+    expect(await fileRotationInput(sessionId, 'plain-turn')).toBeNull();
+    // A message of the user's own replaces a rotation that was never handed out.
+    const own = await enqueueInput(input({ text: 'Also check the tests' }));
+    expect((await listInputs()).find(entry => entry.id === row!.id)).toMatchObject({ state: 'cancelled' });
+    expect(own.state).toBe('queued');
+  });
+  it('files no rotation for a Pro turn or a blocked chat', async () => {
+    binding.activeTurnId = 'plain-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'plain-turn', time: 900 };
+    binding.model = 'gpt-5.6-pro';
+    expect(await fileRotationInput(sessionId, 'plain-turn')).toBeNull();
+    binding.model = 'gpt-5.6-sol'; binding.blocked = true;
+    expect(await fileRotationInput(sessionId, 'plain-turn')).toBeNull();
+  });
+  it('drops a rotation the page could not take, instead of keeping it for after the turn', async () => {
+    binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'plain-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'plain-turn', time: 900 };
+    const row = await fileRotationInput(sessionId, 'plain-turn');
+    expect(await claimBrowserInput(row!.id, 'native-page', binding.conversationId, true)).not.toBeNull();
+    now += 60_001;
+    const after = (await listInputs()).find(entry => entry.id === row!.id);
+    expect(after?.state).not.toBe('queued');
+    expect(after?.mode).toBe('auto');
+    resetInputForTests();
+    expect(await fileRotationInput(sessionId, 'plain-turn')).toBeNull();
+  });
+
+  it('retains an uncertain rotation across restart and accepts a late receipt without filing another', async () => {
+    binding.model = 'gpt-6-thinking'; binding.activeTurnId = 'rotating-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'rotating-turn', time: 900 };
+    const row = (await fileRotationInput(sessionId, 'rotating-turn'))!;
+    expect(await claimBrowserInput(row.id, 'page', binding.conversationId)).toBeNull();
+    expect(await claimBrowserInput(row.id, 'page', binding.conversationId, true)).not.toBeNull();
+    expect(await authorizeBrowserInput(row.id, 'page', binding.conversationId)).toBe(true);
+    await failBrowserInput(row.id, 'page', 'Native Send receipt was not confirmed.');
+    resetInputForTests();
+    expect(await fileRotationInput(sessionId, 'rotating-turn')).toBeNull();
+    expect(await acknowledgeBrowserInput(row.id, 'page', binding.conversationId, 'late-native-message')).toBe(true);
+    expect((await listInputs()).find(entry => entry.id === row.id)?.deliveredAt).toBeDefined();
+    expect(await fileRotationInput(sessionId, 'rotating-turn')).toBeNull();
+  });
+
+  it('waits for running local tools before claiming a fresh turn and revokes it after a source change', async () => {
+    binding.model = 'gpt-6-thinking'; binding.activeTurnId = 'rotating-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'rotating-turn', time: 900 };
+    const row = (await fileRotationInput(sessionId, 'rotating-turn'))!;
+    const context: CallContext = { startedAt: now, transportKey: null, agent: null, outcome: null,
+      caller: { conversationId: binding.conversationId, requestId: 'slow-tool', transportKey: null }, evidence: emptyEvidence() };
+    await trackInFlight(context, async () => {
+      expect(await claimBrowserInput(row.id, 'page', binding.conversationId, true)).toBeNull();
+      expect((await listInputs()).find(entry => entry.id === row.id)?.state).toBe('queued');
+    });
+    expect(await claimBrowserInput(row.id, 'page', binding.conversationId, true)).not.toBeNull();
+    binding.activeTurnId = 'new-turn';
+    expect(await authorizeBrowserInput(row.id, 'page', binding.conversationId)).toBe(false);
+  });
+
+  it.each(['worker', 'helper'])('does not file a fresh turn for a %s', async origin => {
+    binding.model = 'gpt-6-thinking'; binding.origin = origin; binding.activeTurnId = 'worker-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'worker-turn', time: 900 };
+    expect(await fileRotationInput(sessionId, 'worker-turn')).toBeNull();
+  });
+
+  it('does not publish a fresh-turn request after its bridge lifetime is revoked across preparation', async () => {
+    binding.model = 'gpt-6-thinking'; binding.activeTurnId = 'rotating-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'rotating-turn', time: 900 };
+    let checks = 0;
+    expect(await fileRotationInput(sessionId, 'rotating-turn', () => ++checks === 1)).toBeNull();
+    expect(await listInputs()).toEqual([]);
+  });
+
+  it('does not confuse several active families of one prime with absence of workers', async () => {
+    binding.model = 'gpt-6-thinking'; binding.activeTurnId = 'prime-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'prime-turn', time: 900 };
+    const runs = vi.spyOn(agents, 'activeRunIds').mockReturnValue(['family-one', 'family-two']);
+    const prime = vi.spyOn(agents, 'primeConversation').mockReturnValue(binding.conversationId);
+    try { expect(await fileRotationInput(sessionId, 'prime-turn')).toBeNull(); }
+    finally { runs.mockRestore(); prime.mockRestore(); }
+  });
+
   it('sends a tool-free non-Pro correction through one durable browser claim and native receipt', async () => {
     binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'plain-turn';
     binding.end = { kind: 'turn_start', outcome: '', turnId: 'plain-turn', time: 900 };

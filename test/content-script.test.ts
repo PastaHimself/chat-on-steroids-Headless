@@ -14220,6 +14220,31 @@ describe('the Compact & resume control', () => {
     });
   });
 
+  it('keeps the exact handoff generation when ChatGPT Markdown-escapes its inserted request', async () => {
+    const token = 'synthetic-handoff-token';
+    const prompt = `[[CLF-HANDOFF:${token}]]\nWrite a handoff for \`src/main.ts\`.`;
+    let clicked = 0;
+    live = await harness(undefined, {
+      compact: () => ({ ok: true, data: { started: true, token, prompt,
+        job: { sessionId: 'synthetic-session', stage: 'handoff-pending', busy: true, handoffId: null, error: null } } }),
+      activity: () => ({ ok: true, data: { entries: [], stream: [], nextSince: 0, pendingTools: 0,
+        userAnchors: clicked ? [{ messageId: 'm-handoff', seq: 1 }] : [], job: null } })
+    });
+    live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+      clicked++;
+      const escaped = prompt.replaceAll(':', '\\:').replaceAll('`', '\\`');
+      userTurn(live!.document, 'handoff', escaped, { sent: false });
+      live!.document.querySelector('#prompt-textarea')!.textContent = '';
+      assistantTurn(live!.document, 'handoff-answer', []);
+      live!.hook.observe();
+    });
+    await live.hook.startCompact();
+    await settle(); live.hook.observe(); await settle(); await live.hook.flush();
+    expect(clicked).toBe(1);
+    expect(emitted(live.sent, 'turn_start')).toHaveLength(1);
+    expect(emitted(live.sent, 'turn_start')[0]!.event.turnId).toMatch(/^g-/);
+  });
+
   it('interrupts the live turn, waits for local tools, then prompts this same chat', async () => {
     let submitted = '';
     const prompt = 'Write a handoff brief … your reply to this message must be the brief itself';
@@ -18637,7 +18662,7 @@ describe('one live isolated-world recorder per document', () => {
 
     await expect(live.runtimeMessage({ type: 'clf-recorder-ping' })).resolves.toEqual({
       ok: true,
-      recorderVersion: 24,
+      recorderVersion: 25,
       busy: false
     });
   });
@@ -22970,7 +22995,7 @@ describe('ordinary Continue native recovery', () => {
     // Chrome's static content cache can precede the helper read from disk by repair.
     win.__CLF_CONTENT_RECORDER__.stop();
     win.CLF_TEST_HOOK = (api: Hook) => { live!.hook = api; };
-    win.eval(contentSource.replace('const RECORDER_VERSION = 24;', 'const RECORDER_VERSION = 13;')
+    win.eval(contentSource.replace('const RECORDER_VERSION = 25;', 'const RECORDER_VERSION = 13;')
       .replace(`const FIBER_VERSION = ${fiberVersion};`, 'const FIBER_VERSION = 12;'));
     await settle();
     userTurn(live.document, 'source', 'Complete the task');

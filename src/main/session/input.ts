@@ -20,13 +20,16 @@ import { logInfo, logWarn } from '../logger.js';
 import { noteChatOrigin } from './recorder.js';
 import { DEFAULT_HELPER_CHAT_MODEL, isAstraModel, isProModel } from '../../shared/chat-models.js';
 import { inFlightToolCalls } from '../mcp/call-context.js';
-import { automaticFinishEnabled, goalDrivingMode, consumeGoalReplyForInputNow } from '../goal.js';
+import { automaticFinishEnabled, goalArmedFor, goalControlRecoveryNeeded, goalControlsPending, goalDrivingMode, consumeGoalReplyForInputNow } from '../goal.js';
+import { activeRunIds, primeConversation, isWorkerConversation } from '../agents.js';
+import { pendingContinuations } from './continuation.js';
+import { providerHistoryRetryAt } from '../provider-history-backoff.js';
 import { finishInstruction } from '../../shared/finish.js';
 import { CONVERSATION_DELETED } from '../../shared/chat-error.js';
 import { attachmentSchema, validateInputAttachments, normalizeInputAttachments } from './input-attachments.js';
 import { MAX_CHATGPT_MESSAGE_CHARS } from '../../shared/user-prompt.js';
 import type { PromptLimits } from './prompt.js';
-import { BROWSER_PICKUP_MAX_ATTEMPTS, recoveryMessage, recoveryBusyMs } from '../../shared/recovery.js';
+import { BROWSER_PICKUP_MAX_ATTEMPTS, recoveryMessage, recoveryBusyMs, rotationMessage } from '../../shared/recovery.js';
 import { invokedSkills } from '../../shared/skill-invocation.js';
 import { SKILL_ID_PATTERN } from '../../shared/skills.js';
 import { autoSelectManagedSkills } from '../skill-routing.js';
@@ -92,7 +95,7 @@ const entrySchema = inputArgs.extend({
   deliveryText: z.string().min(1).max(240000).optional(),
   /** One checkpoint shares this browser send and its receipt with the user's correction. */
   companionInputId: z.string().uuid().optional(),
-  purpose: z.enum(['user', 'decision']).optional(),
+  purpose: z.enum(['user', 'decision', 'rotation']).optional(),
   lifetime: z.literal('temporary-planner').optional(),
   decisionSourceSessionId: z.string().min(8).max(64).optional(),
   response: z.string().max(16000).optional(),
@@ -224,6 +227,7 @@ export async function sessionInputPolicy(sessionId: string, observedActivity?: I
     settled: settled && !executing && (!!completed || (session.lastToolCallAt ?? 0) <= (end?.time ?? 0)) };
 }
 async function browserInputAllowed(entry: InputEntry): Promise<boolean> {
+  if (entry.purpose === 'rotation' && !await rotationInputCurrent(entry, true)) return false;
   if (entry.error?.startsWith('Local chat setup failed:')) return false;
   // Authored Inject-now custody never changes transports. Its exact turn either
   // offers it from an MCP response or expires it visibly below.
@@ -510,6 +514,9 @@ async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
     if (row.finishOwner && !terminal(row) && !(await finishInputCurrent(row)))
       return { ...row, state: 'cancelled', error: 'Automatic follow-up cancelled because its active turn or setting changed.' };
     if (row.purpose === 'decision') return row;
+    if (row.purpose === 'rotation' && !terminal(row) && row.sendAuthorizedAt === undefined &&
+        !await rotationInputCurrent(row))
+      return { ...row, state: 'cancelled', error: 'Automatic fresh turn cancelled because its source or setting changed.' };
     if (row.state === 'queued' && row.delivery === 'tool' && row.toolTurnId) {
       const session = row.sessionId ? await getSession(row.sessionId) : null;
       const activity = session ? deliveryHooks?.activity?.(session) : null;
@@ -752,6 +759,52 @@ async function materializeOpening(entry: InputEntry): Promise<void> {
     throw new Error('Reserved opening session belongs to another ChatGPT conversation');
   if (entry.projectId && session.projectId !== entry.projectId) await assignSessionProject(session.id, entry.projectId);
 }
+/** A fresh-turn message retains this exact source. It never falls through to an
+ * after-turn send, a worker/helper, Goal/Loop, or an active continuation transaction. */
+async function rotationInputCurrent(row: InputEntry, requireDrained = false): Promise<boolean> {
+  if (recoveryHeld() || goalControlRecoveryNeeded() || !(getConfig().ui.rotateTurnMinutes! > 0) || !row.sessionId || !row.directTurn) return false;
+  const session = await getSession(row.sessionId);
+  if (!session?.conversationId || session.conversationId !== row.conversationId ||
+      session.activeTurnId !== row.directTurn.id || session.recordingIncompleteAt !== undefined ||
+      session.browserRecoveryDismissedAt !== undefined || providerUnavailableFor(session) ||
+      session.origin?.kind === 'worker' || session.origin?.kind === 'helper' ||
+      isChatBlocked(session.conversationId) || isWorkerConversation(session.conversationId) ||
+      providerHistoryRetryAt(session.conversationId) !== null ||
+      // A single-owner resolver returns null for several recovered families of
+      // one prime. That ambiguity cannot be treated as proof of no workers.
+      activeRunIds().some(id => primeConversation(id) === session.conversationId) ||
+      goalControlsPending(session.conversationId) || goalArmedFor(session.conversationId) ||
+      pendingContinuations().some(entry => entry.from === session.conversationId)) return false;
+  const selection = session.selectedModel;
+  return selection?.conversationId === session.conversationId && !!selection.model &&
+    !isProModel(selection.model, selection.reasoningEffort) &&
+    (!requireDrained || inFlightToolCalls(session.conversationId) === 0);
+}
+
+/** Adapted from v2.1.38 #1402. One durable outbox row per exact source turn,
+ * including a cancelled/uncertain send; elapsed time never grants another prompt. */
+export function fileRotationInput(sessionId: string, turnId: string, currentOwner: () => boolean = () => true): Promise<InputEntry | null> {
+  return serial(async () => {
+    if (!currentOwner()) return null;
+    const current = await load();
+    if (current.some(row => row.sessionId === sessionId && (!terminal(row) || needsReceipt(row) ||
+        (row.purpose === 'rotation' && row.queuedTurn?.turnId === turnId)))) return null;
+    const session = await getSession(sessionId);
+    if (!session?.conversationId || session.activeTurnId !== turnId) return null;
+    const policy = await sessionInputPolicy(sessionId);
+    if (policy.directTurn?.id !== turnId) return null;
+    const now = Date.now();
+    const row: InputEntry = { id: randomUUID(), sessionId, text: rotationMessage(), mode: 'auto', dueAt: now,
+      model: null, reasoningEffort: null, authoredSource: 'none', purpose: 'rotation', directTurn: policy.directTurn,
+      transportIntent: 'browser', queuedTurn: { conversationId: session.conversationId, turnId },
+      state: 'queued', owner: null, createdAt: now, conversationId: session.conversationId };
+    if (!await rotationInputCurrent(row) || !currentOwner()) return null;
+    await commit(append(current, row));
+    if (currentOwner()) wakeBrowserWork();
+    return { ...row };
+  });
+}
+
 export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwner']): Promise<InputEntry> {
   if (recoveryHeld()) return Promise.reject(new Error('restore_held: reconcile locally before admitting instructions'));
   return serial(async () => {
@@ -853,7 +906,8 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
     // User input supersedes only automatic work that has never been handed out.
     // Offered tool receipts retain their identity until a later request proves receipt.
     const prioritized = !finishOwner ? current.map(row => row.sessionId === entry.sessionId &&
-      ((row.finishOwner && row.state === 'queued') || (row.recovery && !terminal(row) && row.sendAuthorizedAt === undefined))
+      ((row.finishOwner && row.state === 'queued') || (row.recovery && !terminal(row) && row.sendAuthorizedAt === undefined) ||
+        (row.purpose === 'rotation' && !terminal(row) && row.sendAuthorizedAt === undefined))
       ? row.recovery?.queuedInput ? withoutSilenceClaim(row) :
         { ...row, state: 'cancelled' as const, error: 'Replaced by your new instruction before delivery.' } : row) : current;
     let next = append(prioritized, entry, input.mode === 'auto' && !finishOwner && policy?.canInject === true);
@@ -1111,8 +1165,11 @@ export function authorizeBrowserInput(id: string, owner: string, conversationId:
     // holds Goal until either the exact send receipt or a known pre-click abort.
     if (!row.recovery && row.completedTurnId && row.sessionId && conversationId)
       await consumeGoalReplyForInputNow(conversationId, row.sessionId, row.completedTurnId);
-    return (!row.recovery || await recoveryCurrent(row)) && await browserInputAllowed(row) &&
+    const allowed = (!row.recovery || await recoveryCurrent(row)) && await browserInputAllowed(row) &&
       await target(row).catch(() => undefined) === conversationId;
+    // target() crossed another session read. Recheck rotation's current modes,
+    // exact source and tool drain after that final await, before issuing permission.
+    return allowed && (row.purpose !== 'rotation' || await rotationInputCurrent(row, true));
   });
 }
 /** The same outbox serialization owns mode changes and browser ACK. A late ACK
@@ -1613,6 +1670,7 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
     if (recoveryHeld()) return null;
     const current = await load();
     const entry = current.find((row) => row.id === id);
+    if (entry?.purpose === 'rotation' && !requiresAuthorization) return null;
     if (!entry || !preparable(entry) || (entry.state === 'browser' && !requiresAuthorization) || entry.dueAt > Date.now() || !owner) return null;
     if (entry.recovery && entry.state === 'browser' && entry.owner !== owner) return null;
     if (entry.recovery?.reloadOwner === owner) return null;

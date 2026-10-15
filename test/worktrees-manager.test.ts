@@ -1,9 +1,14 @@
 import { execFileSync } from 'node:child_process';
+import * as childProcess from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('node:child_process', async original => {
+  const module = await original<typeof import('node:child_process')>();
+  return { ...module, spawn: vi.fn(module.spawn) };
+});
 import type { Root } from '../src/shared/types.js';
 import { gitExecutable } from '../src/main/project-git.js';
 import {
@@ -66,6 +71,7 @@ describe('automatic worker Git worktrees', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     resetWorkerWorktreeRegistryForTests();
     await fs.rm(temp, { recursive: true, force: true });
   });
@@ -259,6 +265,31 @@ describe('automatic worker Git worktrees', () => {
     for (const lease of leases) {
       await finalizeWorkerWorkspace({ lease, reason: 'cancelled', discardChanges: true, branch: { mode: 'discard' } });
     }
+  });
+
+  it('never overlaps real Git worktree mutations in one repository, including concurrent removals', async () => {
+    const { spawn } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    let active = 0, peak = 0, changes = 0;
+    vi.spyOn(childProcess, 'spawn').mockImplementation((...args: Parameters<typeof spawn>) => {
+      const child = spawn(...args);
+      const argv = args[1];
+      if (Array.isArray(argv) && argv.includes('worktree') && (argv.includes('add') || argv.includes('remove'))) {
+        changes++; peak = Math.max(peak, ++active);
+        child.once('close', () => { active--; });
+      }
+      return child;
+    });
+    const leases = await Promise.all(Array.from({ length: 6 }, () => allocWorkerWorkspace({
+      runId: randomUUID(), agentId: 'worker-1',
+      primeWorkspace: { real: repo, virtual: '/approved/repo' }, approvedRoots: roots
+    })));
+    await Promise.all(leases.map(lease => finalizeWorkerWorkspace({
+      lease, reason: 'cancelled', discardChanges: true, branch: { mode: 'discard' }
+    })));
+    expect(changes).toBe(12);
+    expect(peak).toBe(1);
+    expect(active).toBe(0);
+    expect(git(repo, ['worktree', 'list', '--porcelain']).match(/^worktree /gm)).toHaveLength(1);
   });
 
   it('keeps a nested project cwd inside the equivalent folder of its isolated Git checkout', async () => {
