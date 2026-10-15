@@ -5,7 +5,7 @@ import { ApiError, ControlClient } from './api.js';
 import { authorized, safeText, rememberSecret, type Bootstrap } from './config.js';
 import { definitions, helpDescription } from './commands.js';
 import { StateStore, snowflake, type Permission, type View } from './state.js';
-import { panel, buttons, select, sessionDescription, historyDescription, taskPlanDescription, resourceDescription } from './ui.js';
+import { panel, buttons, select, sessionDescription, historyDescription, taskPlanDescription, resourceDescription, sessionStatusIndicator, EmbedColor } from './ui.js';
 
 const sessionPath = (id: string) => {
   if (!/^[0-9a-z-]{8,64}$/.test(id)) throw new Error('Invalid local session ID');
@@ -107,7 +107,7 @@ export class DiscordController {
         const id = this.session(interaction); const detail = await this.api.request(sessionPath(id));
         if (['worker', 'helper'].includes(detail.session.origin?.kind)) throw new Error('Select an ordinary or owning prime session.');
         await this.store.update(state => { state.selected[interaction.user.id] = id; });
-        return panel('Session selected', sessionDescription(detail));
+        return panel('Session selected', sessionDescription(detail), [], [], { color: EmbedColor.Success });
       }
       case 'new': {
         const startedAt = Date.now();
@@ -119,7 +119,7 @@ export class DiscordController {
           await this.store.update(next => { next.selected[interaction.user.id] = result.sessionId; });
           await this.monitor(interaction, result.sessionId, result.inputId, 0, startedAt).catch(() => undefined);
         }
-        return panel('Conversation admitted', `Local session: ${result.sessionId}\nInput: ${result.inputId}\nDelivery: ${result.delivery}\n${args.prompt ? '' : 'Opening message: Start a new conversation. Await my next instruction.'}\nProvider opening and model selection require delivery acknowledgement.`);
+        return panel('Conversation admitted', `Local session: ${result.sessionId}\nInput: ${result.inputId}\nDelivery: ${result.delivery}\n${args.prompt ? '' : 'Opening message: Start a new conversation. Await my next instruction.'}\nProvider opening and model selection require delivery acknowledgement.`, [], [], { color: EmbedColor.Success });
       }
       case 'ask': {
         const startedAt = Date.now();
@@ -131,7 +131,7 @@ export class DiscordController {
           ...(defaults === 'off' ? {} : { automation: defaults }), ...(defaults === 'loop' ? { loopAfterTurn: this.store.snapshot().settings.defaultLoopAfterTurn } : {}), ...this.selection(interaction, id) });
         let monitorNote = '';
         await this.monitor(interaction, id, result.inputId, cursor, startedAt).catch(() => { monitorNote = '\nProgress monitoring could not be attached. The admitted input remains valid; inspect /status and /queue.'; });
-        return panel('Input admitted', `Input: ${result.inputId}\nSession: ${id}\nState: ${result.state}\nDelivery proof: ${result.delivery}\nRequested model: ${this.selection(interaction, id).model ?? 'current provider selection'}\nUse /queue and /status to verify delivery and the observed model.${monitorNote}`);
+        return panel('Input admitted', `Input: ${result.inputId}\nSession: ${id}\nState: ${result.state}\nDelivery proof: ${result.delivery}\nRequested model: ${this.selection(interaction, id).model ?? 'current provider selection'}\nUse /queue and /status to verify delivery and the observed model.${monitorNote}`, [], [], { color: EmbedColor.Success });
       }
       case 'chat': case 'history': return this.historyPanel(interaction, this.session(interaction), undefined, name === 'chat');
       case 'status': return this.statusPanel(interaction, this.session(interaction));
@@ -143,26 +143,26 @@ export class DiscordController {
       }
       case 'goal': case 'loop': {
         const id = this.session(interaction), action = string('action');
-        if (action === 'status') return panel(`${name} state`, await this.api.request(`${sessionPath(id)}/controls`));
+        if (action === 'status') return panel(`${name} state`, await this.api.request(`${sessionPath(id)}/controls`), [], [], { color: EmbedColor.Info });
         if (name === 'goal' && string('objective')) {
           if (action !== 'on') throw new Error('Use action:on with an objective, or leave objective empty to switch modes without changing it.');
-          return panel('Goal objective saved', await act('objective', { sessionId: id, objective: string('objective'), mode: 'goal' }));
+          return panel('Goal objective saved', await act('objective', { sessionId: id, objective: string('objective'), mode: 'goal' }), [], [], { color: EmbedColor.Success });
         }
         const afterTurn = name === 'loop' && string('delivery') ? string('delivery') === 'after-turn' : undefined;
-        return panel(`${name} configuration`, await act('automation', { sessionId: id, automation: action === 'on' ? name : 'off', afterTurn }));
+        return panel(`${name} configuration`, await act('automation', { sessionId: id, automation: action === 'on' ? name : 'off', afterTurn }), [], [], { color: EmbedColor.Success });
       }
       case 'plan': {
         const id = this.session(interaction); const plan = await act('plan', { sessionId: id, prompt: string('prompt') });
         return this.planPanel(interaction, plan);
       }
-      case 'taskplan': return panel('Executor task plan', taskPlanDescription((await this.api.request(`${sessionPath(this.session(interaction))}/taskplan`)).plan));
+      case 'taskplan': return panel('Executor task plan', taskPlanDescription((await this.api.request(`${sessionPath(this.session(interaction))}/taskplan`)).plan), [], [], { color: EmbedColor.Info });
       case 'planstatus': {
         const id = this.session(interaction);
         const result = await this.api.request('/v1/remote/plans');
         const plan = result.plans.filter((row: any) => row.sessionId === id).at(-1);
         if (plan) return this.planPanel(interaction, plan);
         const queue = await this.api.request('/v1/inputs?limit=100');
-        return panel('Workflow state', `No remote composer draft.\n${queue.inputs.filter((row: any) => row.sessionId === id && row.mode === 'finish').length} checkpoint inputs recorded.\nUse /taskplan for executor progress.`);
+        return panel('Workflow state', `No remote composer draft.\n${queue.inputs.filter((row: any) => row.sessionId === id && row.mode === 'finish').length} checkpoint inputs recorded.\nUse /taskplan for executor progress.`, [], [], { color: EmbedColor.Info });
       }
       case 'models': {
         const catalog = await this.api.request(`/v1/remote/models${boolean('refresh') ? '?refresh=1' : ''}`);
@@ -172,7 +172,7 @@ export class DiscordController {
       case 'model': case 'reasoning': {
         const id = this.session(interaction), detail = await this.api.request(sessionPath(id));
         const requested = string(name === 'model' ? 'model' : 'effort');
-        if (!requested) return panel('Model selection', `Observed: ${detail.session.model ?? 'unknown'}\nRequested for next prompt: ${safeText(this.selection(interaction, id))}\nRequests are acknowledged by the application on delivery.`);
+        if (!requested) return panel('Model selection', `Observed: ${detail.session.model ?? 'unknown'}\nRequested for next prompt: ${safeText(this.selection(interaction, id))}\nRequests are acknowledged by the application on delivery.`, [], [], { color: EmbedColor.Info });
         const catalog = await this.api.request('/v1/remote/models');
         const current = this.selection(interaction, id);
         const picked = catalog.models.find((row: any) => row.id === (name === 'model' ? requested : current.model));
@@ -180,17 +180,17 @@ export class DiscordController {
         const reasoning = name === 'reasoning' ? requested : null;
         if (reasoning && !picked.efforts.includes(reasoning)) throw new Error('That reasoning effort is unavailable for the selected model.');
         await this.store.update(state => { state.selection[`${interaction.user.id}:${id}`] = { model: picked.id, reasoning }; });
-        return panel('Next-prompt preference saved', `Requested model: ${picked.label}\nReasoning: ${reasoning ?? 'provider default'}\nThis takes effect through /ask. No model switch has been acknowledged yet.`);
+        return panel('Next-prompt preference saved', `Requested model: ${picked.label}\nReasoning: ${reasoning ?? 'provider default'}\nThis takes effect through /ask. No model switch has been acknowledged yet.`, [], [], { color: EmbedColor.Success });
       }
       case 'workers': {
         const id = this.session(interaction), workers = await this.api.request(`${sessionPath(id)}/workers`);
-        return panel('Owned workers', workers.agents.map((row: any) => `${row.runId} · ${row.id} · ${row.state}\n${row.task.text}`).join('\n\n'));
+        return panel('Owned workers', workers.agents.map((row: any) => `${row.runId} · ${row.id} · ${row.state}\n${row.task.text}`).join('\n\n'), [], [], { color: EmbedColor.Info });
       }
-      case 'delegate': return panel('Worker admission', await act('delegate', { sessionId: this.session(interaction), task: string('task'), runId: string('run') ?? undefined }));
+      case 'delegate': return panel('Worker admission', await act('delegate', { sessionId: this.session(interaction), task: string('task'), runId: string('run') ?? undefined }), [], [], { color: EmbedColor.Success });
       case 'worker': {
         const args = { sessionId: this.session(interaction), runId: string('run'), workerId: string('worker'), action: string('action'), text: string('text') ?? undefined };
         if (args.action === 'sleep') return this.confirmPanel(interaction, 'worker', { ...args, confirmed: true }, 'Pause this exact owned worker through the broker. Native generation cancellation is unconfirmed.');
-        return panel('Worker message', await act('worker', args));
+        return panel('Worker message', await act('worker', args), [], [], { color: EmbedColor.Success });
       }
       case 'workerlogs': {
         const id = this.session(interaction), workers = await this.api.request(`${sessionPath(id)}/workers?run=${encode(string('run'))}`);
@@ -205,7 +205,7 @@ export class DiscordController {
         }
         if (!target) throw new Error('No worker recording was found within the bounded search.');
         const rows = await this.api.request(`${sessionPath(target.id)}/events?limit=10`);
-        return panel('Worker activity', historyDescription(rows.events));
+        return panel('Worker activity', historyDescription(rows.events), [], [], { color: EmbedColor.Info });
       }
       case 'compact': {
         const id = this.session(interaction), detail = await this.api.request(`${sessionPath(id)}?live=1`);
@@ -218,7 +218,7 @@ export class DiscordController {
       case 'queue': {
         const id = this.session(interaction), queue = await this.api.request('/v1/inputs?limit=100');
         return panel('Input delivery records', queue.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id)
-          .slice(-20).map((row: any) => `${row.id}\n${row.state} · proof: ${row.delivery} · ${row.mode}\nDue: ${new Date(row.dueAt).toISOString()}\n${row.error ?? ''}`).join('\n\n'));
+          .slice(-20).map((row: any) => `${row.id}\n${row.state} · proof: ${row.delivery} · ${row.mode}\nDue: ${new Date(row.dueAt).toISOString()}\n${row.error ?? ''}`).join('\n\n'), [], [], { color: EmbedColor.Info });
       }
       case 'cancel': {
         const id = this.session(interaction), input = string('input');
@@ -230,32 +230,33 @@ export class DiscordController {
       }
       case 'pause': {
         const id = this.session(interaction), controls = await this.api.request(`${sessionPath(id)}/controls`);
-        if (controls.automation === 'off') return panel('Automation already off', 'No Goal or Loop automation is active. Generation and queued inputs have separate controls.');
+        if (controls.automation === 'off') return panel('Automation already off', 'No Goal or Loop automation is active. Generation and queued inputs have separate controls.', [], [], { color: EmbedColor.Info });
         await this.store.update(state => { state.paused[id] = { mode: controls.automation, afterTurn: controls.loopAfterTurn }; });
-        return panel('Automation paused', await act('automation', { sessionId: id, automation: 'off' }));
+        return panel('Automation paused', await act('automation', { sessionId: id, automation: 'off' }), [], [], { color: EmbedColor.Warning });
       }
       case 'resume': {
         const id = this.session(interaction), saved = this.store.snapshot().paused[id];
         if (!saved) throw new Error('No automation pause is saved for this session. Use /goal or /loop to select a mode.');
         const result = await act('automation', { sessionId: id, automation: saved.mode, afterTurn: saved.afterTurn });
-        await this.store.update(state => { delete state.paused[id]; }); return panel('Automation resumed', result);
+        await this.store.update(state => { delete state.paused[id]; }); return panel('Automation resumed', result, [], [], { color: EmbedColor.Success });
       }
-      case 'projects': return panel('Approved projects', (await this.api.request('/v1/remote/projects')).projects.map((row: any) => `${row.name}\n${row.id}`).join('\n\n'));
-      case 'project': return panel('Project associated', await act('project', { sessionId: this.session(interaction), projectId: string('project') }));
+      case 'projects': return panel('Approved projects', (await this.api.request('/v1/remote/projects')).projects.map((row: any) => `${row.name}\n${row.id}`).join('\n\n'), [], [], { color: EmbedColor.Info });
+      case 'project': return panel('Project associated', await act('project', { sessionId: this.session(interaction), projectId: string('project') }), [], [], { color: EmbedColor.Success });
       case 'files': {
         const result = await this.api.request(`/v1/remote/files?project=${encode(string('project'))}&directory=${encode(string('directory') ?? '')}`);
         const page = interaction.options.getInteger('page') ?? 1;
         return panel(`Files · ${result.projectName} · page ${page}`, result.entries.slice((page - 1) * 20, page * 20)
-          .map((row: any) => `${row.kind === 'directory' ? '📁' : '📄'} ${row.path}`).join('\n') + (result.truncated ? '\nDirectory results were bounded.' : ''));
+          .map((row: any) => `${row.kind === 'directory' ? '📁' : '📄'} ${row.path}`).join('\n') + (result.truncated ? '\nDirectory results were bounded.' : ''), [], [], { color: EmbedColor.Info });
       }
       case 'logs': {
         const result = await this.api.request('/v1/log?limit=20');
-        return panel('Redacted application activity', result.entries.map((row: any) => `${new Date(row.time).toISOString()} · ${row.level}\n${row.message}`).join('\n\n'), [], [this.config.token]);
+        return panel('Redacted application activity', result.entries.map((row: any) => `${new Date(row.time).toISOString()} · ${row.level}\n${row.message}`).join('\n\n'), [], [this.config.token], { color: EmbedColor.Info });
       }
       case 'monitor': {
         const health = await this.api.request('/v1/remote/health');
         const resource = await this.api.request('/v1/remote/resources');
-        return panel('VPS and service health', `${health.components.map((row: any) => `${row.label}: ${row.state}\n${row.detail}${row.state === 'available' ? '' : `\n${row.action}`}`).join('\n\n')}\n\n${resourceDescription(resource)}`);
+        const healthy = health.serviceAvailable && health.components.every((c: any) => c.state === 'available');
+        return panel('VPS and service health', `${health.components.map((row: any) => `${row.label}: ${row.state}\n${row.detail}${row.state === 'available' ? '' : `\n${row.action}`}`).join('\n\n')}\n\n${resourceDescription(resource)}`, [], [], { color: healthy ? EmbedColor.Success : EmbedColor.Warning });
       }
       case 'operations': return this.operationListPanel(interaction, this.session(interaction));
       case 'operation': return this.operationPanel(interaction, string('id'));
@@ -287,8 +288,19 @@ export class DiscordController {
     const input = queue.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id).at(-1);
     const projects = await this.api.request('/v1/remote/projects');
     const project = projects.projects.find((row: any) => row.id === detail.session.projectId);
+    const status = sessionStatusIndicator(detail);
+
     return panel('Session status', `${sessionDescription(detail)}\nProject: ${project?.name ?? 'Unfiled or unavailable'}\nNext prompt model: ${requested.model ?? 'Current provider selection'}\nDelivery: ${input?.delivery ?? 'No recent input proof'}\nWorkers: ${workerSummary}\nRecovery: ${detail.live?.providerUnavailable?.reason === 'conversation_deleted' ? 'ChatGPT confirmed deletion. Local work and objective are retained. Review /queue, /operations, /history and workers; after reconciliation, /compact can recover from a saved summary. A stream resume 404 alone does not prove deletion.' : detail.live?.recordingIncompleteAt !== undefined ? 'Recording history is incomplete. Inspect and reconcile it locally before requesting automatic continuation.' : detail.live?.blocked ? 'Review the session block in Details.' : detail.live?.job?.needsAttention ? 'Compact & Resume needs attention; inspect the source and replacement Send checkpoints above. Never manually resend an unconfirmed handoff.' : detail.live?.recovery?.length ? 'The backend is recovering this session. Review Details and inspect its receipt before requesting more work.' : input?.delivery === 'unconfirmed' ? 'Inspect queue and history before submitting another request.' : 'No current recovery action reported.'}`,
-      [buttons(view, [['refresh', 'Refresh'], ['taskplan', 'View Plan'], ['queue', 'View queue'], ['history', 'View history'], ['details', 'Details']])]);
+      [buttons(view, [['refresh', 'Refresh', ButtonStyle.Primary], ['taskplan', 'View Plan', ButtonStyle.Secondary], ['queue', 'View queue', ButtonStyle.Secondary], ['history', 'View history', ButtonStyle.Secondary], ['details', 'Details', ButtonStyle.Secondary]])],
+      [],
+      {
+        color: status.color,
+        fields: [
+          { name: 'State', value: `${status.emoji} ${status.text}`, inline: true },
+          { name: 'Project', value: project?.name ?? 'Unfiled', inline: true },
+          { name: 'Workers', value: workerSummary, inline: true },
+        ]
+      });
   }
   private async operationListPanel(interaction: any, sessionId: string, cursor?: string) {
     const receipts = await this.api.request(`/v1/remote/operations?session=${encode(sessionId)}&limit=10${cursor ? `&cursor=${encode(cursor)}` : ''}`);
@@ -297,21 +309,25 @@ export class DiscordController {
     if (receipts.operations.length) components.push(select(view, 'choose', 'Inspect a receipt', receipts.operations.map((row: any) => ({
       label: `${row.action} · ${row.state}`, value: row.id, description: new Date(row.createdAt).toISOString()
     }))));
-    components.push(buttons(view, [...(receipts.nextCursor ? [['next', 'Next page'] as [string, string]] : []), ['first', 'First page']]));
-    return panel('Operation receipts', receipts.operations.length ? 'Choose an operation to inspect its outcome. Checking a receipt never sends an instruction.' : 'No hot receipts for this session. An archived operation remains inspectable by its exact ID.', components);
+    const navButtons: Array<[string, string, ButtonStyle?]> = receipts.nextCursor
+      ? [['next', 'Next page', ButtonStyle.Secondary], ['first', 'First page', ButtonStyle.Secondary]]
+      : [['first', 'First page', ButtonStyle.Secondary]];
+    components.push(buttons(view, navButtons));
+    return panel('Operation receipts', receipts.operations.length ? 'Choose an operation to inspect its outcome. Checking a receipt never sends an instruction.' : 'No hot receipts for this session. An archived operation remains inspectable by its exact ID.', components, [], { color: EmbedColor.Info });
   }
   private async operationPanel(interaction: any, operationId: string) {
     if (!/^[0-9a-f-]{36}$/.test(operationId ?? '')) throw new Error('Use the exact operation ID shown with the request.');
     const receipt = await this.api.request(`/v1/remote/operations/${operationId}`);
     const view = await this.makeView(interaction, { kind: 'operation', action: operationId, sessionId: receipt.sessionId });
-    const actions: Array<[string, string]> = [['receipt', 'Check receipt']];
-    if (receipt.sessionId) actions.push(['queue', 'View queue'], ['history', 'View history']);
-    return panel('Operation receipt', `Operation: ${receipt.action}\nOutcome: ${receipt.state}${receipt.outcome ? ` (${receipt.outcome})` : ''}\n${receipt.state === 'unconfirmed' ? 'Inspect queue and history before composing another request.' : 'Checking this receipt never sends an instruction.'}\n${receipt.error?.code ?? ''}`, [buttons(view, actions)]);
+    const actions: Array<[string, string, ButtonStyle?]> = [['receipt', 'Check receipt', ButtonStyle.Primary]];
+    if (receipt.sessionId) actions.push(['queue', 'View queue', ButtonStyle.Secondary], ['history', 'View history', ButtonStyle.Secondary]);
+    const color = receipt.state === 'done' ? EmbedColor.Success : receipt.state === 'unconfirmed' ? EmbedColor.Warning : receipt.state === 'rejected' ? EmbedColor.Danger : EmbedColor.Info;
+    return panel('Operation receipt', `Operation: ${receipt.action}\nOutcome: ${receipt.state}${receipt.outcome ? ` (${receipt.outcome})` : ''}\n${receipt.state === 'unconfirmed' ? 'Inspect queue and history before composing another request.' : 'Checking this receipt never sends an instruction.'}\n${receipt.error?.code ?? ''}`, [buttons(view, actions)], [], { color });
   }
   private async historyPanel(interaction: any, id: string, before?: number, recent = false) {
     const result = await this.api.request(`${sessionPath(id)}/events?limit=6${before !== undefined ? `&before=${before}` : ''}${recent ? '&kinds=user_message,assistant_message' : ''}`);
     const view = await this.makeView(interaction, { kind: 'history', sessionId: id, before: result.events[0]?.position });
-    return panel('Recorded history', historyDescription(result.events), [buttons(view, [['older', 'Older'], ['latest', 'Latest']])]);
+    return panel('Recorded history', historyDescription(result.events), [buttons(view, [['older', 'Older', ButtonStyle.Secondary], ['latest', 'Latest', ButtonStyle.Secondary]])], [], { color: EmbedColor.Info });
   }
   private async sessionsPanel(interaction: any, cursor?: string | null) {
     const result = await this.api.request(`/v1/sessions?limit=10${cursor ? `&cursor=${encode(cursor)}` : ''}`);
@@ -327,8 +343,11 @@ export class DiscordController {
     const selectable = rows.filter((row: any) => !['worker', 'helper'].includes(row.origin?.kind));
     if (selectable.length) components.push(select(view, 'select', 'Select a session', selectable.map((row: any) =>
       ({ label: row.title || row.id, value: row.id, description: `${row.model ?? 'unknown model'} · ${row.projectId ?? 'unfiled'}` }))));
-    components.push(buttons(view, [...(result.nextCursor ? [['next', 'Next'] as [string, string]] : []), ['first', 'First page']]));
-    return panel(`Sessions · ${result.total} saved`, descriptions.join('\n\n'), components);
+    const navButtons: Array<[string, string, ButtonStyle?]> = result.nextCursor
+      ? [['next', 'Next', ButtonStyle.Secondary], ['first', 'First page', ButtonStyle.Secondary]]
+      : [['first', 'First page', ButtonStyle.Secondary]];
+    components.push(buttons(view, navButtons));
+    return panel(`Sessions · ${result.total} saved`, descriptions.join('\n\n'), components, [], { color: EmbedColor.Info });
   }
   private async helpPanel(interaction: any, command?: string | null, category?: string) {
     const visible = definitions.filter(row => this.allowed(interaction, row.permission));
@@ -341,22 +360,24 @@ export class DiscordController {
     const shown = category ? visible.filter(row => row.category === category) : visible.slice(0, 10);
     return panel(command ? `Help · /${command}` : 'Chat On Steroids help', `${command ? helpDescription(command) : shown.map(row => `/${row.name} — ${row.description}`).join('\n')}\n\n${availability}\n\nGoal may decide no continuation is needed. Loop continues within the saved brief. Composer Plan generates reviewable checkpoints. update_plan records the executor’s progress.`,
       [select(view, 'category', 'Browse a category', categories.map(value => ({ label: value, value }))),
-        select(view, 'help-command', 'Inspect command options', (category ? shown : visible).slice(0, 25).map(row => ({ label: `/${row.name}`, value: row.name }))) ]);
+        select(view, 'help-command', 'Inspect command options', (category ? shown : visible).slice(0, 25).map(row => ({ label: `/${row.name}`, value: row.name }))) ],
+      [],
+      { color: EmbedColor.Info });
   }
   private modelPanel(catalog: any, view: string, page: number) {
     const rows = catalog.models.slice(page * 10, (page + 1) * 10);
     return panel(`Account models · ${catalog.state} · page ${page + 1}`, `${catalog.error ?? catalog.waiting ?? ''}\n${rows.map((row: any) => `${row.label} · ${row.id}\nEfforts: ${row.efforts.join(', ') || 'provider default'}`).join('\n\n')}`,
-      [buttons(view, [['models-prev', 'Previous'], ['models-next', 'Next']])]);
+      [buttons(view, [['models-prev', 'Previous', ButtonStyle.Secondary], ['models-next', 'Next', ButtonStyle.Secondary]])], [], { color: EmbedColor.Info });
   }
   private async planPanel(interaction: any, plan: any) {
     const view = await this.makeView(interaction, { kind: 'plan', sessionId: plan.sessionId, planId: plan.id, revision: plan.revision });
-    const controls: Array<[string, string, ButtonStyle?]> = [['refresh', 'Refresh']];
+    const controls: Array<[string, string, ButtonStyle?]> = [['refresh', 'Refresh', ButtonStyle.Primary]];
     const canPlan = this.allowed(interaction, 'plan');
     if (plan.state === 'approval' && canPlan) {
       if (this.allowed(interaction, 'send')) controls.push(['approve', 'Approve', ButtonStyle.Success]);
-      controls.push(['edit', 'Edit stage'], ['delete', 'Delete stage']);
+      controls.push(['edit', 'Edit stage', ButtonStyle.Secondary], ['delete', 'Delete stage', ButtonStyle.Danger]);
     }
-    if (['failed', 'interrupted', 'approval'].includes(plan.state) && canPlan) controls.push(['regenerate', 'Regenerate']);
+    if (['failed', 'interrupted', 'approval'].includes(plan.state) && canPlan) controls.push(['regenerate', 'Regenerate', ButtonStyle.Secondary]);
     if (['generating', 'approval'].includes(plan.state) && canPlan) controls.push(['cancel', 'Cancel', ButtonStyle.Danger]);
     const components: any[] = [buttons(view, controls.slice(0, 5))];
     if (controls.length > 5) components.push(buttons(view, controls.slice(5)));
@@ -364,13 +385,14 @@ export class DiscordController {
       ({ label: `${index + 1}. ${stage.slice(0, 80)}`, value: String(index) }))));
     const inputs = await this.api.request('/v1/inputs?limit=100');
     const owned = inputs.inputs.filter((row: any) => row.sessionId === plan.sessionId && row.mode === 'finish');
+    const color = plan.state === 'approval' ? EmbedColor.Warning : plan.state === 'completed' ? EmbedColor.Success : ['failed', 'interrupted'].includes(plan.state) ? EmbedColor.Danger : EmbedColor.Info;
     return panel('Composer workflow', [`State: ${plan.state} · revision ${plan.revision}`, `Original objective: ${plan.prompt}`, plan.error ?? '',
       ...plan.stages.map((stage: string, index: number) => `${index + 1}. ${stage}`), `Checkpoint queue: ${owned.filter((row: any) => ['queued', 'browser'].includes(row.state)).length} pending; ${owned.filter((row: any) => row.delivery === 'unconfirmed').length} unconfirmed.`,
-      plan.inputId ? `Approval input: ${plan.inputId}. Inspect /queue for delivery; approval alone is not execution or verified completion.` : 'No stages execute before approval.'].join('\n\n'), components);
+      plan.inputId ? `Approval input: ${plan.inputId}. Inspect /queue for delivery; approval alone is not execution or verified completion.` : 'No stages execute before approval.'].join('\n\n'), components, [], { color });
   }
   private async confirmPanel(interaction: any, action: string, args: Record<string, unknown>, description: string) {
     const view = await this.makeView(interaction, { kind: 'confirm', action, args, sessionId: args.sessionId as string });
-    return panel('Confirm operation', description, [buttons(view, [['confirm', 'Confirm', ButtonStyle.Danger], ['dismiss', 'Cancel']])]);
+    return panel('Confirm operation', description, [buttons(view, [['confirm', 'Confirm', ButtonStyle.Danger], ['dismiss', 'Cancel', ButtonStyle.Secondary]])], [], { color: EmbedColor.Danger });
   }
 
   private async component(interaction: any, id: string, action: string, view: View): Promise<any> {
@@ -380,7 +402,7 @@ export class DiscordController {
       this.require(interaction, 'read');
       if (action === 'receipt') return this.operationPanel(interaction, view.action!);
       if (action === 'history' && view.sessionId) return this.historyPanel(interaction, view.sessionId);
-      if (action === 'queue' && view.sessionId) return panel('Input delivery', (await this.api.request('/v1/inputs?limit=100')).inputs.filter((row: any) => row.sessionId === view.sessionId));
+      if (action === 'queue' && view.sessionId) return panel('Input delivery', (await this.api.request('/v1/inputs?limit=100')).inputs.filter((row: any) => row.sessionId === view.sessionId), [], [], { color: EmbedColor.Info });
       throw new Error('Receipt action unavailable');
     }
     const value = interaction.values?.[0];
@@ -405,13 +427,13 @@ export class DiscordController {
     }
     if (view.kind === 'status') {
       if (action === 'history') return this.historyPanel(interaction, view.sessionId!);
-      if (action === 'queue') return panel('Input delivery', (await this.api.request('/v1/inputs?limit=100')).inputs.filter((row: any) => row.sessionId === view.sessionId));
+      if (action === 'queue') return panel('Input delivery', (await this.api.request('/v1/inputs?limit=100')).inputs.filter((row: any) => row.sessionId === view.sessionId), [], [], { color: EmbedColor.Info });
       if (action === 'details') return panel('Session details', await this.api.request(`${sessionPath(view.sessionId!)}?live=1`),
-        [buttons(id, [['refresh', 'Refresh'], ['workers', 'Workers'], ['logs', 'View Logs'], ['stop', 'Stop', ButtonStyle.Danger]])]);
+        [buttons(id, [['refresh', 'Refresh', ButtonStyle.Primary], ['workers', 'Workers', ButtonStyle.Secondary], ['logs', 'View Logs', ButtonStyle.Secondary], ['stop', 'Stop', ButtonStyle.Danger]])], [], { color: EmbedColor.Info });
       if (action === 'refresh') return this.statusPanel(interaction, view.sessionId!);
-      if (action === 'taskplan') return panel('Executor task plan', taskPlanDescription((await this.api.request(`${sessionPath(view.sessionId!)}/taskplan`)).plan));
-      if (action === 'workers') return panel('Owned workers', await this.api.request(`${sessionPath(view.sessionId!)}/workers`));
-      if (action === 'logs') return panel('Application activity', await this.api.request('/v1/log?limit=10'), [], [this.config.token]);
+      if (action === 'taskplan') return panel('Executor task plan', taskPlanDescription((await this.api.request(`${sessionPath(view.sessionId!)}/taskplan`)).plan), [], [], { color: EmbedColor.Info });
+      if (action === 'workers') return panel('Owned workers', await this.api.request(`${sessionPath(view.sessionId!)}/workers`), [], [], { color: EmbedColor.Info });
+      if (action === 'logs') return panel('Application activity', await this.api.request('/v1/log?limit=10'), [], [this.config.token], { color: EmbedColor.Info });
       if (action === 'stop') {
         this.require(interaction, 'send'); const detail = await this.api.request(`${sessionPath(view.sessionId!)}?live=1`);
         if (!detail.live?.activeTurnId) throw new Error('No proven active turn.');
@@ -419,7 +441,7 @@ export class DiscordController {
       }
     }
     if (view.kind === 'confirm') {
-      if (action === 'dismiss') { await this.store.update(state => { delete state.views[id]; }); return panel('Cancelled', 'No operation was requested.'); }
+      if (action === 'dismiss') { await this.store.update(state => { delete state.views[id]; }); return panel('Cancelled', 'No operation was requested.', [], [], { color: EmbedColor.Info }); }
       this.require(interaction, view.action === 'worker' ? 'workers' : 'send');
       const result = await this.operation(interaction, async operationId => {
         // Consume the confirmation before any side effect. An old button cannot repeat it.
@@ -427,7 +449,7 @@ export class DiscordController {
         if (view.action === 'cancel') return this.api.request(`/v1/inputs/${view.args!.inputId}/cancel`, {});
         return this.api.action(view.action!, operationId, view.args!);
       });
-      return panel('Operation requested', result);
+      return panel('Operation requested', result, [], [], { color: EmbedColor.Success });
     }
     if (view.kind === 'plan') {
       const plan = await this.api.request(`/v1/remote/plans/${view.planId}`);
@@ -436,7 +458,7 @@ export class DiscordController {
       if (plan.revision !== view.revision) throw new Error('The plan changed. Refresh before editing or approving.');
       if (action === 'stage') {
         await this.store.update(state => { state.views[id]!.page = Number(value); });
-        return panel('Stage selected', `Stage ${Number(value) + 1}\n${plan.stages[Number(value)]}`, [buttons(id, [['edit', 'Edit stage'], ['delete', 'Delete stage']])]);
+        return panel('Stage selected', `Stage ${Number(value) + 1}\n${plan.stages[Number(value)]}`, [buttons(id, [['edit', 'Edit stage', ButtonStyle.Secondary], ['delete', 'Delete stage', ButtonStyle.Danger]])], [], { color: EmbedColor.Info });
       }
       if (action === 'approve') this.require(interaction, 'send');
       const result = await this.operation(interaction, async operationId => {
@@ -506,7 +528,10 @@ export class DiscordController {
         components.push(select(view, 'setup-map', 'Map this channel to a session', rows.map((row: any) => ({ label: row.title || row.id, value: row.id }))));
       }
       if (projects.projects.length) components.push(select(view, 'setup-project', 'Default approved project', projects.projects.map((row: any) => ({ label: row.name, value: row.id }))));
-      components.push(buttons(view, [...(sessions.nextCursor ? [['setup-next', 'More sessions'] as [string, string]] : []), ['setup-first', 'First page']]));
+      const navButtons: Array<[string, string, ButtonStyle?]> = sessions.nextCursor
+        ? [['setup-next', 'More sessions', ButtonStyle.Secondary], ['setup-first', 'First page', ButtonStyle.Secondary]]
+        : [['setup-first', 'First page', ButtonStyle.Secondary]];
+      components.push(buttons(view, navButtons));
     }
     if (section === 'ai') {
       const catalog = await this.api.request('/v1/remote/models');
@@ -514,13 +539,16 @@ export class DiscordController {
       if (catalog.models.length) components.push(select(view, 'setup-model', 'Default observed model', catalog.models.slice(page * 25, (page + 1) * 25).map((row: any) => ({ label: row.label, value: row.id }))));
       const efforts = catalog.models.find((row: any) => row.id === draft.settings.defaultModel)?.efforts ?? [];
       if (efforts.length) components.push(select(view, 'setup-reasoning', 'Supported effort', efforts.map((value: string) => ({ label: value, value }))));
-      components.push(buttons(view, [['setup-workers', 'Worker limits'], ...(catalog.models.length > (page + 1) * 25 ? [['setup-next', 'More models'] as [string, string]] : []), ['setup-first', 'First page']]));
+      const aiButtons: Array<[string, string, ButtonStyle?]> = [['setup-workers', 'Worker limits', ButtonStyle.Secondary]];
+      if (catalog.models.length > (page + 1) * 25) aiButtons.push(['setup-next', 'More models', ButtonStyle.Secondary]);
+      aiButtons.push(['setup-first', 'First page', ButtonStyle.Secondary]);
+      components.push(buttons(view, aiButtons));
     }
     if (section === 'discord') {
       text = { authorizedUsers: Object.keys(draft.settings.users), allowedChannels: draft.settings.channels,
         notificationChannel: draft.settings.notificationChannel, progress: draft.settings.progress, finalResults: draft.settings.finalResults, operationalAlerts: draft.settings.operationalAlerts,
         frequencySeconds: draft.settings.frequencySeconds, note: 'Bootstrap guild/channel restrictions remain authoritative. Discord administrator roles confer no access.' };
-      components.push(buttons(view, [['setup-access', 'User and channel grants'], ['setup-notifications', 'Notifications']]));
+      components.push(buttons(view, [['setup-access', 'User and channel grants', ButtonStyle.Secondary], ['setup-notifications', 'Notifications', ButtonStyle.Secondary]]));
     }
     if (section === 'automation') {
       text = { draftDefaultAutomation: draft.settings.defaultAutomation, backend: await this.api.request('/v1/remote/settings'),
@@ -540,8 +568,9 @@ export class DiscordController {
       text = { missing, summary: { ...draft.settings, users: Object.fromEntries(Object.entries(draft.settings.users).map(([user, grants]) => [user, grants])) }, backendChanges: draft.backend,
         note: missing.length ? 'Resolve missing requirements before saving.' : 'Validation passed. Confirm Save commits supported settings. Browser authentication must still be verified manually.' };
       components.push(buttons(view, [['setup-save', 'Confirm Save', ButtonStyle.Success], ['setup-discard', 'Discard Draft', ButtonStyle.Danger]]));
+      return panel(`Setup · ${section}`, text, components, [this.config.token], { color: missing.length ? EmbedColor.Warning : EmbedColor.Success });
     }
-    return panel(`Setup · ${section}`, text, components, [this.config.token]);
+    return panel(`Setup · ${section}`, text, components, [this.config.token], { color: EmbedColor.Info });
   }
   private async validateSetup(draft: NonNullable<ReturnType<StateStore['snapshot']>['setup'][string]>): Promise<string[]> {
     const missing: string[] = [];
@@ -589,7 +618,7 @@ export class DiscordController {
             throw new Error('Setup changed during validation; refresh the summary.');
         };
         assertCurrent();
-        const missing = await this.validateSetup(draft); if (missing.length) return panel('Setup incomplete', missing.join('\n'));
+        const missing = await this.validateSetup(draft); if (missing.length) return panel('Setup incomplete', missing.join('\n'), [], [], { color: EmbedColor.Danger });
         assertCurrent();
         await this.operation(interaction, async operationId => {
           if (Object.keys(draft.backend).length) await this.api.action('settings', operationId, draft.backend);
@@ -599,12 +628,12 @@ export class DiscordController {
           });
         });
       } finally { this.setupSaving = false; }
-      return panel('Setup saved', 'Supported settings were committed and confirmed. Use /help and /status. Account authentication and provider approvals still require the private browser when requested.');
+      return panel('Setup saved', 'Supported settings were committed and confirmed. Use /help and /status. Account authentication and provider approvals still require the private browser when requested.', [], [], { color: EmbedColor.Success });
     }
     if (action === 'setup-discard') {
       if (this.setupSaving) throw new Error('A setup save is in progress; wait for its result.');
       await this.store.update(state => { delete state.setup[interaction.user.id]; delete state.views[id]; });
-      return panel('Setup draft discarded', 'Published settings are unchanged.');
+      return panel('Setup draft discarded', 'Published settings are unchanged.', [], [], { color: EmbedColor.Info });
     }
     await this.store.update(state => {
       if (this.setupSaving) throw new Error('A setup save is in progress; wait for its result.');

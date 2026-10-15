@@ -9,10 +9,12 @@ import { ControlClient } from '../discord/src/api.js';
 import { definitions, commands, helpDescription } from '../discord/src/commands.js';
 import { DiscordController } from '../discord/src/bot.js';
 import { Notifications, recordedFinal } from '../discord/src/notifications.js';
+import { EmbedColor } from '../discord/src/ui.js';
 
 const admin = '111111111111111111', other = '222222222222222222', guild = '333333333333333333', channel = '444444444444444444';
 let dir: string; let store: StateStore; let config: Bootstrap;
 const session = 'abcdef12-1234-1234-1234-123456789abc';
+const projectId = 'proj-1234';
 function interaction(name: string, values: Record<string, any> = {}, user = admin): any {
   return { id: String(BigInt('555555555555555555') + BigInt(Math.floor(Math.random() * 100000))), commandName: name,
     user: { id: user }, guildId: guild, channelId: channel, options: {
@@ -27,16 +29,16 @@ function backend() {
     if (route === '/v1/health') return { ok: true, actions: { enabled: true } };
     if (route === '/v1/status') return { bridge: { running: true, present: true, paired: true }, connection: { state: 'connected' } };
     if (route.startsWith('/v1/remote/settings')) return { actionsAllowed: true, permissions: { send: true, configure: true, plan: true, workers: true } };
-    if (route.startsWith('/v1/remote/projects')) return { projects: [{ id: randomUUID(), name: 'approved' }] };
+    if (route.startsWith('/v1/remote/projects')) return { projects: [{ id: projectId, name: 'approved' }] };
     if (route.startsWith('/v1/remote/models')) return { state: 'ready', models: [{ id: 'observed', label: 'Observed model', efforts: ['high'] }] };
-    if (route.startsWith('/v1/remote/resources')) return { memory: { totalBytes: 8 * 1024 ** 3 } };
+    if (route.startsWith('/v1/remote/resources')) return { memory: { totalBytes: 8 * 1024 ** 3 }, processes: [], swaps: [], systemd: {} };
     if (route === '/v1/remote/plans') return { plans: [] };
     if (route.startsWith('/v1/sessions?')) return { sessions: [{ id: session, title: 'Recorded session', origin: null, updatedAt: 1 }], nextCursor: null, total: 1 };
     if (route.endsWith('/controls')) return { automation: 'goal', loopAfterTurn: false, objective: 'Keep objective' };
     if (route.endsWith('/taskplan')) return { plan: null };
     if (route.includes('/events?')) return { events: [], total: 0, nextFrom: 1 };
     if (route.includes('/workers')) return { agents: [] };
-    if (route.startsWith('/v1/sessions/')) return { session: { id: session, title: 'recorded', updatedAt: 1, origin: null, model: 'observed' }, live: { activeTurnId: 'turn-1', automation: 'goal' } };
+    if (route.startsWith('/v1/sessions/')) return { session: { id: session, title: 'recorded', updatedAt: 1, origin: null, model: 'observed', projectId }, live: { activeTurnId: 'turn-1', automation: 'goal' } };
     if (route.startsWith('/v1/inputs?')) return { inputs: [] };
     if (route.startsWith('/v1/log')) return { entries: [] };
     throw new Error(`Unhandled test route ${route}`);
@@ -131,6 +133,19 @@ describe('Discord commands and authorization', () => {
     expect(description).toContain('Compaction needs attention: composer_missing');
     expect(description).toContain('Recovery: Compact & Resume needs attention');
     expect(description).toContain('Never manually resend an unconfirmed handoff');
+  });
+  it('formats /status with embed colors, status emojis, and embed fields', async () => {
+    const api = backend();
+    const controller = new DiscordController(config, store, api as unknown as ControlClient);
+    const result = await controller.command(interaction('status'));
+    expect(result.embeds).toHaveLength(1);
+    const embedData = result.embeds[0].toJSON();
+    expect(embedData.color).toBe(EmbedColor.Success);
+    expect(embedData.fields).toEqual([
+      { name: 'State', value: '🟢 Working', inline: true },
+      { name: 'Project', value: 'approved', inline: true },
+      { name: 'Workers', value: 'None', inline: true },
+    ]);
   });
   it('discovers help from registered definitions and hides administrator commands from read-only users', async () => {
     await store.update(state => { state.settings.users[other] = ['read']; });
