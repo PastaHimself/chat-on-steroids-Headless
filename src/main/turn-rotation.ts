@@ -1,7 +1,7 @@
 /**
  * Fresh turns for long work (#1402).
  *
- * Measured over a 24-hour run and reproduced on another account: turns up to about 35 minutes
+ * Upstream reports (not Headless validation), over a 24-hour run and another account: turns up to about 35 minutes
  * ended cleanly, turns that ran 37–64 minutes almost always broke (stream lost, "Message delivery
  * timed out", stalls), and every break then cost reloads and history limits. What worked by hand
  * every time was Stop and "continue". With opt-in `ui.rotateTurnMinutes` (Headless default 0),

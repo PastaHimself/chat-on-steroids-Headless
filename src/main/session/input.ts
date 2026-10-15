@@ -672,7 +672,7 @@ async function prepare(entry: InputEntry, suffix = ''): Promise<InputEntry> {
     throw new Error('Prepared message exceeds the delivery limit; shorten the request or plan');
   return { ...entry, deliveryText };
 }
-function append(current: InputEntry[], entry: InputEntry, stackDirect = false): InputEntry[] {
+async function append(current: InputEntry[], entry: InputEntry, stackDirect = false): Promise<InputEntry[]> {
   if (queuedFollowup(entry)) {
     const positioned = current.filter(row => row.sessionId === entry.sessionId && queuedFollowup(row) && !terminal(row) && row.queueOrder !== undefined);
     if (positioned.length) entry = { ...entry, queueOrder: Math.max(...positioned.map(row => row.queueOrder!)) + 1 };
@@ -683,7 +683,18 @@ function append(current: InputEntry[], entry: InputEntry, stackDirect = false): 
       (!queuedFollowup(row) || row.state === 'browser') && ['queued', 'browser', 'tool'].includes(row.state))) {
     throw new Error('One message is already awaiting delivery. Cancel it before sending another.');
   }
-  const retain = (row: InputEntry): boolean => !terminal(row) || needsHistory(row) || pendingStages(row) || needsReceipt(row);
+  // Terminal history is bounded, but a rotation row also guards its source from
+  // being filed twice. Keep that row until the canonical session proves departure
+  // or a different active turn; an idle/unknown turn is not such proof.
+  const guardedRotations = new Set<string>();
+  const rotationSessions = new Map<string, Awaited<ReturnType<typeof getSession>>>();
+  for (const row of current) if (row.purpose === 'rotation' && row.sessionId) {
+    if (!rotationSessions.has(row.sessionId)) rotationSessions.set(row.sessionId, await getSession(row.sessionId));
+    const session = rotationSessions.get(row.sessionId);
+    if (session?.conversationId === row.conversationId &&
+        (!session.activeTurnId || session.activeTurnId === row.queuedTurn?.turnId)) guardedRotations.add(row.id);
+  }
+  const retain = (row: InputEntry): boolean => guardedRotations.has(row.id) || !terminal(row) || needsHistory(row) || pendingStages(row) || needsReceipt(row);
   const active = current.filter(retain);
   const reserved = (row: InputEntry) => row.stagesApplied ? [] : row.stages ?? [];
   if ([...active, entry].reduce((sum, row) => sum + Buffer.byteLength(JSON.stringify({ ...row, images: undefined, toolImages: undefined, stages: reserved(row) })), 0) > 1024000) {
@@ -799,7 +810,9 @@ export function fileRotationInput(sessionId: string, turnId: string, currentOwne
       transportIntent: 'browser', queuedTurn: { conversationId: session.conversationId, turnId },
       state: 'queued', owner: null, createdAt: now, conversationId: session.conversationId };
     if (!await rotationInputCurrent(row) || !currentOwner()) return null;
-    await commit(append(current, row));
+    const next = await append(current, row);
+    if (!currentOwner()) return null;
+    await commit(next);
     if (currentOwner()) wakeBrowserWork();
     return { ...row };
   });
@@ -910,10 +923,10 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
         (row.purpose === 'rotation' && !terminal(row) && row.sendAuthorizedAt === undefined))
       ? row.recovery?.queuedInput ? withoutSilenceClaim(row) :
         { ...row, state: 'cancelled' as const, error: 'Replaced by your new instruction before delivery.' } : row) : current;
-    let next = append(prioritized, entry, input.mode === 'auto' && !finishOwner && policy?.canInject === true);
+    let next = await append(prioritized, entry, input.mode === 'auto' && !finishOwner && policy?.canInject === true);
     // A finish plan belongs to an existing session now. Publish every editable
     // checkpoint atomically; no composer text or first-send receipt owns its life.
-    if (entry.mode === 'finish') next = materializeStages(next, entry);
+    if (entry.mode === 'finish') next = await materializeStages(next, entry);
     await commit(next);
     try { await materializeOpening(entry); }
     catch (error) {
@@ -924,12 +937,12 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
     return { ...next.find(row => row.id === entry.id)! };
   });
 }
-function materializeStages(current: InputEntry[], entry: InputEntry): InputEntry[] {
+async function materializeStages(current: InputEntry[], entry: InputEntry): Promise<InputEntry[]> {
   const sessionId = entry.sessionId ?? entry.deliveredSessionId;
   if (!sessionId || entry.stages === undefined || entry.stagesApplied) return current;
   let next = current.map(row => row.id === entry.id ? { ...row, stagesApplied: true } : row);
   // Checkpoints inherit the current chat model, including later user selections.
-  for (const [index, text] of entry.stages.entries()) next = append(next, {
+  for (const [index, text] of entry.stages.entries()) next = await append(next, {
     id: randomUUID(), sessionId, projectId: entry.projectId, text, authoredSource: 'none', mode: 'finish', dueAt: entry.createdAt + index,
     model: null, reasoningEffort: null, state: 'queued', owner: null, createdAt: entry.createdAt + index, conversationId: entry.conversationId,
     ...(entry.queuedTurn ? { queuedTurn: entry.queuedTurn } : {})
@@ -947,7 +960,7 @@ export function listInputs(): Promise<InputEntry[]> {
       } else next.push(entry);
     }
     for (const entry of [...next]) {
-      if (entry.state === 'sent') next = materializeStages(next, entry);
+      if (entry.state === 'sent') next = await materializeStages(next, entry);
     }
     if (next.length !== current.length || next.some((entry, index) => entry !== current[index])) await commit(next);
     await publishHistory();
@@ -1474,7 +1487,9 @@ export function fileRecoveryInput(sessionId: string, conversationId: string, tur
       return refused(why ?? 'a local tool call is still running');
     }
     if (!currentOwner()) return false;
-    await commit(append(current, row));
+    const next = await append(current, row);
+    if (!currentOwner()) return false;
+    await commit(next);
     return true;
   });
 }
@@ -2218,7 +2233,7 @@ export async function requestBrowserDecision(text: string, signal: AbortSignal, 
         reasoningEffort: options.reasoningEffort === undefined ? 'high' : options.reasoningEffort,
         decisionSourceSessionId: options.sourceSessionId, lifetime: options.lifetime, purpose: 'decision', state: 'queued', owner: null,
         createdAt: Date.now(), conversationId: options.conversationId ?? null });
-      await commit(append(current, entry));
+      await commit(await append(current, entry));
       return entry;
     });
     signal.throwIfAborted();

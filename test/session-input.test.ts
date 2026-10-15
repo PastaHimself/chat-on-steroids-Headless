@@ -326,6 +326,30 @@ describe('durable user input ownership', () => {
     expect(await fileRotationInput(sessionId, 'rotating-turn')).toBeNull();
   });
 
+  it('keeps the current source rotation guard when unrelated terminal history is trimmed', async () => {
+    binding.model = 'gpt-6-thinking'; binding.activeTurnId = 'rotating-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'rotating-turn', time: 900 };
+    const row = (await fileRotationInput(sessionId, 'rotating-turn'))!;
+    await cancelInput(row.id);
+    for (let index = 0; index < 55; index++) {
+      const other = await enqueueInput(input({ sessionId: 'session-two', mode: 'after-turn' }));
+      await cancelInput(other.id);
+    }
+    resetInputForTests();
+    expect(await fileRotationInput(sessionId, 'rotating-turn')).toBeNull();
+    binding.activeTurnId = 'new-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'new-turn', time: 1100 };
+    const next = await fileRotationInput(sessionId, 'new-turn');
+    expect(next).not.toBeNull();
+    for (let index = 0; index < 55; index++) {
+      const other = await enqueueInput(input({ sessionId: 'session-two', mode: 'after-turn' }));
+      await cancelInput(other.id);
+    }
+    const retained = await listInputs();
+    expect(retained.some(entry => entry.id === row.id)).toBe(false);
+    expect(retained.some(entry => entry.id === next!.id)).toBe(true);
+  });
+
   it('waits for running local tools before claiming a fresh turn and revokes it after a source change', async () => {
     binding.model = 'gpt-6-thinking'; binding.activeTurnId = 'rotating-turn';
     binding.end = { kind: 'turn_start', outcome: '', turnId: 'rotating-turn', time: 900 };

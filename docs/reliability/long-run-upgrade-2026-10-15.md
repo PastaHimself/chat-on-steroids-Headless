@@ -57,6 +57,10 @@ new instruction takes priority before authorization. An uncertain authorized Sen
 its original receipt custody and can accept a late exact receipt. A cancelled/failed row for
 that source is not replaced merely because time passed or the backend restarted. Existing
 ordinary unfinished-answer recovery remains the fallback, subject to its own proof and bounds.
+Final review reproduced another edge: 55 unrelated cancellations trimmed a current source's
+terminal guard, allowing another filing after restart. The outbox now retains that existing row
+until its canonical session proves departure or a different active turn. Old guards then return
+to ordinary bounded history; no separate attempt ledger is introduced.
 Old companions without final authorization cannot claim a rotation. A retired bridge lifetime
 cannot publish an unaccepted rotation or wake a browser after asynchronous preparation.
 

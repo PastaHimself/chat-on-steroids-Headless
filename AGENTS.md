@@ -2835,7 +2835,9 @@ preserved-action receipt records its own time and says provider recovery is unco
 Timed fresh turns are opt-in (`ui.rotateTurnMinutes`, 0 by default; 1–120, normally 30).
 `turn-rotation.ts` considers an exact recorded source start only after an attributed tool
 result. `input.ts::fileRotationInput` freezes one automatic `purpose: rotation` browser row
-for that source, retaining cancelled/uncertain custody across restart. It uses the existing
+for that source, retaining cancelled/uncertain custody across restart. Terminal-history trimming
+keeps its guard until the canonical session proves departure or a different active turn;
+idle/unknown state cannot erase it. It uses the existing
 native active-turn steering path and never presses Stop. Native Stop cannot prove server-side
 cancellation. Pro, workers/helpers, active broker families, Goal/Loop, compaction, provider
 restrictions, manual departure, incomplete history and running/settling tools veto Send.
