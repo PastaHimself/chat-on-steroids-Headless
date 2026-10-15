@@ -30,6 +30,7 @@ import path from 'node:path';
 import type {
   AssetRef,
   Handoff,
+  HandoffCaptureIssue,
   ImageStorageClearMode,
   ImageStorageClearResult,
   ImageStorageInfo,
@@ -1344,6 +1345,7 @@ export function upsertMessageEvent(
               providerMessageId: event.providerMessageId ?? previous.providerMessageId,
               resolvedModel: event.resolvedModel ?? previous.resolvedModel,
               references: event.references ?? previous.references,
+              textIncomplete: event.textIncomplete ?? (previous.textIncomplete === true || sameMessage ? previous.textIncomplete : undefined),
               // `final` is a compatibility mirror of state, not an independent truth.
               state: event.state === 'final' || event.final === true ? 'final' : 'streaming',
               final: event.state === 'final' || event.final === true,
@@ -1414,6 +1416,7 @@ export function upsertMessageEvent(
             storedTextEqual(previous.renderedHtml, nextEvent.renderedHtml) &&
             previous.state === nextEvent.state &&
             previous.final === nextEvent.final &&
+            previous.textIncomplete === nextEvent.textIncomplete &&
             previous.goalEligible === nextEvent.goalEligible &&
             previous.providerMessageId === nextEvent.providerMessageId &&
             previous.resolvedModel === nextEvent.resolvedModel &&
@@ -1939,20 +1942,23 @@ export async function readCompletedFinal(sessionId: string, conversationId: stri
  * Anything short of that is `pending`; nothing here picks the newest or the mounted answer.
  */
 export async function readHandoffResponse(sessionId: string, conversationId: string, anchorMessageId: string, token: string): Promise<
-  { status: 'complete'; text: string; messageId: string } | { status: 'pending' | 'ambiguous' }
+  { status: 'complete'; text: string; messageId: string; revision: number } | { status: 'pending' | 'ambiguous'; reason: HandoffCaptureIssue }
 > {
-  const pending = { status: 'pending' } as const, ambiguous = { status: 'ambiguous' } as const;
+  const pending = (reason: HandoffCaptureIssue) => ({ status: 'pending' as const, reason });
+  const ambiguous = (reason: HandoffCaptureIssue) => ({ status: 'ambiguous' as const, reason });
   const entry = await ensureOpen(sessionId);
   await flushSession(sessionId);
   const revision = entry.nextSeq;
-  if (entry.summary.conversationId !== conversationId) return pending;
+  if (entry.summary.conversationId !== conversationId) return ambiguous('marker-mismatch');
   const anchor = entry.messages.get(`user_message\u0000${anchorMessageId}`);
   const marker = anchor?.kind === 'user_message' ? continuationMarkerOf(anchor.message.text) : null;
-  if (!anchor || marker?.kind !== 'HANDOFF' || marker.token !== token) return pending;
+  if (!anchor) return pending('anchor-not-recorded');
+  if (marker?.kind !== 'HANDOFF' || marker.token !== token) return ambiguous('marker-mismatch');
   const events = await readRecentEventsFromDisk(sessionId, MAX_EVENT_TAIL, {
     kinds: ['turn_start', 'turn_end', 'user_message', 'assistant_message'], after: positionOf(anchor), orderByOrigin: true
   });
-  if (entry.nextSeq !== revision || events.length >= MAX_EVENT_TAIL) return pending;
+  if (entry.nextSeq !== revision) return pending('snapshot-changed');
+  if (events.length >= MAX_EVENT_TAIL) return pending('history-bound-reached');
   const turns = entry.summary.timelineTurns;
   const next = events.findIndex(event => event.kind === 'user_message' && !injectedUserMessage(event, turns));
   const interval = next < 0 ? events : events.slice(0, next);
@@ -1960,21 +1966,31 @@ export async function readHandoffResponse(sessionId: string, conversationId: str
   for (const event of interval) {
     if (event.kind === 'user_message') continue;
     if (event.turnId) generations.add(responseTurnId(turns, event.turnId));
-    else if (event.kind !== 'assistant_message' || event.final) return ambiguous;
+    else if (event.kind !== 'assistant_message' || event.final) return ambiguous('generation-unidentified');
   }
-  if (generations.size > 1) return ambiguous;
+  if (generations.size > 1) return ambiguous('multiple-generations');
   const [generation] = generations;
   const boundary = interval.filter(event => event.kind === 'turn_start' || event.kind === 'turn_end').at(-1);
-  if (!generation || boundary?.kind !== 'turn_end' || boundary.outcome !== 'completed') return pending;
+  if (!generation || boundary?.kind !== 'turn_end') return pending('generation-not-terminal');
+  if (boundary.outcome !== 'completed') return pending('response-failed');
   const finals = interval.filter((event): event is Extract<SessionEvent, { kind: 'assistant_message' }> =>
     event.kind === 'assistant_message' && event.final === true && !!event.messageId && !!event.message.text.trim());
-  if (finals.length > 1) return ambiguous;
+  if (finals.length > 1) return ambiguous('multiple-finals');
   const final = finals[0];
-  if (!final) return pending;
+  if (!final) return pending('final-not-recorded');
+  if (final.textIncomplete === true || (final.textIncomplete !== false && final.message.chars >= 256_000))
+    return pending('response-truncated');
   const text = final.message.truncated
     ? final.message.assetId ? await readOverflowText(sessionId, final.message.assetId) : null
     : final.message.text;
-  return text?.trim() ? { status: 'complete', text, messageId: final.messageId! } : pending;
+  if (entry.nextSeq !== revision) return pending('snapshot-changed');
+  return text?.trim() ? { status: 'complete', text, messageId: final.messageId!, revision } : pending('overflow-unavailable');
+}
+
+/** Synchronous capture-commit fence after handoff/overflow preparation crossed awaits. */
+export function handoffResponseUnchanged(sessionId: string, conversationId: string, revision: number): boolean {
+  const entry = open.get(sessionId);
+  return !!entry && entry.summary.conversationId === conversationId && entry.nextSeq === revision;
 }
 
 /** Recorded local execution, not a native tool label or a request-id sighting alone. */

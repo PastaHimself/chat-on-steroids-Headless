@@ -565,7 +565,7 @@
     return value.replace(APP_MENTION_LINK, ' ').trim();
   }
 
-  function authoredText(message) {
+  function authoredText(message, completeness) {
     const content = message && typeof message === 'object' ? message.content : null;
     if (!content || typeof content !== 'object' || content.content_type !== 'text') return null;
     if (Array.isArray(content.parts)) {
@@ -575,11 +575,15 @@
         if (typeof part !== 'string') continue;
         if (value) value += '\n';
         value += part;
-        if (value.length >= MAX_RENDERED_TEXT) break;
+        if (value.length >= MAX_RENDERED_TEXT) {
+          if (completeness && (value.length > MAX_RENDERED_TEXT || at + 1 < content.parts.length)) completeness.incomplete = true;
+          break;
+        }
       }
       value = value.slice(0, MAX_RENDERED_TEXT);
       return value.length > 0 ? value : null;
     }
+    if (completeness && typeof content.text === 'string' && content.text.length > MAX_RENDERED_TEXT) completeness.incomplete = true;
     return typeof content.text === 'string' && content.text.length > 0
       ? content.text.slice(0, MAX_RENDERED_TEXT)
       : null;
@@ -654,7 +658,10 @@
       // Private reasoning, by ChatGPT's own routing. Never a transcript row.
       if (analysisMessage(message)) continue;
       const id = str(message.id);
-      const rawText = budgetedText(authoredText(message), budget, MAX_RENDERED_TEXT);
+      const completeness = { incomplete: false };
+      const authored = authoredText(message, completeness);
+      const rawText = budgetedText(authored, budget, MAX_RENDERED_TEXT);
+      const textIncomplete = completeness.incomplete || message.metadata?.clf_text_incomplete === true || (authored || '').length > (rawText || '').length;
       // A native final can be textless (for example after generated images).
       // Preserve its exact end_turn proof through the normal message pipeline.
       if (!id || (!rawText && id !== terminalId)) continue;
@@ -714,6 +721,7 @@
         role: 'assistant',
         stable,
         rawText,
+        textIncomplete,
         order: index,
         createTime,
         ...(resolvedModel ? { resolvedModel } : {})
@@ -1115,6 +1123,7 @@
         ...(assistantCandidates[c].resolvedModel ? { resolvedModel: assistantCandidates[c].resolvedModel } : {}),
         ...(references ? { references } : {}),
         rawText: assistantCandidates[c].rawText,
+        textIncomplete: assistantCandidates[c].textIncomplete,
         renderedHtml: ''
       });
     }
@@ -1783,7 +1792,7 @@
         ...(num(item.sentAtMs) !== null ? { create_time: item.sentAtMs / 1000 } : {}),
         status: complete ? 'finished_successfully' : 'in_progress', end_turn: terminal,
         content: { content_type: 'text', parts: body ? [body] : [] },
-        metadata: { message_type: 'next', ...(exchange ? { turn_exchange_id: exchange } : {}) }
+        metadata: { message_type: 'next', clf_text_incomplete: typeof item.content === 'string' && item.content.length > body.length, ...(exchange ? { turn_exchange_id: exchange } : {}) }
       });
     }
     return out;
@@ -2066,7 +2075,7 @@
     const own = (Array.isArray(item.contentReferences) ? item.contentReferences : []).filter(reference =>
       reference?.type === 'dil' && id && reference.source_message_id === id &&
       typeof reference.model_dil_v2?.fallbackMarkdown === 'string' && reference.model_dil_v2.fallbackMarkdown.trim());
-    return own.length === 1 ? unescapeFallbackMarkdown(own[0].model_dil_v2.fallbackMarkdown).slice(0, MAX_RENDERED_TEXT) : content;
+    return own.length === 1 ? unescapeFallbackMarkdown(own[0].model_dil_v2.fallbackMarkdown) : content;
   }
   /**
    * The reply as the model wrote it. `fallbackMarkdown` keeps its formatting but backslash-escapes

@@ -1760,6 +1760,7 @@ export interface ChatObservation {
   reaction?: string | null;
   /** ChatGPT's already-rendered authored markup for this same logical message. */
   renderedHtml?: string;
+  textIncomplete?: boolean;
   messageId?: string;
   /** Raw public provider message UUID, retained as evidence, never used to guess ownership. */
   providerMessageId?: string;
@@ -2097,6 +2098,7 @@ async function recordSupersededMessages(
         {
           ...base,
           kind: 'assistant_message',
+          ...(typeof item.textIncomplete === 'boolean' ? { textIncomplete: item.textIncomplete } : {}),
           message: await storeText(sessionId, item.text ?? '', 256_000),
           ...(item.renderedHtml
             ? { renderedHtml: await storeText(sessionId, item.renderedHtml, 120_000) }
@@ -2243,6 +2245,7 @@ async function recordChatObservationsNow(
         const written = await upsertMessageEvent(sessionId, {
           ...base,
           kind: 'assistant_message',
+          ...(typeof item.textIncomplete === 'boolean' ? { textIncomplete: item.textIncomplete } : {}),
           // Keep normal 15k–20k-token handoff-style answers inline rather than making the
           // local transcript itself look truncated while the continuation carries more.
           message: await storeText(sessionId, item.text ?? '', 256_000),

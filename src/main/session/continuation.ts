@@ -52,7 +52,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { isProModel } from '../../shared/chat-models.js';
-import { isReasoningEffort, type Handoff, type ReasoningEffort } from '../../shared/session.js';
+import { HANDOFF_CAPTURE_ISSUES, isReasoningEffort, type Handoff, type HandoffCaptureIssue, type ReasoningEffort } from '../../shared/session.js';
 import { logInfo, logWarn } from '../logger.js';
 import {
   PRIME_ID,
@@ -155,15 +155,11 @@ export interface ContinuationSendCheckpoint {
   messageId: string | null;
   /**
    * Source only, from the dispatch: the chat's newest user message just before the click, and
-   * when the click was armed. A later document that still shows that same message as the newest
-   * proves the click never reached ChatGPT (see releaseUndeliveredSourceDispatchNow).
+   * when the click was armed. Diagnostic hints only; DOM absence cannot prove non-delivery.
    */
   before?: string | null;
   dispatchedAt?: number;
 }
-
-/** How long after the armed click a document may prove that ChatGPT never received it. */
-export const SOURCE_UNDELIVERED_AFTER_MS = 15_000;
 
 /** Existing browser-pickup schedule, owned by the continuation WAL across restarts. */
 export interface ContinuationPickup {
@@ -250,6 +246,7 @@ interface Continuation {
    */
   touchedAt: number;
   sourceProgress: number;
+  captureIssue: HandoffCaptureIssue | null;
   /** Auto-compaction ticket: survives page/retry clocks until commit or explicit Off/cancel. */
   automatic: boolean;
   /** When the brief request first went on its way; the automatic clock starts here. */
@@ -316,6 +313,7 @@ interface ContinuationRecord {
   /** Absent in snapshots written before the manual deadline counted from activity. */
   touchedAt?: number;
   sourceProgress?: number;
+  captureIssue?: HandoffCaptureIssue | null;
   /** Absent in records written before durable auto-compaction tickets existed. */
   automatic?: boolean;
   /** Absent in records written before automatic handovers had a deadline. */
@@ -353,6 +351,7 @@ function durableRecord(entry: Continuation): ContinuationRecord {
     openedAt: entry.openedAt,
     touchedAt: entry.touchedAt,
     sourceProgress: entry.sourceProgress,
+    captureIssue: entry.captureIssue,
     automatic: entry.automatic,
     askedAt: entry.askedAt,
     project: entry.project,
@@ -409,6 +408,7 @@ function publishRecord(entry: Continuation, record: ContinuationRecord): void {
   // handoff that has been progressing since.
   entry.touchedAt = Math.max(entry.touchedAt, record.touchedAt ?? record.openedAt);
   entry.sourceProgress = record.sourceProgress ?? 0;
+  entry.captureIssue = record.captureIssue ?? null;
   entry.automatic = record.automatic === true;
   entry.state = record.state;
   entry.summary = record.summary;
@@ -431,7 +431,8 @@ function publishRecord(entry: Continuation, record: ContinuationRecord): void {
 
 async function transitionNow(
   entry: Continuation,
-  derive: (current: ContinuationRecord) => ContinuationRecord
+  derive: (current: ContinuationRecord) => ContinuationRecord,
+  progress = true
 ): Promise<ContinuationRecord> {
   return withWalPublication(async () => {
     const current = durableRecord(entry);
@@ -439,7 +440,7 @@ async function transitionNow(
     // Any semantic transition is forward progress, so it renews the waiting deadline. Without this
     // the stamp would only ever be set at open and the manual clock would be back to counting from
     // there — the same bug in a new field.
-    if (JSON.stringify(next) !== JSON.stringify(current)) next.touchedAt = Date.now();
+    if (progress && JSON.stringify(next) !== JSON.stringify(current)) next.touchedAt = Date.now();
     try {
       // Persist the proposed semantic state before publishing it into the live transaction.
       // If the durable boundary rejects, callers still see the previous state and can retry or
@@ -490,6 +491,7 @@ export interface ContinuationView {
   state: ContinuationState;
   handoffId: string | null;
   error: string | null;
+  captureIssue: HandoffCaptureIssue | null;
   openedAt: number;
   automatic: boolean;
   /** When the brief request first went on its way, or null while it has not. */
@@ -511,6 +513,8 @@ const view = (entry: Continuation): ContinuationView => ({
   state: entry.state,
   handoffId: entry.handoffId,
   error: entry.error,
+  captureIssue: entry.captureIssue ?? (entry.state !== 'committed' && entry.state !== 'aborted' &&
+    hasDispatchCustody(entry) && waitingDeadlineExceeded(entry) ? 'deadline-exceeded' : null),
   openedAt: entry.openedAt,
   automatic: entry.automatic,
   askedAt: entry.askedAt,
@@ -544,10 +548,16 @@ const manualWaitingTtlMs = (state: ContinuationState, requested: RequestedModel 
  * CONTINUATION_PRO_WRITING_TTL_MS while a Pro brief is being written. An automatic one has no
  * clock until it is asked for and AUTOMATIC_HANDOVER_TTL_MS from then.
  */
-const expired = (entry: Continuation, now = Date.now()): boolean =>
+const waitingDeadlineExceeded = (entry: Continuation, now = Date.now()): boolean =>
   entry.automatic
     ? entry.askedAt !== null && now - entry.askedAt >= AUTOMATIC_HANDOVER_TTL_MS
     : now - entry.touchedAt >= manualWaitingTtlMs(entry.state, entry.requestedModel);
+
+/** Deadlines can end pre-Send intent, never destroy evidence of possible submission. */
+const hasDispatchCustody = (entry: Pick<Continuation, 'sourceSend' | 'destinationSend'>): boolean =>
+  !sendUnattempted(entry.sourceSend) || !sendUnattempted(entry.destinationSend);
+const expired = (entry: Continuation, now = Date.now()): boolean =>
+  !hasDispatchCustody(entry) && waitingDeadlineExceeded(entry, now);
 
 const isOpen = (entry: Continuation): boolean =>
   entry.state !== 'committed' && entry.state !== 'aborted' && !expired(entry);
@@ -561,9 +571,9 @@ function sweep(): void {
     // to *waiting*, and once the durable phase starts there is nothing left to wait for.
     if (entry.state === 'committing' || commitLocks.has(entry.token) || checkpointLocks.has(entry.token)) continue;
     if (entry.state === 'committed' || entry.state === 'aborted') {
-      // Kept briefly so a repeated ack can be answered with "already done" rather than with
-      // a fresh transaction, then forgotten.
-      if (Date.now() - entry.touchedAt > CONTINUATION_TTL_MS * 2) byToken.delete(entry.token);
+      // Sent/uncertain receipts remain durable even after a terminal error or explicit cancel.
+      // Only records without submission custody can be retired by age.
+      if (!hasDispatchCustody(entry) && Date.now() - entry.touchedAt > CONTINUATION_TTL_MS * 2) byToken.delete(entry.token);
       continue;
     }
     if (expired(entry)) {
@@ -631,7 +641,8 @@ export function supersededSourceConversations(): string[] {
   sweep();
   const out = new Set<string>();
   for (const entry of byToken.values()) {
-    if (entry.state === 'committed' && entry.to && entry.to !== entry.from) out.add(entry.from);
+    if (entry.state === 'committed' && entry.to && entry.to !== entry.from &&
+        Date.now() - entry.touchedAt <= CONTINUATION_TTL_MS * 2) out.add(entry.from);
   }
   return [...out].sort();
 }
@@ -803,6 +814,7 @@ function makeContinuation(sessionId: string, fromConversationId: string, automat
     openedAt: Date.now(),
     touchedAt: Date.now(),
     sourceProgress: 0,
+    captureIssue: null,
     automatic,
     askedAt: null,
     state: 'awaiting-summary',
@@ -935,35 +947,6 @@ export async function dispatchContinuationSourceSendNow(token: string, before?: 
 }
 
 /**
- * Hands an armed source Send back when ChatGPT provably never received it.
- *
- * The dispatch fence is never replayed on doubt, and its only ends were ChatGPT's marker or a
- * cancel. A click that never reached ChatGPT has no marker, so the handoff waited forever with
- * nothing on screen (measured 2026-10-10: a manual Compact & resume stayed `awaiting-summary` across
- * an app restart and three pickups). The proof is ChatGPT's own history: a document loaded after
- * the click, once ChatGPT is idle, shows the marked prompt as the newest user message if it was
- * accepted. Still showing the very message that was newest before the click means it was not,
- * so the fence returns to `attempted-unresolved` and the next Send is the first one.
- */
-export async function releaseUndeliveredSourceDispatchNow(
-  token: string, newestUserMessage: string | null, documentSince: number
-): Promise<ContinuationSendCheckpoint | null> {
-  return withCheckpointLock(token, async () => {
-    const entry = byToken.get(token);
-    if (!entry || !isOpen(entry) || entry.state !== 'awaiting-summary') return null;
-    const send = entry.sourceSend;
-    if (send.state !== 'dispatched-unresolved' || typeof send.before !== 'string' || !send.before ||
-        typeof send.dispatchedAt !== 'number' || newestUserMessage !== send.before ||
-        !(documentSince > send.dispatchedAt) || Date.now() - send.dispatchedAt < SOURCE_UNDELIVERED_AFTER_MS) return null;
-    await transitionNow(entry, (current) => ({
-      ...current,
-      sourceSend: { state: 'attempted-unresolved', messageId: null }
-    }));
-    return { ...entry.sourceSend };
-  });
-}
-
-/**
  * Terminally abandons a source handoff when the page can still prove no Send happened.
  *
  * This is the source-side counterpart to releasing a lost destination draft, except there is
@@ -1022,6 +1005,20 @@ export async function reportContinuationSourceBlockerNow(token: string, reason: 
     const error = reason.trim().slice(0, 500);
     if (!error) return false;
     await transitionNow(entry, current => ({ ...current, error }));
+    return true;
+  });
+}
+
+/** Persist a capture diagnostic without renewing progress or changing submission custody. */
+export async function reportContinuationCaptureIssueNow(
+  token: string, anchor: string | null, issue: HandoffCaptureIssue
+): Promise<boolean> {
+  return withCheckpointLock(token, async () => {
+    const entry = byToken.get(token);
+    if (!entry || !isOpen(entry) || entry.state !== 'awaiting-summary' ||
+        sendUnattempted(entry.sourceSend) || entry.sourceSend.messageId !== anchor) return false;
+    if (entry.captureIssue === issue) return true;
+    await transitionNow(entry, current => ({ ...current, captureIssue: issue }), false);
     return true;
   });
 }
@@ -1094,11 +1091,9 @@ export async function dispatchContinuationDestinationSendNow(token: string): Pro
 }
 
 /**
- * Takes an armed replacement dispatch back, on the one proof that nothing left the page: the
- * composer no longer held the brief in a chat that still had no id, so the click had nothing
- * to submit and ChatGPT nothing to accept. The user pressing Escape as the brief lands is that
- * case. A composer still holding the text is the ambiguous one and stays armed; only the marked
- * message or a cancel resolves it. Released, the brief may be offered to a fresh chat again.
+ * Releases only pre-dispatch replacement custody. An empty composer after dispatch is not
+ * evidence of non-delivery: the provider may have accepted and cleared it. Older pages that
+ * report destinationLost after arming therefore remain fenced until exact receipt or cancel.
  */
 export function continuationClaimedBy(token: string, claimant: string): boolean {
   return byToken.get(token)?.claimedBy === claimant;
@@ -1112,7 +1107,7 @@ export async function releaseContinuationDestinationSendNow(token: string, unatt
     // still-unattempted claim, rechecked inside the same Send checkpoint lock.
     if (unattemptedClaimant !== undefined &&
         (entry.claimedBy !== unattemptedClaimant || entry.destinationSend.state !== 'not-attempted')) return false;
-    if (entry.destinationSend.state === 'sent') return false;
+    if (!sendUnattempted(entry.destinationSend)) return false;
     if (entry.destinationSend.state === 'not-attempted' && entry.claimedBy === null) return true;
     // The claim goes with the dispatch. It named the one command whose page was to send the
     // brief; that page has sent nothing and its command is retired, so the next command — a
@@ -1177,7 +1172,9 @@ export async function bindContinuationDestinationMessageNow(
  * the retry carries the identical text or a re-observed variant of it: there is one brief for
  * this compaction, and it is the one already stored.
  */
-export async function attachSummary(token: string, text: string): Promise<Handoff | null> {
+export type ContinuationCaptureFence = (publish: () => Promise<boolean>) => Promise<boolean>;
+
+export async function attachSummary(token: string, text: string, accept?: ContinuationCaptureFence): Promise<Handoff | null> {
   const brief = text.trim();
   if (!brief) return null;
   return capture(token, brief, async (entry) =>
@@ -1187,7 +1184,7 @@ export async function attachSummary(token: string, text: string): Promise<Handof
       continuationToken: entry.token,
       sourceConversationId: entry.from,
       sourceTurnId: entry.sourceTurnId
-    })
+    }), accept
   );
 }
 
@@ -1251,7 +1248,8 @@ export async function reopenWithHandoffNow(sessionId: string, handoffId: string)
 async function capture(
   token: string,
   text: string,
-  produce: (entry: Continuation) => Promise<Handoff>
+  produce: (entry: Continuation) => Promise<Handoff>,
+  accept?: ContinuationCaptureFence
 ): Promise<Handoff | null> {
   sweep();
   const entry = byToken.get(token);
@@ -1287,15 +1285,22 @@ async function capture(
     const handoff = await produce(entry);
     const accepted = await withCheckpointLock(token, async () => {
       if (!isOpen(entry) || entry.state !== 'awaiting-summary') return false;
-      await transitionNow(entry, (current) => ({
-        ...current,
-        summary: handoff.text,
-        handoffId: handoff.id,
-        state: 'awaiting-chat',
-        error: null
-      }));
-      entry.handoff = handoff;
-      return true;
+      const publish = async () => {
+        await transitionNow(entry, (current) => ({
+          ...current,
+          summary: handoff.text,
+          handoffId: handoff.id,
+          state: 'awaiting-chat',
+          captureIssue: null,
+          error: null
+        }));
+        entry.handoff = handoff;
+        return true;
+      };
+      // Recorder capture takes its existing session mutation fence inside this checkpoint
+      // lock. Identity stays stable throughout WAL publication; handoff event recording is
+      // deliberately outside that fence so it cannot enqueue behind itself.
+      return accept ? accept(publish) : publish();
     });
     if (!accepted) return null;
     // The handoff file was written before the continuation WAL record, but it is deliberately
@@ -1737,9 +1742,8 @@ const SEND_STATES = new Set<ContinuationSendState>([
  * identity is quarantined as aborted rather than guessed across chats.
  */
 export async function restoreContinuations(snapshot: ContinuationSnapshot | null): Promise<void> {
-  byToken.clear();
-  if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.entries)) return;
-  const now = Date.now();
+  if (snapshot && (snapshot.version !== 1 || !Array.isArray(snapshot.entries)))
+    throw new Error('Unsupported continuation ledger; submission custody cannot be reconstructed');
   const validStates = new Set<ContinuationState>([
     'awaiting-summary',
     'awaiting-chat',
@@ -1748,13 +1752,39 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
     'committed',
     'aborted'
   ]);
-  for (const raw of snapshot.entries.slice(0, 32)) {
+  const tokens = new Set<string>(), activeSessions = new Set<string>();
+  // Validate before replacing the live map. A future/corrupt checkpoint must never migrate
+  // backwards to not-attempted, and records beyond an arbitrary tail cap still own sends.
+  for (const raw of snapshot?.entries ?? []) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+      throw new Error('Invalid continuation transaction identity; submission custody cannot be reconstructed');
+    if (raw && ((raw.sourceSend !== undefined && (!raw.sourceSend || !SEND_STATES.has(raw.sourceSend.state))) ||
+        (raw.destinationSend !== undefined && (!raw.destinationSend || !SEND_STATES.has(raw.destinationSend.state)))))
+      throw new Error('Unsupported continuation send checkpoint; submission custody cannot be reconstructed');
+    if (typeof raw.token !== 'string' || typeof raw.sessionId !== 'string' ||
+        !/^[A-Za-z0-9_-]{16,64}$/.test(raw.token) || !/^[0-9a-z-]{8,64}$/i.test(raw.sessionId) ||
+        typeof raw.from !== 'string' || !raw.from.length || raw.from.length > 256 ||
+        !validStates.has(raw.state) || !Number.isFinite(raw.openedAt))
+      throw new Error('Invalid continuation transaction identity; submission custody cannot be reconstructed');
+    const active = raw.state !== 'committed' && raw.state !== 'aborted';
+    if (tokens.has(raw.token) || (active && activeSessions.has(raw.sessionId)))
+      throw new Error('Invalid duplicate continuation custody; submission custody cannot be reconstructed');
+    tokens.add(raw.token);
+    if (active) activeSessions.add(raw.sessionId);
+  }
+  byToken.clear();
+  if (!snapshot) return;
+  const now = Date.now();
+  for (const raw of snapshot.entries) {
     if (!raw) continue;
     // The retention window scales with the same per-ticket deadline the live sweep uses:
     // a Pro brief still inside its longer writing clock must survive a restart within it
     // rather than vanish silently at twice the ordinary TTL.
     const retentionMs = manualWaitingTtlMs(raw.state, requestedModel(raw.requestedModel)) * 2;
     const lastTouchedAt = Number.isFinite(raw.touchedAt) && raw.touchedAt! <= now ? raw.touchedAt! : raw.openedAt;
+    const dispatched = raw.armed === true || raw.state === 'claimed' || raw.state === 'committing' ||
+      (raw.sourceSend && !sendUnattempted(raw.sourceSend)) ||
+      (raw.destinationSend && !sendUnattempted(raw.destinationSend));
     if (
       !/^[A-Za-z0-9_-]{16,64}$/.test(raw.token) ||
       !/^[0-9a-z-]{8,64}$/i.test(raw.sessionId) ||
@@ -1762,8 +1792,8 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
       raw.from.length === 0 || raw.from.length > 256 ||
       !validStates.has(raw.state) ||
       !Number.isFinite(raw.openedAt) ||
-      ((raw.state === 'committed' || raw.state === 'aborted') && now - lastTouchedAt >= retentionMs) ||
-      (raw.automatic !== true && now - lastTouchedAt >= retentionMs)
+      (!dispatched && (raw.state === 'committed' || raw.state === 'aborted') && now - lastTouchedAt >= retentionMs) ||
+      (raw.automatic !== true && !dispatched && now - lastTouchedAt >= retentionMs)
     ) {
       continue;
     }
@@ -1778,6 +1808,7 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
       project: normalizeProjectId(raw.project),
       // Older snapshots have no touch stamp; the open time is the honest floor for them.
       sourceProgress: Number.isSafeInteger(raw.sourceProgress) && raw.sourceProgress! >= 0 && raw.sourceProgress! <= 4_000_000 ? raw.sourceProgress! : 0,
+      captureIssue: raw.captureIssue && HANDOFF_CAPTURE_ISSUES.includes(raw.captureIssue) ? raw.captureIssue : null,
       touchedAt: Number.isFinite(raw.touchedAt) && raw.touchedAt! >= raw.openedAt && raw.touchedAt! <= now ? Number(raw.touchedAt) : raw.openedAt,
       automatic: raw.automatic === true,
       askedAt: null,
@@ -1818,7 +1849,14 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
                   ? raw.destinationSend.messageId.slice(0, 200)
                   : null
             }
-          : { state: 'not-attempted', conversationId: null, messageId: null },
+          : {
+              // Before destination checkpoints, a claimed replacement may already have sent.
+              // Missing fields cannot prove a fresh submission is safe.
+              state: raw.state === 'committed' ? 'sent'
+                : raw.state === 'claimed' || raw.state === 'committing' ? 'dispatched-unresolved' : 'not-attempted',
+              conversationId: raw.state === 'committed' && typeof raw.to === 'string' ? raw.to : null,
+              messageId: null
+            },
       error: typeof raw.error === 'string' ? raw.error : null
     };
     if (handoffAsked(entry)) {

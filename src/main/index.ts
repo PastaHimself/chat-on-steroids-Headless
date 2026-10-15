@@ -552,7 +552,7 @@ void app.whenReady().then(async () => {
     repairPrimeTransfer: repairPrimeConversationAfterRecovery,
     hasPrimeFleet: primeFleetIn
   });
-  const savedContinuations = await readDurable<ContinuationSnapshot>(CONTINUATIONS_STATE);
+  const savedContinuations = await readDurableStrict<ContinuationSnapshot>(CONTINUATIONS_STATE);
   if (windowActivation.isDisabled()) return;
   await restoreContinuations(savedContinuations);
   if (windowActivation.isDisabled()) return;

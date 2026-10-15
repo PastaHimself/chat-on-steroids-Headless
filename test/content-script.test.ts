@@ -19296,7 +19296,7 @@ describe('the goal loop', () => {
     expect(requested).toBe(1);
   });
 
-  it('hands the brief back when the composer lost it before Send, and journals what the user types next', async () => {
+  it('retains dispatch custody when the composer empties after arming', async () => {
     // 2026-09-02: the replacement chat opened, the brief landed, and the user pressed Escape in
     // the same instant. The armed dispatch then sat for its six hours, and this document — gated
     // for a marked message that would never come — recorded nothing the user typed into it.
@@ -19333,14 +19333,12 @@ describe('the goal loop', () => {
 
     await settle(400);
 
-    expect(live.sent.filter((message) => message.type === 'compact' && message.destinationLost === true)).toEqual([
-      expect.objectContaining({ token })
-    ]);
+    expect(live.sent.filter((message) => message.type === 'compact' && message.destinationLost === true)).toEqual([]);
     expect(live.sent.some((message) => message.type === 'ack')).toBe(false);
 
     userTurn(live.document, 'own-1', 'my own question instead');
     await settle(400);
-    expect(emitted(live.sent, 'user_message').map((entry) => entry.event.text)).toContain('my own question instead');
+    expect(emitted(live.sent, 'user_message').map((entry) => entry.event.text)).not.toContain('my own question instead');
   });
 
   it('retains the dispatched brief when a timeout banner cannot prove non-delivery', async () => {
@@ -23211,7 +23209,7 @@ it.each([false, true])('opens the first turn of a prompt sent with an app mentio
  * its proof is read only from a settled page and twice. A transcript that hydrates in steps must
  * never be read as "ChatGPT never received it".
  */
-describe('releasing a handoff click ChatGPT never received (page)', () => {
+describe('preserving uncertain handoff submission custody (page)', () => {
   const token = '0123456789abcdef0123456789abcdef';
   const job = (stage = 'handoff-pending') => ({ sessionId: 's1', stage, automatic: false, busy: true, handoffId: null, error: null, token,
     sourceSend: { state: 'dispatched-unresolved', messageId: null, before: 'm-before', dispatchedAt: 1_700_000_000_000 - 20_000 } });
@@ -23231,12 +23229,13 @@ describe('releasing a handoff click ChatGPT never received (page)', () => {
   }
   const drain = async () => { for (let i = 0; i < 6; i++) { await settle(); await new Promise(resolve => setTimeout(resolve, 0)); } };
 
-  it('releases once from a settled page that shows the pre-click question as newest twice', async () => {
+  it('never releases from a settled page showing only the pre-click question', async () => {
     const releases = await start(document => { userTurn(document, 'before', 'Keep going', { sent: false }); });
     armed = true;
     await live!.hook.pullActivity();
     await drain();
-    expect(releases).toEqual([expect.objectContaining({ token, sourceUndelivered: true, newestUserMessage: 'm-before' })]);
+    expect(releases).toEqual([]);
+    expect(live!.sent.filter(message => message.type === 'compact' && message.sourceAttempt)).toEqual([]);
   });
 
   it('does not release when the handoff turn appears between the two reads', async () => {
