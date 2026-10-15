@@ -98,9 +98,13 @@ export function sessionStatusIndicator(detail: any): { emoji: string; text: stri
 /** Read-only projection of the outbox's proof; inspecting it never authorizes retry. */
 export function inputDeliveryDescription(input: any): string {
   if (!input) return 'No recent input proof. Inspect /queue and /operations.';
+  const project = input.state === 'queued' && input.delivery === 'pending' ? input.projectWait : null;
   const phase = input.delivery === 'sent' ? 'Provider receipt confirmed; recorded history may still be catching up.'
     : input.delivery === 'not_sent' ? 'Not sent; this attempt ended before delivery.'
     : input.delivery === 'unconfirmed' ? 'Send may have reached ChatGPT; provider receipt unconfirmed. Inspect /queue and /operations before more work. Do not repeat /new.'
+    : project ? ['failed', 'uncertain'].includes(project.state)
+      ? `Queued; blocked by ChatGPT Project (${project.state})${project.error ? `: ${project.error}` : '.'}\nThe message is saved. Repair the project's link locally; do not repeat /new.`
+      : `Queued; waiting for ChatGPT Project (${project.state}) creation before browser delivery.`
     : input.state === 'browser' ? 'Browser claimed; preparing the provider page/model. Send is not authorized yet.'
     : input.transportIntent === 'tool' ? 'Queued; waiting for its exact tool recipient.'
     : input.mode === 'after-turn' ? 'Queued; waiting for turn completion before browser claim.'

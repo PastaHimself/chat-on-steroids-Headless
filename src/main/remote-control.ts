@@ -8,14 +8,15 @@ import { resolveChatModel } from '../shared/chat-models.js';
 import { getConfig, effectiveCapabilities, updateConfig } from './config.js';
 import { remotePermission } from './runtime-mode.js';
 import { readDurableStrict, writeDurableNow } from './durable.js';
-import { projectAgents, projectLive, RequestError } from './control-reads.js';
+import { projectAgents, projectInput, projectLive, RequestError } from './control-reads.js';
 import { redact, logWarn } from './logger.js';
 import { redactSecretText } from './redaction.js';
 import { sessionControlsFor, setSessionAutomation, setSessionObjective, stopSessionTurn, compactSession } from './bridge.js';
 import { getSession, readSessionPlan, conversationWasSuperseded, conversationUnavailableKnown } from './session/store.js';
-import { deliveryProof, sessionInputPolicy } from './session/input.js';
+import { deliveryProof, inputProjectWaits, sessionInputPolicy } from './session/input.js';
 import { sendDesktopInput, cancelDesktopInput } from './session/start-input.js';
-import { listProjects, projectWorkspace, assignSessionProject, getSessionProject } from './projects.js';
+import { getProject, listProjects, projectWorkspace, assignSessionProject, getSessionProject, retryProjectCreate } from './projects.js';
+import { wakeBrowserWork } from './browser-wake.js';
 import { listProjectDirectory } from './project-files.js';
 import { getChatModels, startChatModelDiscovery } from './chat-models.js';
 import { draftTaskPlan } from './goal.js';
@@ -42,6 +43,8 @@ const schemas = {
   stop: sessionBase.extend({ expectedTurnId: z.string().min(1).max(256) }).strict(),
   compact: sessionBase.extend({ recoverDeletedConversationId: uuid.optional() }).strict(),
   project: sessionBase.extend({ projectId: uuid }).strict(),
+  'project-retry': base.extend({ projectId: uuid, expectedState: z.enum(['failed', 'uncertain']),
+    expectedUpdatedAt: z.number().finite().nonnegative(), allowDuplicate: z.literal(true).optional() }).strict(),
   plan: sessionBase.extend({ prompt: z.string().trim().min(1).max(16000), backend: z.enum(['chatgpt', 'api']).optional() }).strict(),
   'plan-edit': base.extend({ planId: uuid, revision: z.number().int().nonnegative(), index: z.number().int().min(0).max(11), text: z.string().trim().min(1).max(12000).nullable() }).strict(),
   'plan-approve': base.extend({ planId: uuid, revision: z.number().int().nonnegative() }).strict(),
@@ -55,6 +58,7 @@ const schemas = {
 };
 const permissions: Record<RemoteAction, Parameters<typeof remotePermission>[0]> = {
   ask: 'send', new: 'send', automation: 'configure', objective: 'configure', stop: 'send', compact: 'send', project: 'configure',
+  'project-retry': 'configure',
   plan: 'plan', 'plan-edit': 'plan', 'plan-approve': 'plan', 'plan-cancel': 'plan', 'plan-regenerate': 'plan', delegate: 'workers', worker: 'workers', settings: 'configure'
 };
 const planSchema = z.object({ id: uuid, sessionId, conversationId: z.string().min(1).max(256), prompt: z.string().max(16000),
@@ -133,6 +137,7 @@ function assertPermission(action: RemoteAction): void {
   if (!config.controlApi.enabled || !config.controlApi.allowActions) throw new RequestError(403, 'actions_disabled');
   if (!remotePermission(permissions[action])) throw new RequestError(403, 'remote_permission_disabled', `Enable ${permissions[action]} through local bootstrap configuration`);
   if (action === 'plan-approve' && !remotePermission('send')) throw new RequestError(403, 'remote_permission_disabled', 'Plan execution also requires send');
+  if (action === 'project-retry' && !remotePermission('send')) throw new RequestError(403, 'remote_permission_disabled', 'Project repair may release accepted inputs and also requires send');
 }
 async function controllable(id: string) {
   const session = await getSession(id);
@@ -192,7 +197,8 @@ async function execute(action: RemoteAction, raw: unknown, effect: () => void = 
       effect(); const row = await sendDesktopInput({ id: body.id, sessionId: null, projectId: body.projectId,
         text: body.prompt ?? 'Start a new conversation. Await my next instruction.', authoredSource: 'text',
         mode: 'auto', dueAt: Date.now(), model: body.model ?? null, reasoningEffort: body.reasoningEffort ?? null });
-      return { inputId: row.id, sessionId: row.sessionId, accepted: true, state: row.state, delivery: deliveryProof(row) };
+      return { inputId: row.id, sessionId: row.sessionId, accepted: true, state: row.state, delivery: deliveryProof(row),
+        projectWait: projectInput(row, (await inputProjectWaits([row])).get(row.id)).projectWait };
     }
     case 'automation': {
       const body = schemas.automation.parse(raw); await controllable(body.sessionId); assertPermission(action);
@@ -214,6 +220,19 @@ async function execute(action: RemoteAction, raw: unknown, effect: () => void = 
     case 'project': {
       const body = schemas.project.parse(raw); await controllable(body.sessionId); await projectWorkspace(body.projectId); assertPermission(action);
       effect(); await assignSessionProject(body.sessionId, body.projectId); return { sessionId: body.sessionId, projectId: body.projectId };
+    }
+    case 'project-retry': {
+      const body = schemas['project-retry'].parse(raw);
+      await projectWorkspace(body.projectId);
+      const project = await getProject(body.projectId), link = project?.chatgpt;
+      if (project?.ungrouped || !link || link.state !== body.expectedState || link.updatedAt !== body.expectedUpdatedAt)
+        throw new RequestError(409, 'project_changed', 'Inspect the current Project state before requesting repair');
+      if (link.state === 'uncertain' && body.allowDuplicate !== true)
+        throw new RequestError(409, 'project_retry_confirmation_required', 'An uncertain creation may already exist; explicit duplicate-risk confirmation is required');
+      assertPermission(action); effect();
+      const retried = await retryProjectCreate(body.projectId, { state: body.expectedState, updatedAt: body.expectedUpdatedAt });
+      if (retried) wakeBrowserWork();
+      return { projectId: body.projectId, retried: !!retried, state: retried ? 'requested' : 'changed' };
     }
     case 'settings': {
       const body = schemas.settings.parse(raw);
@@ -449,7 +468,9 @@ export async function serveRemoteRead(route: string, query: URLSearchParams): Pr
   if (route === '/v1/remote/projects') {
     const projects = await listProjects(); const result = [];
     for (const project of projects) {
-      try { if (!project.ungrouped) { await projectWorkspace(project.id); result.push({ id: project.id, name: publicText(project.name) }); } }
+      try { if (!project.ungrouped) { await projectWorkspace(project.id); const link = project.chatgpt;
+        result.push({ id: project.id, name: publicText(project.name), chatgpt: link ? { state: link.state, updatedAt: link.updatedAt,
+          error: 'error' in link ? publicText(link.error) : null } : null }); } }
       catch { /* Unapproved or unavailable folders are not selectable remotely. */ }
     }
     return { projects: result };

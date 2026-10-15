@@ -9,7 +9,7 @@ import { ControlClient } from '../discord/src/api.js';
 import { definitions, commands, helpDescription } from '../discord/src/commands.js';
 import { DiscordController } from '../discord/src/bot.js';
 import { Notifications, recordedFinal } from '../discord/src/notifications.js';
-import { EmbedColor } from '../discord/src/ui.js';
+import { EmbedColor, inputDeliveryDescription } from '../discord/src/ui.js';
 
 const admin = '111111111111111111', other = '222222222222222222', guild = '333333333333333333', channel = '444444444444444444';
 let dir: string; let store: StateStore; let config: Bootstrap;
@@ -53,6 +53,15 @@ beforeEach(async () => {
 });
 afterEach(async () => { await removeTempDir(dir); vi.restoreAllMocks(); });
 describe('Discord commands and authorization', () => {
+  it.each([
+    { state: 'sent', delivery: 'sent', phrase: 'Provider receipt confirmed' },
+    { state: 'browser', delivery: 'unconfirmed', phrase: 'provider receipt unconfirmed' },
+    { state: 'failed', delivery: 'not_sent', phrase: 'Not sent' }
+  ])('never lets a Project diagnostic mask actual delivery proof ($state)', input => {
+    const description = inputDeliveryDescription({ ...input, id: 'exact-input', projectWait: { state: 'failed', error: 'Project unavailable' } });
+    expect(description).toContain(input.phrase);
+    expect(description).not.toContain('blocked by ChatGPT Project');
+  });
   it('registers the complete implemented command set with real definitions and correct option order', () => {
     expect(commands.map(row => row.name).sort()).toEqual(definitions.map(row => row.name).sort());
     expect(new Set(commands.map(row => row.name)).size).toBe(commands.length);

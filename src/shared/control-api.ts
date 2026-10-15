@@ -6,6 +6,8 @@
  * nothing here is decided by the API itself. Secret-bearing fields (MCP path tokens, public
  * URLs, tunnel ids, plugin sources and config values) are deliberately absent, not masked.
  */
+import type { ChatgptProjectWait } from './projects.js';
+
 export const CONTROL_API_PROTOCOL = 1;
 
 /** Listed in every health reply, so a caller learns what this build serves without guessing. */
@@ -312,6 +314,8 @@ export interface ControlApiInput {
   offeredAt: number | null;
   /** Last observed companion stage, not a provider receipt or permission to retry. */
   browserPreparation?: { stage: string; reason: string; observedAt: number } | null;
+  /** Current native Project gate; diagnostic only, never persisted as input authority. */
+  projectWait?: ChatgptProjectWait | null;
   deliveredAt: number | null;
   sendAuthorizedAt: number | null;
   requiresAuthorization: boolean;

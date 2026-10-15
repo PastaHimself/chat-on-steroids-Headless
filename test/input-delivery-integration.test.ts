@@ -70,6 +70,46 @@ beforeEach(async () => {
   await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, autoContinue: false }, goal: { ...defaultConfig().goal, enabled: false } });
 });
 
+it.each(['requested', 'claimed', 'creating', 'failed', 'uncertain'] as const)('shows the app-side native Project wait in Discord admission, status and empty history (%s)', async state => {
+  vi.stubEnv('COS_REMOTE_PERMISSIONS', 'send');
+  const folder = path.join(directory, `blocked-project-${state}`); await fs.mkdir(folder);
+  await saveConfig({ ...getConfig(), roots: [{ name: 'project', path: folder }], controlApi: { enabled: true, allowActions: true } });
+  const project = await addProject(folder);
+  const error = 'ChatGPT no longer opens this Project';
+  await writeDurableNow('projects', [{ ...project, chatgpt: { state, requestId: randomUUID(), updatedAt: Date.now(),
+    ...(['claimed', 'creating'].includes(state) ? { owner: 'project-document' } : {}),
+    ...(['failed', 'uncertain'].includes(state) ? { error } : {}) } }]);
+  controlApi.initControlApiPath(directory); await controlApi.startControlApi();
+  const botState = new StateStore(path.join(directory, `project-bot-${state}`)); await botState.load();
+  await botState.update(row => { row.settings.defaultProject = project.id; });
+  const admin = '111111111111111111', guild = '333333333333333333', channel = '444444444444444444';
+  const api = new ControlClient(path.join(directory, 'control-api'));
+  const bot = new DiscordController({ token: 'disposable-bot-token', applicationId: admin, admins: [admin], guilds: [guild], channels: [channel],
+    apiDirectory: api.directory, dataDirectory: botState.directory }, botState, api);
+  let sequence = BigInt('555555555555555555');
+  const command = (name: string) => ({ id: String(++sequence), commandName: name, user: { id: admin }, guildId: guild, channelId: channel,
+    options: { getString: (key: string) => key === 'prompt' ? 'Hello' : null, getBoolean: () => null } });
+  try {
+    const admitted = await bot.command(command('new'));
+    const [inputRow] = await input.listInputs();
+    expect(inputRow).toMatchObject({ state: 'queued', projectId: project.id, text: 'Hello' });
+    expect((await post('/status', { openConversations: [] })).body.inputs).not.toContainEqual(expect.objectContaining({ id: inputRow!.id }));
+    expect((await api.request('/v1/inputs')).inputs[0].projectWait).toEqual({ state, error: ['failed', 'uncertain'].includes(state) ? error : null });
+    for (const response of [admitted, await bot.command(command('status')), await bot.command(command('chat'))]) {
+      const description = response.embeds[0].toJSON().description;
+      expect(description).toContain(`ChatGPT Project (${state})`);
+      expect(description).not.toContain('waiting for browser claim');
+      if (['failed', 'uncertain'].includes(state)) expect(description).toContain(error);
+    }
+    expect((await input.listInputs())[0]).toEqual(inputRow);
+    const nativeId = `g-p-${'a'.repeat(32)}`;
+    await writeDurableNow('projects', [{ ...project, chatgpt: { state: 'linked', id: nativeId, updatedAt: Date.now() } }]);
+    expect((await api.request('/v1/inputs')).inputs[0].projectWait).toBeNull();
+    expect((await post('/status', { openConversations: [] })).body.inputs).toContainEqual({ id: inputRow!.id, conversationId: null, project: nativeId });
+    expect((await input.listInputs())[0]).toEqual(inputRow);
+  } finally { await controlApi.stopControlApi(); vi.unstubAllEnvs(); }
+});
+
 it.each(['no-tab', 'home', 'lost-marker'])('delivers Discord /new through real HTTP and the shipped coordinator, records its exact session and continues /ask (%s; simulated provider)', async scenario => {
   vi.stubEnv('COS_REMOTE_PERMISSIONS', 'send');
   await saveConfig({ ...getConfig(), controlApi: { enabled: true, allowActions: true } });
