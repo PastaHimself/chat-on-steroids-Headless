@@ -9498,7 +9498,8 @@
     const retired = token ? await ask({ type: 'compact', conversationId: forId, token,
       sourceLost: true, sourceError: why }).catch(() => null) : null;
     if (!current()) return;
-    if (retired?.ok === true && retired.data?.aborted === true) job = retired.data.job || null;
+    if (retired?.ok === true && (retired.data?.aborted === true || retired.data?.deferred === true))
+      job = retired.data.job || null;
     else localError = t(
       'content_compact_failed_request_unconfirmed',
       '$1 The app has not yet confirmed that this failed request was closed.',

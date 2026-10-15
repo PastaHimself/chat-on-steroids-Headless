@@ -14476,7 +14476,7 @@ describe('the Compact & resume control', () => {
     expect(composerText(live.document)).not.toContain('5WSsl9TgeKgVVLCILXp8cQ');
   });
 
-  it('durably retires an automatic ticket blocked by a persistent user draft without changing the draft', async () => {
+  it.each(['aborted', 'deferred'] as const)('accepts an automatic pre-Send refusal acknowledgement without changing the draft (%s)', async outcome => {
     const automaticJob = {
       sessionId: 's-auto-page-error',
       stage: 'handoff-pending',
@@ -14489,7 +14489,7 @@ describe('the Compact & resume control', () => {
       activity: () => ({ ok: true, data: { entries: [], stream: [], nextSince: 0, pendingTools: 0, job: null } }),
       compact: (message) =>
         message.sourceLost
-          ? { ok: true, data: { aborted: true, job: null } }
+          ? { ok: true, data: { [outcome]: true, job: outcome === 'deferred' ? automaticJob : null } }
           : {
               ok: true,
               data: {
@@ -14512,6 +14512,7 @@ describe('the Compact & resume control', () => {
     expect(live.sent.some((message) => message.type === 'compact' && message.sourceAttempt === true)).toBe(false);
     expect(composerText(live.document)).toBe('draft that makes prompt insertion fail');
     expect(live.document.querySelector('.clf-pill-text')!.textContent).toContain('clear the message box');
+    expect(live.document.querySelector('.clf-pill-text')!.textContent).not.toContain('not yet confirmed');
   });
 
   it('keeps an automatic ticket recoverable when the composer itself is transiently missing', async () => {

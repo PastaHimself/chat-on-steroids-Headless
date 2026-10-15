@@ -1004,7 +1004,8 @@ export async function reportContinuationSourceBlockerNow(token: string, reason: 
     if (!entry || !isOpen(entry) || entry.state !== 'awaiting-summary' || !sendUnattempted(entry.sourceSend)) return false;
     const error = reason.trim().slice(0, 500);
     if (!error) return false;
-    await transitionNow(entry, current => ({ ...current, error }));
+    if (entry.error === error) return true;
+    await transitionNow(entry, current => ({ ...current, error }), false);
     return true;
   });
 }

@@ -3695,6 +3695,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       let aborted = false;
       try {
         const sourceError = typeof body['sourceError'] === 'string' ? body['sourceError'].trim().slice(0, 500) : '';
+        // Older pages can misclassify an automatic readiness failure as terminal.
+        // The WAL's automatic flag owns that decision; pre-Send failure retains this ticket.
+        if (entry.automatic) {
+          if (!await reportContinuationSourceBlockerNow(checkpointToken, sourceError || 'The handoff page is not ready.'))
+            return json(res, 409, { error: 'source_send_not_releasable' }, origin);
+          queueCompactionReadiness(entry);
+          changed();
+          return json(res, 200, { deferred: true, sessionId: entry.sessionId, job: resumeJobFor(entry.sessionId) }, origin);
+        }
         aborted = await abortContinuationSourceBeforeSendNow(checkpointToken, sourceError || 'handoff_never_sent');
       } catch (err) {
         logWarn(
@@ -3721,6 +3730,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const reason = typeof body['sourceError'] === 'string' ? body['sourceError'] : '';
       if (!await reportContinuationSourceBlockerNow(checkpointToken, reason))
         return json(res, 409, { error: 'source_send_not_releasable' }, origin);
+      if (entry.automatic) queueCompactionReadiness(entry);
       changed();
       return json(res, 200, { reported: true, job: resumeJobFor(entry.sessionId) }, origin);
     }
@@ -8908,14 +8918,11 @@ const COMPACTION_PICKUPS: Record<CompactionPhase, { every: number; attempts: num
   writing: { every: 5 * 60_000, attempts: 3 },
   opening: { every: 15 * 60_000, attempts: 3 }
 };
-const compactionWatch = new Map<string, { token: string; phase: CompactionPhase; nextAt: number; attempts: number; backoffs?: number; told?: boolean }>();
+const compactionWatch = new Map<string, { token: string; phase: CompactionPhase; nextAt: number; attempts: number; backoffs?: number; told?: boolean; streamLost?: boolean }>();
 const AUTOMATIC_ASKING_RETRY_PAUSE_MS = 10 * 60_000;
 /**
- * How many slowed extra bursts an automatic pre-Send ticket gets before it is abandoned like a
- * manual one. Each pickup reloads the source page, so an unbounded retry turns a chat that can
- * never reach Send — #419: a turn that died mid-tool-call leaves results the page will never
- * acknowledge — into a reload every two minutes for as long as the chat exists. After this the
- * next working turn opens a fresh ticket, as before.
+ * Bound clock-driven asking pickups. Exhaustion retains the automatic ticket for readiness
+ * evidence instead of abandoning/refiling it. No fourth burst is earned merely by time.
  */
 const AUTOMATIC_ASKING_RETRY_BURSTS = 2;
 
@@ -8924,8 +8931,21 @@ function compactionPhaseOf(entry: ContinuationView): CompactionPhase {
   return sendUnattempted(entry.sourceSend) ? 'asking' : 'writing';
 }
 
+/** A proven pre-Send refusal can retry through the existing repair owner, never a new ticket. */
+function queueCompactionReadiness(entry: ContinuationView): void {
+  const current = continuationByToken(entry.token);
+  if (!current || current.state !== 'awaiting-summary' || !sendUnattempted(current.sourceSend)) return;
+  const held = repairsInFlight.get(current.from);
+  // A report without a repair token cannot revoke another document's action claim.
+  if (held && (held.reason !== 'compaction' || held.state !== 'done')) return;
+  if (held) repairsInFlight.delete(current.from);
+  queueBrowserRecovery(current.from, current.sessionId, `compaction:${current.token}:asking:readiness`, 'compaction');
+}
+
 /** Actionable projection of exhausted custody; ambiguous dispatch never becomes a sent claim. */
 function compactionPickupBlocker(entry: ContinuationView): string {
+  if (compactionPhaseOf(entry) === 'asking') return 'The handoff request has not crossed Send. ' +
+    'Automatic pickups are exhausted; the same ticket is waiting for the paired page to become ready.';
   if (compactionPhaseOf(entry) === 'opening') return 'Compact & Resume could not confirm the replacement chat. ' +
     'Open ChatGPT in the paired browser and verify sign-in and the replacement message. A possibly delivered prompt is not sent again.';
   return `Compact & Resume is still waiting for this chat's handoff: ${entry.pickup?.attempts ?? 3} pickups did not collect it. ` +
@@ -8949,7 +8969,7 @@ async function expediteCompactionPickup(conversationId: string): Promise<boolean
   if (watch.attempts >= COMPACTION_PICKUPS[phase].attempts || watch.told) return false;
   const next = { ...watch, nextAt: 0 };
   if (!await saveContinuationPickupNow(entry.token, entry.pickup, next)) return false;
-  compactionWatch.set(conversationId, { ...next, token: entry.token });
+  compactionWatch.set(conversationId, { ...next, token: entry.token, streamLost: true });
   return true;
 }
 
@@ -9149,11 +9169,12 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
         : { phase, attempts: 0, nextAt: since + COMPACTION_PICKUPS[phase].every }) };
       compactionWatch.set(entry.from, watch);
     }
+    const streamLost = watch.streamLost === true;
     const sourceWorking = (current = session, at = now): boolean => {
       if (phase !== 'asking') return false;
       const grant = activeUntil.get(entry.from);
       return !!silenceHeldByCalls(entry.from, grant, at, true) ||
-        !!(grant?.sessionId === entry.sessionId && !grant.thinkingFailed && grant.evidenceAt <= at &&
+        !!(!streamLost && grant?.sessionId === entry.sessionId && !grant.thinkingFailed && grant.evidenceAt <= at &&
           (!current.activeTurnId || current.activeTurnId === grant.turnId) &&
           (at < grant.evidenceAt + silenceWindowMs(grant) || reasoningIsLive(grant, at)));
     };
@@ -9163,7 +9184,7 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
       const saved = continuationByToken(entry.token)?.pickup;
       if (!saved || saved.phase !== phase) return false;
       entry.pickup = saved;
-      watch = { ...saved, token: entry.token };
+      watch = { ...saved, token: entry.token, ...(streamLost ? { streamLost: true } : {}) };
       compactionWatch.set(entry.from, watch);
       const current = await getSession(entry.sessionId);
       const ticket = continuationForSession(entry.sessionId);
@@ -9221,6 +9242,13 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
         );
         continue;
       }
+      if (entry.automatic) {
+        if (!watch.told && await saveWatch({ ...watch, told: true })) {
+          void recordNote(entry.sessionId, compactionPickupBlocker(entry), entry.token).catch(() => undefined);
+          changed();
+        }
+        continue;
+      }
       // Ten minutes and five raised reloads without the prompt ever reaching ChatGPT. The
       // chat's tools were never fenced (that starts at the send), so nothing is stranded by
       // letting go; what would be stranded is the chat under a ticket it can never discharge.
@@ -9264,6 +9292,9 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
       acted = true;
     }
     if (!acted) continue;
+
+    // One pickup per transport-loss report. Fresh work after it keeps its ordinary lease.
+    watch.streamLost = false;
 
     queued = true;
     logInfo(
@@ -9952,11 +9983,15 @@ function noteRepairHeld(token: string, why: string | null): void {
   const reason = why && Object.hasOwn(REPAIR_HOLD_REASONS, why) ? why : 'unknown';
   const held = [...repairsInFlight].find(([, repair]) => repair.token === token);
   if (!held) return;
+  const [conversationId, repair] = held;
+  // A current page explicitly holding an unclaimed compaction is responsive. Do not
+  // confuse readiness/draft protection with ten unanswered offers; retain the exact token.
+  if (reason !== 'unknown' && repair.reason === 'compaction' && repair.state === 'handed' &&
+      !repair.claimed && compactionRepairCurrent(conversationId, repair)) repair.offers = 0;
   const key = `${token}:${reason}`;
   if (repairHoldsLogged.has(key)) return;
   repairHoldsLogged.add(key);
   if (repairHoldsLogged.size > 500) for (const old of [...repairHoldsLogged].slice(0, 100)) repairHoldsLogged.delete(old);
-  const [conversationId, repair] = held;
   logInfo(`bridge: the page held the ${repair.reason} repair for ${conversationId}: ${REPAIR_HOLD_REASONS[reason] ?? 'it gave no reason'}`);
 }
 

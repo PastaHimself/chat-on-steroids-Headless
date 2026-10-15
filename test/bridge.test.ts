@@ -2621,6 +2621,51 @@ describe('automatic compaction', () => {
     }
   }
 
+  it('asks a compacting chat for its handoff on the next pass after its stream breaks, even in a long thinking window', async () => {
+    try {
+      await pair();
+      const conversationId = randomUUID();
+      await withThreshold(10_000, async () => {
+        await request('POST', '/events', { body: { conversationId, events: [
+          { kind: 'model_selection', time: Date.now(), model: 'GPT-6 Thinking', reasoningEffort: 'xhigh' },
+          { kind: 'turn_start', time: Date.now(), turnId: 'deliberate-turn' },
+          ...over(),
+          { kind: 'page_tool', time: Date.now(), turnId: 'deliberate-turn', label: 'Checked the dashboards' }
+        ] } });
+        const sessionId = (await request('GET', `/activity?conversationId=${conversationId}`)).body.sessionId as string;
+        await vi.waitFor(() => expect(continuationForSession(sessionId)).toMatchObject({ automatic: true, state: 'awaiting-summary' }), { timeout: 3000 });
+        vi.useFakeTimers();
+        // The turn keeps working past the ticket's first pickup interval: nothing to ask yet.
+        await vi.advanceTimersByTimeAsync(3 * 60_000);
+        await request('POST', '/events', { body: { conversationId, events: [
+          { kind: 'page_tool', time: Date.now(), turnId: 'deliberate-turn', label: 'Opened the map' }
+        ] } });
+        await sweepStaleSwarm(Date.now());
+        const offered = async () => ((await request('GET', '/status')).body.repairs as Array<{ conversationId: string; reason: string }>)
+          .filter(row => row.conversationId === conversationId);
+        expect(await offered()).toEqual([]);
+        // The page reports the answer's stream gone: the handoff is due on the next pass.
+        await request('POST', '/events', { body: { conversationId, events: [
+          { kind: 'chat_error', time: Date.now(), turnId: 'deliberate-turn', recoverable: true,
+            text: 'Connection interrupted. Waiting for the complete answer' }
+        ] } });
+        await vi.advanceTimersByTimeAsync(30_000);
+        await sweepStaleSwarm(Date.now());
+        const [pickup] = await offered() as Array<{ conversationId: string; reason: string; token: string }>;
+        expect(pickup).toMatchObject({ reason: 'compaction' });
+        // One pickup per reported loss: once reloaded, a turn that works again is left alone.
+        expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: pickup!.token } })).body.allowed).toBe(true);
+        await request('GET', `/status?repaired=${encodeURIComponent(pickup!.token)}&repairAction=resumed`);
+        await vi.advanceTimersByTimeAsync(2 * 60_000);
+        await request('POST', '/events', { body: { conversationId, events: [
+          { kind: 'page_tool', time: Date.now(), turnId: 'deliberate-turn', label: 'Back at work' }
+        ] } });
+        await sweepStaleSwarm(Date.now());
+        expect(await offered()).toEqual([]);
+      });
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(['failed', 'old-turn', 'new-question', 'completed', 'stopped', 'auto-off', 'pro'] as const)(
     'compacts only the exact failed oversized source after a transport error (%s)', async scenario => {
       await pair();
@@ -3126,7 +3171,7 @@ describe('automatic compaction', () => {
     expect(continuationForSession(session!.id)).toBeNull();
   });
 
-  it('durably ends an automatic ticket when the source page proves the handoff never reached Send', async () => {
+  it('retains an automatic ticket when an older source page reports a pre-Send refusal', async () => {
     await pair();
     const conversationId = 'a1a1a1a1-0000-4000-8000-00000000ac08';
     await request('POST', '/events', {
@@ -3143,10 +3188,12 @@ describe('automatic compaction', () => {
 
     const lost = await request('POST', '/compact', { body: { conversationId, token, sourceLost: true } });
     expect(lost.status).toBe(200);
-    expect(lost.body.aborted).toBe(true);
-    expect(continuationByToken(token)).toMatchObject({ state: 'aborted', error: 'handoff_never_sent' });
-    expect(continuationForSession(filed.body.sessionId as string)).toBeNull();
-    expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } })).status).toBe(409);
+    expect(lost.body.deferred).toBe(true);
+    expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary', sourceSend: { state: 'attempted-unresolved' } });
+    expect(continuationForSession(filed.body.sessionId as string)?.token).toBe(token);
+    expect((await request('POST', '/compact', { body: { conversationId, token, sourceAttempt: true } })).body.allowed).toBe(true);
+    expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } })).body.armed).toBe(true);
+    expect((await request('POST', '/compact', { body: { conversationId, token, sourceLost: true } })).status).toBe(409);
   });
 
   /**
@@ -3221,7 +3268,7 @@ describe('automatic compaction', () => {
     });
   });
 
-  it('does not immediately refile a rejected automatic compaction in the same working turn', async () => {
+  it('keeps one automatic ticket through a pre-Send refusal and later working turns', async () => {
     await pair();
     const conversationId = 'a1a1a1a1-0000-4000-8000-00000000ac09';
     await withThreshold(10_000, async () => {
@@ -3241,7 +3288,7 @@ describe('automatic compaction', () => {
         body: { conversationId, token: first!.token, sourceLost: true }
       });
       expect(lost.status).toBe(200);
-      expect(continuationForSession(sessionId)).toBeNull();
+      expect(continuationForSession(sessionId)?.token).toBe(first!.token);
 
       // More live evidence from this exact turn must not create a fresh token behind the
       // persistent composer draft that just rejected the previous one.
@@ -3261,9 +3308,9 @@ describe('automatic compaction', () => {
         }
       });
       await settled();
-      expect(continuationForSession(sessionId)).toBeNull();
+      expect(continuationForSession(sessionId)?.token).toBe(first!.token);
 
-      // A genuine turn boundary spends the refusal. The next working turn can compact again.
+      // A new working turn can satisfy the same obligation; it does not need another ticket.
       await request('POST', '/events', {
         body: {
           conversationId,
@@ -3289,7 +3336,7 @@ describe('automatic compaction', () => {
         }
       });
       await settled();
-      await vi.waitFor(() => expect(continuationForSession(sessionId)).toMatchObject({ automatic: true, state: 'awaiting-summary' }), { timeout: 3000 });
+      await vi.waitFor(() => expect(continuationForSession(sessionId)).toMatchObject({ token: first!.token, automatic: true, state: 'awaiting-summary' }), { timeout: 3000 });
     });
   });
 
@@ -3357,7 +3404,7 @@ describe('automatic compaction', () => {
    * The retry is bounded. Each pickup reloads the source page, and a chat that can never reach Send
    * (#419: a turn that died mid-tool-call leaves results the page never acknowledges) would
    * otherwise be reloaded every two minutes for as long as it exists. After the first burst and two
-   * slowed bursts the ticket is abandoned as a manual one is, and the next working turn opens anew.
+   * slowed bursts the automatic ticket waits for readiness evidence without another scheduled burst.
    */
   // 2026-10-12: an automatic ticket filed while the crossing turn still worked spent all its pickups
   // reloading a generating page and gave up (handoff_never_sent) just after the turn ended.
@@ -3457,7 +3504,7 @@ describe('automatic compaction', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('abandons an automatic ticket that never reaches Send after its bounded retry bursts', async () => {
+  it.each([false, true])('retains the same automatic ticket for late readiness after its bounded retry bursts (restored: %s)', async restored => {
     vi.useFakeTimers();
     try {
       await pair();
@@ -3486,10 +3533,36 @@ describe('automatic compaction', () => {
         expect(await takeRepair()).toBeNull();
       }
       expect(reloads).toBe(15);
-      expect(continuationForSession(filed.body.sessionId as string)?.token, 'abandoned, not retained').not.toBe(token);
+      expect(continuationForSession(filed.body.sessionId as string)?.token).toBe(token);
+      expect(resumeJobFor(filed.body.sessionId as string)).toMatchObject({ needsAttention: true });
       // No further reloads, however long the chat stays open.
       await vi.advanceTimersByTimeAsync(60 * 60_000);
       expect(await takeRepair()).toBeNull();
+      const exhausted = { ...continuationByToken(token)!.pickup };
+      if (restored) {
+        await flushDurable();
+        const snapshot = await readDurable<ContinuationSnapshot>(CONTINUATIONS_STATE);
+        resetBridgeForTests();
+        await restoreContinuations(snapshot);
+        await pair();
+        expect(await takeRepair()).toBeNull();
+        expect(continuationByToken(token)?.pickup).toEqual(exhausted);
+      }
+      // A responsive page can retry this exact predispatch obligation even after the clock
+      // budget has ended. The readiness report never revokes a document's repair claim.
+      const pending = { conversationId, token, sourcePending: true, sourceError: 'composer was loading' };
+      expect((await request('POST', '/compact', { body: pending })).body.reported).toBe(true);
+      const ready = await takeRepair();
+      expect(ready).toMatchObject({ reason: 'compaction' });
+      expect((await request('POST', '/repairs/claim', { body: { token: ready!.token, observeOnly: true } })).body.allowed).toBe(true);
+      expect((await request('POST', '/compact', { body: pending })).body.reported).toBe(true);
+      expect((await request('POST', '/repairs/claim', { body: { token: ready!.token, observeOnly: true } })).body.allowed).toBe(false);
+      expect((await request('GET', '/status')).body.repairs).toEqual([]);
+      expect(continuationByToken(token)?.pickup).toEqual(exhausted);
+      expect(continuationForSession(filed.body.sessionId as string)?.token).toBe(token);
+      expect((await request('POST', '/compact', { body: { conversationId, token, sourceAttempt: true } })).body.allowed).toBe(true);
+      expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } })).body.armed).toBe(true);
+      expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } })).status).toBe(409);
     } finally {
       vi.useRealTimers();
     }
@@ -3517,6 +3590,42 @@ describe('automatic compaction', () => {
     await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } });
     expect((await request('POST', '/compact', { body: { conversationId, token, sourcePending: true, sourceError } })).status).toBe(409);
     expect(continuationByToken(token)?.sourceSend.state).toBe('dispatched-unresolved');
+  });
+
+  it('does not treat repeated pre-Send readiness diagnostics as progress', async () => {
+    vi.useFakeTimers();
+    try {
+      await pair();
+      const conversationId = randomUUID();
+      await createSession({ conversationId });
+      const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+      const token = filed.body.token as string;
+      const touchedAt = continuationByToken(token)!.touchedAt;
+      await vi.advanceTimersByTimeAsync(60_000);
+      const body = { conversationId, token, sourcePending: true, sourceError: 'synthetic composer not ready' };
+      await request('POST', '/compact', { body });
+      await request('POST', '/compact', { body });
+      expect(continuationByToken(token)?.touchedAt).toBe(touchedAt);
+      expect(continuationByToken(token)?.sourceSend.state).toBe('not-attempted');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['cancel', 'auto-off'] as const)('does not revive an automatic ticket from late readiness after %s', async boundary => {
+    await pair();
+    const conversationId = randomUUID();
+    await createSession({ conversationId });
+    const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+    const token = filed.body.token as string;
+    const stopped = boundary === 'cancel'
+      ? await request('POST', '/compact', { body: { conversationId, cancel: true } })
+      : await request('POST', '/settings', { body: { conversationId, autoCompact: false } });
+    expect(stopped.status).toBe(200);
+    for (const report of ['sourcePending', 'sourceLost']) {
+      expect((await request('POST', '/compact', { body: { conversationId, token, [report]: true, sourceError: 'page ready later' } })).status).toBe(409);
+    }
+    expect(continuationByToken(token)?.state).toBe('aborted');
+    expect(continuationForSession(filed.body.sessionId as string)).toBeNull();
+    expect((await request('GET', '/status')).body.repairs).toEqual([]);
   });
 
   it('does not roll another continuation back across the dispatch fence when persisting pickup custody', async () => {
@@ -3855,6 +3964,54 @@ describe('releasing a handoff click ChatGPT never received', () => {
  * mounted Fiber shape the page reads may never show the terminal the recorder already holds.
  */
 describe('capturing a sent handoff from the recorder', () => {
+  it('does not spend unclaimed offers while the exact compaction page reports a readiness hold', async () => {
+    vi.useFakeTimers();
+    try {
+      await pair();
+      const conversationId = randomUUID();
+      await request('POST', '/events', { body: { conversationId,
+        events: [{ kind: 'user_message', time: Date.now(), text: 'synthetic task', messageId: 'held-question' }] } });
+      const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      await sweepStaleSwarm();
+      const first = (await request('GET', '/status')).body.repairs?.find((row: { conversationId: string }) => row.conversationId === conversationId);
+      expect(first).toMatchObject({ reason: 'compaction' });
+      for (let poll = 0; poll < 15; poll++) {
+        await request('GET', `/status?repairHeld=${encodeURIComponent(first.token)}&why=draft`);
+        const next = (await request('GET', '/status')).body.repairs?.find((row: { conversationId: string }) => row.conversationId === conversationId);
+        expect(next?.token).toBe(first.token);
+      }
+      expect(continuationForSession(filed.body.sessionId as string)).toMatchObject({ token: filed.body.token, sourceSend: { state: 'not-attempted' } });
+      expect((await request('POST', '/repairs/claim', { body: { token: first.token, observeOnly: true } })).body.allowed).toBe(true);
+      await request('GET', `/status?repairHeld=${encodeURIComponent(first.token)}&why=draft`);
+      expect((await request('POST', '/repairs/claim', { body: { token: first.token, observeOnly: true } })).body.allowed).toBe(false);
+      expect((await request('GET', '/status')).body.repairs).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('retains an automatic pre-Send readiness failure on the same durable ticket', async () => {
+    await pair();
+    const conversationId = randomUUID();
+    await request('POST', '/events', { body: { conversationId,
+      events: [{ kind: 'user_message', time: Date.now(), text: 'synthetic task', messageId: 'readiness-question' }] } });
+    const filed = await request('POST', '/compact', { body: { conversationId, ticket: true, automatic: true } });
+    const token = filed.body.token as string;
+    await request('POST', '/compact', { body: { conversationId, token, sourceAttempt: true } });
+    const checkpoint = { ...continuationByToken(token)!.sourceSend };
+    const failure = { conversationId, token, sourceLost: true, sourceError: '页面尚未就绪' };
+    for (let repeat = 0; repeat < 2; repeat++) {
+      expect((await request('POST', '/compact', { body: failure })).body).toMatchObject({ deferred: true });
+      expect(continuationForSession(filed.body.sessionId as string)).toMatchObject({ token, state: 'awaiting-summary',
+        sourceSend: checkpoint, error: '页面尚未就绪' });
+    }
+    expect((await request('POST', '/compact', { body: { conversationId, token, sourceAttempt: true } })).body.allowed).toBe(true);
+    expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } })).body.armed).toBe(true);
+    expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } })).status).toBe(409);
+    const dispatched = { ...continuationByToken(token)!.sourceSend };
+    expect((await request('POST', '/compact', { body: failure })).status).toBe(409);
+    expect(continuationByToken(token)?.sourceSend).toEqual(dispatched);
+  });
+
   async function sentHandoff(conversationId: string): Promise<{ token: string; sessionId: string; anchor: string }> {
     await request('POST', '/events', {
       body: { conversationId, events: [{ kind: 'user_message', time: Date.now(), text: 'build the site', messageId: `m-${conversationId}` }] }

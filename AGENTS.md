@@ -3146,7 +3146,19 @@ its receipt is missing. An armed destination whose transport expires reports its
 receipt after the opening grace, remains collectable by its exact marker, and clears the blocker
 on late commitment. Automatic pre-Send hydration/result/Stop refusal is retained as a bounded
 source diagnostic in that same transaction, without aborting or dispatching it; a fresh
-source-send claim clears the obsolete refusal. A browser `resumed` receipt acknowledges its
+source-send claim clears the obsolete refusal. The durable automatic flag also applies to
+legacy `sourceLost` reports: acknowledge `deferred`, retaining the same predispatch ticket,
+while manual pre-Send refusal can still abort. Both `sourcePending` and automatic `sourceLost`
+may reoffer the existing repair after readiness failure; neither may revoke a handed/claimed
+repair or release uncertain dispatch. Diagnostics are idempotent and do not renew `touchedAt`.
+After the first asking burst and two slower bursts, retain the automatic token with a durable
+attention diagnostic, without another time-driven burst; page readiness can recover that same
+obligation. A current known `repairHeld` reason refunds unanswered offers only for an unclaimed
+compaction repair, never an action claim. An exact source transport failure may bypass the
+meaningful-work/reasoning lease for one pickup, while the local-call barrier and browser
+generation/readiness guards remain mandatory. The exception is process-local and is spent
+by an acted pickup; durable counts/backoffs and send custody survive restart.
+A browser `resumed` receipt acknowledges its
 page nudge, never source Send, native result receipt or summary capture. Lifetime limits can
 end pre-Send intent; past dispatch they report attention while retaining exact send custody.
 All compaction repair claims require the current background's safety capability. Writing pickups

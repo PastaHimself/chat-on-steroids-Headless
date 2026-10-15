@@ -8,6 +8,26 @@ Additional failing-before tests caught unknown/malformed/duplicate ledger downgr
 
 The baseline durable writer already syncs its temporary file and, on Linux, the containing directory. No durable-writer rewrite was needed. Ticket IDs remain opaque random base64url values; a displayed substring is not arithmetic evidence.
 
+## Readiness follow-up on Headless main
+
+The next investigation used Headless `70123a6060bf97424bf8e735b174a718729ebd77`, which already includes the preceding repairs, and compared upstream `d2371d76573ad4a2bda50b2d18e206ec12a96955` and the supplied v2.1.37 source. Headless remains the implementation target. Upstream's v2.1.35–v2.1.37 working-turn, silent-stream and delayed-boundary fixes are useful comparison evidence; they do not establish identical deployed behavior. In particular, upstream's one-pickup transport-loss exception was missing in this fork. Headless already serializes publication of its shared continuation WAL; the upstream lost-update reproduction is not a new defect in this fork.
+
+Five checks failed against this Headless base before implementation:
+
+| Earliest wrong boundary | Repair and evidence |
+| --- | --- |
+| `bridge.ts` `/compact sourceLost` aborted automatic predispatch intent, even for temporary readiness refusal | The durable automatic flag retains the same token and checkpoints. The legacy route responds `deferred`; manual refusal remains terminal. Tests also refuse the same report after dispatch and after Cancel/Auto Off. |
+| `noteRepairHeld` logged readiness/draft protection while `takePendingRepairs` counted unanswered offers | An exact current known hold resets only an unclaimed compaction's unanswered-offer count. Fifteen held polls retain the repair; a hold cannot revoke its eventual action claim. |
+| `inspectOwedCompactions` abandoned the automatic ticket after its bounded asking bursts | The existing WAL stores attention on the same ticket. No fourth burst is time-driven. Late `sourcePending`/legacy refusal can reoffer through the existing repair owner without replacing a handed/claimed repair. Exhaustion/restart/readiness tests obtain exactly one dispatch on that same token. |
+| `reportContinuationSourceBlockerNow` treated diagnostic repetition as progress | Bounded diagnostics are idempotent and do not change the progress timestamp or send checkpoint. |
+| `expediteCompactionPickup` advanced the deadline but a long-thinking lease still vetoed pickup | One exact transport-loss report bypasses that lease for one acted pickup. Running local calls still hold it, and the browser still refuses unsafe navigation. Subsequent fresh work receives its normal lease. |
+
+This does not prove why any particular production response was missing. In `/compact destinationMessageId`, `unknown continuation` means only that `continuationByToken` returned no entry for the reported full token. It cannot distinguish a stale callback, an older lost receipt, or a foreign token. No replacement is inferred from the diagnostic. A substantial handoff fragment likewise cannot establish completed, correctly attributed capture; the existing recorder diagnostics and provenance checks must decide that.
+
+There is no new durable schema, timer, send authority or Goal/worker transfer path. Older snapshots retain their existing defaults and durable pickup counts. Older pages may safely report `sourceLost`; unsupported browser repair capabilities continue to fail closed. The new content accepts both old `aborted` and new `deferred` acknowledgements while preserving an occupied user draft.
+
+Release note: Compact & Resume retains automatic handoff tickets through temporary page readiness failures and exhausted pickups, recovers on later readiness without duplicate dispatch, and promptly checks interrupted long-thinking streams while preserving browser and tool safety guards.
+
 ## Changes and invariants
 
 - `extension/background.js`, `extension/content.js`, `src/main/bridge.ts`: compaction repair capability negotiation applies to every claim. Writing pickups only refresh/report the current document; missing replies preserve it. Predispatch reload fallback requires exact current document/route plus explicit hydrated, idle, empty-composer readiness. Older backgrounds/content fail closed instead of inheriting reload authority.
@@ -28,6 +48,8 @@ The baseline durable writer already syncs its temporary file and, on Linux, the 
 | Exhausted three pickups then late final | Same sent anchor captures, no fourth repair remains, exactly one resume command. |
 | Disconnected/unready/generating page | Shipped background VM tests preserve the tab; no reload/create. Older claim negotiation is refused. |
 | Slow readiness before send | Existing content native receipt/hydration guards and new explicit reload-readiness cases remain covered. |
+| Exhausted unsent budget then readiness/restart | Same automatic token and durable exhausted budget survive; no timed fourth burst, one repair claim and one source dispatch. Cancel/Auto Off and postdispatch reports cannot revive or reset it. |
+| Responsive held document | More than ten protected draft/readiness polls retain the exact unclaimed repair; reports cannot revoke a claimed repair. |
 | Restart/expiry of uncertain source or destination | Checkpoint remains identical, no new send grant; legacy claimed records remain fenced. |
 | Acknowledged source with absent final | Pending reason identifies missing/nonterminal evidence; no replacement. |
 | Ambiguous attribution/generation | Existing exact ownership suites and new summary-bypass tests refuse selection/resubmission. |
