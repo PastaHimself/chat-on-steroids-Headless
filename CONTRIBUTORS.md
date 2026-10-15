@@ -4,6 +4,13 @@ The October 14 Headless reliability follow-up adapts [@Maximapple](https://githu
 exact-grant silence-sweep correction from upstream
 [`6b939330`](https://github.com/totec448-spec/chat-on-steroids/commit/6b939330a3799d0185a8a7eaff4ec01ad823fcc3).
 
+The October 15 Headless compaction readiness follow-up adapts
+[@Maximapple](https://github.com/Maximapple)'s one-pickup transport-loss exception and its
+long-thinking regression from upstream
+[`201115d1`](https://github.com/totec448-spec/chat-on-steroids/commit/201115d160fa0d59cf694d4869bd049a250015bb).
+It preserves Headless's durable pickup accounting, local-call barrier and observation-only
+browser recovery after source dispatch. The automatic ticket/readiness retention changes are independently implemented.
+
 Chat On Steroids is maintained by [@totec448-spec](https://github.com/totec448-spec) and built with contributions from the community.
 
 Some contributions were adapted into maintainer snapshot commits and their original PRs were closed without preserving GitHub commit attribution. That was our mistake. Reworking a patch does not erase its author's contribution. The record below restores explicit credit and links to the original work.
