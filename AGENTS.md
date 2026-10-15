@@ -3010,7 +3010,7 @@ task and must not turn source A into an independently recoverable chat.
 and the extension transport it. `resume-gate.ts` is a pre-commit admission gate, not a second
 continuation owner. Opening/pre-dispatch claims expire after 60 seconds. Once destination Send
 crosses its durable dispatch fence, the gate stays armed until that continuation commits, aborts
-or explicitly releases the dispatch, because ChatGPT may already hold the bootstrap in a chat
+or is explicitly cancelled, because ChatGPT may already hold the bootstrap in a chat
 whose id is still unavailable. Unknown-chat recording still waits at most one 60-second admission
 window per attempt, so an unrelated chat cannot be blocked forever. Known sessions remain
 immediately readable. The ledger phases are:
@@ -3062,7 +3062,17 @@ awaiting-summary -> awaiting-chat -> claimed -> committing -> committed
    `turn_end`, exactly one nonempty final. That outranks the mounted Fiber shape, which can
    lose the terminal when ChatGPT remounts a long answer under another assistant id. A second
    generation for the same user message (Retry/regenerate) fails closed; never pick the
-   newest final. After #1205 resolves the native GPT-6 `dil` reference to its
+   newest final. The recorder is authoritative at every sent/uncertain summary ingress, including
+   older pages' mounted-text fallback. `/events` and the existing maintenance sweep reconcile
+   complete evidence without another page checkpoint, including after pickup exhaustion/restart.
+   Carry the recorder revision through overflow/preparation reads; publish capture under the
+   existing session mutation fence inside the continuation checkpoint lock. Record the handoff
+   timeline event outside that fence. Background capture never borrows a page placement collector.
+   `captureIssue` is a durable diagnostic, not a new state owner or progress renewal. Native/Fiber,
+   content and bridge bounds propagate `textIncomplete`; storage overflow remains separately
+   recoverable. Sparse legacy observations cannot clear known incompleteness; old finals at the
+   text cap require explicit completeness evidence. Sent too-short/error replies retain custody.
+   After #1205 resolves the native GPT-6 `dil` reference to its
    `fallbackMarkdown`, large stable finals can still have more than 120k of
    rendered HTML. The page attaches a bounded (256k), escaped visible-text
    rendering only with a unique, exact native/Fiber/selection message owner;
@@ -3117,7 +3127,8 @@ Resume row.
 Restart restoration must converge on that same committed projection. A persisted send attempt
 can outlive a transport command; expiration releases transport, not permission for another
 blind Send. Automatic tickets can wait indefinitely before the request was sent and retain a
-six-hour sent-request window; manual transport is shorter (ten minutes). Pickup budgets depend
+six-hour attention deadline; manual phase deadlines are shorter. A sent/uncertain checkpoint
+is never expired into fresh submission authority. Pickup budgets depend
 on phase: unsent 2m×5, writing 5m×3, opening 15m×3. While the source turn still works
 through its existing bounded meaningful-work/native-reasoning lease or running local-call barrier),
 an unsent ticket spends no pickup and raises no reload. An unresolved recorder turn alone cannot
@@ -3136,11 +3147,23 @@ receipt after the opening grace, remains collectable by its exact marker, and cl
 on late commitment. Automatic pre-Send hydration/result/Stop refusal is retained as a bounded
 source diagnostic in that same transaction, without aborting or dispatching it; a fresh
 source-send claim clears the obsolete refusal. A browser `resumed` receipt acknowledges its
-page nudge, never source Send, native result receipt or summary capture. Lifetime limits stay terminal. Re-observe the exact page before advancing its state.
+page nudge, never source Send, native result receipt or summary capture. Lifetime limits can
+end pre-Send intent; past dispatch they report attention while retaining exact send custody.
+All compaction repair claims require the current background's safety capability. Writing pickups
+are observation-only: refresh/report exact evidence without Stop, Send or existing-tab navigation.
+Predispatch reload fallback requires a current, hydrated, idle page with an empty editable composer;
+missing readiness and old content preserve the tab. DOM absence never releases source dispatch;
+replacement draft loss releases only predispatch custody. Unsupported/corrupt ledgers fail closed
+at startup. Legacy claimed/committing records without destination checkpoints migrate to uncertain
+dispatch. A positive persisted `askedAt` while awaiting the summary also preserves uncertain
+source custody over a missing/predispatch checkpoint, including the retired DOM-absence reset;
+apply that migration before retention. Other phases do not grant timestamp-based send inference.
+Retain terminal send receipts independently of the bounded source-tab close grace.
+Re-observe the exact page before advancing its state.
 A manual ticket whose frozen source selection is Pro instead gets a one-hour deadline while the
 brief is being written: Pro reasoning is not visible transcript, so it produces no text growth
 to renew the ordinary clock, and a healthy long Pro generation used to be swept as "took too
-long". Captured/claimed phases and an unobserved selection keep the ordinary ten minutes.
+long". Captured/claimed phases and an unobserved selection keep the ordinary attention clock; send custody remains retained.
 
 An explicit desktop compaction immediately uses the existing exact-tab recovery path, which can
 open a missing source while Chrome is already running. It also passes a user's earlier close of that tab: the

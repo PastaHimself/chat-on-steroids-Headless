@@ -3867,6 +3867,8 @@
       const messageId = cap(entry.messageId, 200);
       if (!messageId) continue;
       const rawText = typeof entry.rawText === 'string' ? entry.rawText.slice(0, 256_000) : '';
+      const textIncomplete = entry.textIncomplete === true || (typeof entry.rawText === 'string' && entry.rawText.length > rawText.length)
+        ? true : entry.textIncomplete === false ? false : undefined;
       const attachments = entry.role === 'user' && Array.isArray(entry.attachments) ? entry.attachments.slice(0, 4).filter(file =>
         file && typeof file.id === 'string' && file.id.length > 0 && file.id.length <= 100 && typeof file.name === 'string' && file.name.length > 0 && file.name.length <= 200 &&
         /^image\/[a-z0-9.+-]{1,80}$/i.test(file.mimeType) && Number.isSafeInteger(file.size) && file.size >= 0 && file.size <= 512 * 1024 * 1024)
@@ -3895,6 +3897,7 @@
           /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(entry.resolvedModel) ? { resolvedModel: entry.resolvedModel } : {}),
         ...(references ? { references } : {}),
         rawText,
+        ...(entry.role === 'assistant' && typeof textIncomplete === 'boolean' ? { textIncomplete } : {}),
         // A boolean from MAIN; only `true` exactly means ChatGPT stored this as escaped Markdown.
         ...(entry.role === 'user' && entry.markdown === true ? { markdown: true } : {}),
         ...(attachments.length ? { attachments } : {}),
@@ -3911,7 +3914,7 @@
         continue;
       }
       const prior = messages[priorAt];
-      if (prior.rawText === rawText && prior.renderedHtml === renderedHtml && JSON.stringify(prior.attachments || []) === JSON.stringify(attachments)) {
+      if (prior.rawText === rawText && prior.textIncomplete === message.textIncomplete && prior.renderedHtml === renderedHtml && JSON.stringify(prior.attachments || []) === JSON.stringify(attachments)) {
         if (message.stable) prior.stable = true;
         continue;
       }
@@ -5032,7 +5035,7 @@
         const signature =
           `${state}\u0000${message.rawText}\u0000${message.renderedHtml}\u0000${owner}` +
           `\u0000${message.createTime || ''}\u0000${message.rawMessageId || ''}\u0000${message.resolvedModel || ''}` +
-          `\u0000${message.references ? JSON.stringify(message.references) : ''}`;
+          `\u0000${message.references ? JSON.stringify(message.references) : ''}\u0000${message.textIncomplete}`;
         if (priorMessage?.signature === signature) continue;
         messagesReported.set(message.messageId, { signature, owner, conflicted: ownerConflict, text: message.rawText });
         if (state === 'streaming' && owner && priorMessage?.text !== message.rawText && freshPublication) noteTurnProgress(owner, 'page-text');
@@ -5048,6 +5051,7 @@
           ...(message.createTime ? { authoredAt: message.createTime } : {}),
           turnId: localOwner || undefined,
           text: message.rawText,
+          textIncomplete: message.textIncomplete,
           renderedHtml: message.renderedHtml,
           // create_time is stamped by ChatGPT's server clock while turn/tool events use the
           // machine clock. They are not guaranteed to agree: the live 2026-08-25 turn recorded
@@ -9748,8 +9752,6 @@
    * ChatGPT's own marker or at an explicit cancel, never at a second Send.
    */
   async function maybeResumePendingCompaction(forId = conversationId, forEpoch = epoch) {
-    if (job && job.stage === 'handoff-pending' && job.sourceSend?.state === 'dispatched-unresolved' &&
-        !(await releaseUndeliveredHandoff(forId, forEpoch))) return;
     const source = job && job.stage === 'handoff-pending' ? job.sourceSend : null;
     if (!source || nativeBusy || localError) return;
     if (source.state !== 'not-attempted' && source.state !== 'attempted-unresolved') return;
@@ -9761,51 +9763,6 @@
     // authority — a refused focus changes nothing about the ticket.
     if (automatic) void ask({ type: 'focus_tab', conversationId: forId }).catch(() => undefined);
     await startCompact(automatic);
-  }
-
-  /**
-   * Proves to the app that an armed handoff click never reached ChatGPT, so it may be sent once.
-   *
-   * Only a document loaded after the click can say so, and only once ChatGPT is idle: it then
-   * shows the chat as ChatGPT holds it, and an accepted handoff would be its newest user message.
-   * The newest one still being the message that was newest before the click is the proof. The
-   * app checks the same facts again before it releases anything.
-   */
-  const UNDELIVERED_READY_MS = 30_000;
-  const UNDELIVERED_SECOND_READ_MS = 3_000;
-  async function releaseUndeliveredHandoff(forId, forEpoch) {
-    const source = job && job.stage === 'handoff-pending' ? job.sourceSend : null;
-    if (!source || source.state !== 'dispatched-unresolved' || typeof source.before !== 'string' || !source.before ||
-        !Number.isFinite(source.dispatchedAt) || nativeBusy) return false;
-    const here = () => alive && conversationId === forId && epoch === forEpoch && CLF_DOM.conversationId() === forId;
-    if (!here() || !(performance.timeOrigin > source.dispatchedAt) || Date.now() - source.dispatchedAt < 15_000) return false;
-    // This is the one path that may send a handoff a second time, so its proof is read only from
-    // a settled page: a reloaded transcript can hydrate in steps, and one shown for a moment
-    // without its newest turn would still name the pre-click question as newest. The view must be
-    // the pickup's ready one (an editable composer, nothing running) and must already show that
-    // pre-click question; the verdict is then read twice, a few seconds apart.
-    const editable = () => {
-      const box = CLF_DOM.composer();
-      return Boolean(box?.isConnected && CLF_DOM.composerVisible() && box.getAttribute('contenteditable') !== 'false' &&
-        box.getAttribute('aria-disabled') !== 'true');
-    };
-    const newestUser = () => CLF_DOM.messages().filter(row => row.role === 'user').at(-1)?.id ?? null;
-    const settledView = () => editable() && !generating && !CLF_DOM.generating() && pendingTools === 0 &&
-      CLF_DOM.messages().some(row => row.role === 'user' && row.id === source.before);
-    if (!(await waitPageView(() => settledView() || null, here, UNDELIVERED_READY_MS, 250)) || !here()) return false;
-    if (newestUser() !== source.before) return false;
-    await new Promise(resolve => setTimeout(resolve, UNDELIVERED_SECOND_READ_MS));
-    if (!here() || nativeBusy || !settledView()) return false;
-    const newest = newestUser();
-    if (newest !== source.before) return false;
-    const reply = await ask({
-      type: 'compact', conversationId: forId, token: job.token, sourceUndelivered: true,
-      newestUserMessage: newest, documentSince: Math.floor(performance.timeOrigin)
-    });
-    if (!here() || !reply || reply.ok !== true || reply.data?.released !== true) return false;
-    if (reply.data.job) job = reply.data.job;
-    localError = '';
-    return true;
   }
 
   /** The current generation's still-visible recoverable transport error, or a gone stream. */
@@ -9833,8 +9790,19 @@
   function resumePendingCompactionFromRepair(expectedConversationId) {
     const source = job && job.stage === 'handoff-pending' ? job.sourceSend : null;
     if (!alive || !expectedConversationId || conversationId !== expectedConversationId ||
-        CLF_DOM.conversationId() !== expectedConversationId || !source ||
-        (source.state !== 'not-attempted' && source.state !== 'attempted-unresolved')) return false;
+        CLF_DOM.conversationId() !== expectedConversationId || !source) return false;
+    if (source.state === 'dispatched-unresolved' || source.state === 'sent') {
+      // Read the existing answer only. Never enter Stop/Send after dispatch, and
+      // keep the exact navigation epoch through the asynchronous reader/flush.
+      const forEpoch = epoch, token = job.token;
+      queueMicrotask(() => {
+        const current = () => alive && epoch === forEpoch && conversationId === expectedConversationId &&
+          CLF_DOM.conversationId() === expectedConversationId && job?.token === token;
+        if (current()) void refreshFiber().then(() => current() ? flush() : undefined).catch(() => undefined);
+      });
+      return true;
+    }
+    if (source.state !== 'not-attempted' && source.state !== 'attempted-unresolved') return false;
     // A source answer ChatGPT broke off ("Connection interrupted. Waiting for the complete
     // answer") never settles in this document, so the ticket cannot be sent from it. Declining
     // hands the pickup to its reload. Accepting kept a ticket unsent behind that card for over
@@ -10415,6 +10383,9 @@
       renderControl();
       return 'committed';
     }
+    // A current backend reports its exact recorder refusal. Mounted page text cannot
+    // overrule missing, ambiguous or incomplete durable response evidence.
+    if (bound.data?.job?.captureIssue) { job = bound.data.job; renderControl(); return false; }
     // The answer turn, not the prompt's — see answerTurnFor. Its calls are the ones that have
     // to be finished, too: a brief cut while the compaction turn is still running a tool
     // describes a machine that is still changing.
@@ -10429,7 +10400,7 @@
         (message.rawMessageId === terminalId || message.messageId === terminalId)
     );
     const summary = String(terminal?.rawText || '').trim();
-    if (!summary) return false;
+    if (!summary || terminal?.textIncomplete === true) return false;
     const pending = await peekPendingTools();
     if (pending !== 0 || !conversationId || CLF_DOM.conversationId() !== conversationId) return false;
     nativePhase = 'delivering';
@@ -12059,10 +12030,12 @@
     // The last custody writes await HTTP. They cannot preserve the composer or SPA route
     // that was checked above; prove both again after each write and at the native click.
     const exactBootstrapDraft = () => squeeze(CLF_DOM.composer()?.textContent) === expectedText;
+    let resumeDispatchAttempted = false;
     const rejectChangedBootstrap = async () => {
       if (await failIfRetargeted()) return true;
       if (exactBootstrapDraft()) return false;
       if (boot.type === 'resume' && !squeeze(CLF_DOM.composer()?.textContent)) {
+        if (resumeDispatchAttempted) return true;
         continuationJournalPending = false;
         await ask({ type: 'compact', token: resumeMarker[2], commandId: boot.id, client: RUN_ID, destinationLost: true });
         return true;
@@ -12109,6 +12082,7 @@
       }
       // As on the source side: the claim above promises nothing was submitted, and this second
       // write is the exclusive cut taken immediately before the click.
+      resumeDispatchAttempted = true;
       const armed = await ask({ type: 'compact', token: resumeMarker[2], commandId: boot.id, client: RUN_ID, destinationDispatch: true });
       if (await rejectChangedBootstrap()) return;
       if (!armed || armed.ok !== true || !armed.data || armed.data.armed !== true) {
@@ -13653,8 +13627,16 @@
       // Popup diagnostics. Ids and counters only — no prose, no transcript, no page text.
       if (message.type === 'clf-page-status') {
         const assistantError = currentAssistantError();
+        const editor = CLF_DOM.composer();
+        const preDispatch = job?.stage === 'handoff-pending' &&
+          ['not-attempted', 'attempted-unresolved'].includes(job.sourceSend?.state);
         sendResponse({
           ok: true,
+          compactionReloadSafe: Boolean(preDispatch && alive && CLF_DOM.conversationId() === conversationId &&
+            editor?.isConnected && CLF_DOM.composerVisible() && editor.getAttribute('contenteditable') !== 'false' &&
+            editor.getAttribute('aria-disabled') !== 'true' && !(editor.textContent || '').trim() &&
+            !CLF_DOM.hasComposerAttachments() && fiberPresent === true && fiberTurns.size > 0 &&
+            !generating && !CLF_DOM.generating() && pendingTools === 0 && !nativeBusy && !desktopInputBusy),
           // ChatGPT's own account that a response is streaming right now, as opposed to the
           // recorder's `generating`, which also holds while a turn waits on a local tool.
           streaming: CLF_DOM.generating(),

@@ -16,7 +16,7 @@ import { pendingChatModelRequest, observeChatModels, requestChatModels } from '.
 import { isDeliberateEffort, isProModel } from '../shared/chat-models.js';
 import { supportsFinishAutomation } from '../shared/finish.js';
 import { injectedUserMessage, recordedRequestTurn, responseTurnId, type TimelineTurns } from '../shared/chronology.js';
-import type { SessionSummary } from '../shared/session.js';
+import type { HandoffCaptureIssue, SessionSummary } from '../shared/session.js';
 import { runningExecProcesses } from './codex/ownership.js';
 import { messageReferences, providerUnavailableFor } from '../shared/session.js';
 import { turnTrace } from '../shared/turn-trace.js';
@@ -205,6 +205,8 @@ import { ownCoreHint,
 } from './agents.js';
 import { lookupWorkerWorkspace, validateWorkerWorkspaceLease } from './worktrees/index.js';
 import {
+  reportContinuationCaptureIssueNow,
+  type ContinuationCaptureFence,
   abortContinuation,
   abortContinuationNow,
   abortContinuationSourceBeforeSendNow,
@@ -225,7 +227,6 @@ import {
   supersededSourceConversations,
   dispatchContinuationDestinationSendNow,
   dispatchContinuationSourceSendNow,
-  releaseUndeliveredSourceDispatchNow,
   normalizeProjectId,
   openContinuationNow,
   reopenWithHandoffNow,
@@ -239,7 +240,7 @@ import type { ContinuationView } from './session/continuation.js';
 import { noteResumeOpening } from './session/resume-gate.js';
 import { readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
 import { APP_VERSION, BRIDGE_PROTOCOL } from './version.js';
-import { conversationHasMcpCallSince, readHandoffResponse } from './session/store.js';
+import { conversationHasMcpCallSince, readHandoffResponse, handoffResponseUnchanged, withSessionMutationFence } from './session/store.js';
 import { sessionWorkingAt } from '../shared/session-activity.js';
 import { requestCorrelation } from './session/correlation.js';
 import { completeImageExport, IMAGE_EXPORT_BODY_BYTES, pendingImageExports } from './image-export.js';
@@ -1491,6 +1492,10 @@ function parseObservations(input: unknown): ChatObservation[] {
     // with the page-side assistant bound so the bridge does not silently become the next
     // truncation point after Fiber/content.js accepted the whole message.
     if (typeof item['text'] === 'string') observation.text = item['text'].slice(0, 256_000);
+    if (kind === 'assistant_message') {
+      if (typeof item['textIncomplete'] === 'boolean') observation.textIncomplete = item['textIncomplete'];
+      if (typeof item['text'] === 'string' && item['text'].length > 256_000) observation.textIncomplete = true;
+    }
     // The model the page's own send request named for this message: count proof for Usage.
     if (kind === 'user_message' && typeof item['model'] === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(item['model'])) {
       observation.model = item['model'];
@@ -2812,6 +2817,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const found = [...repairsInFlight].find(([, repair]) => repairNeedsClaim(repair) && repair.token === token && repair.state === 'handed');
     if (!found) return json(res, 200, { allowed: false }, origin);
     const [conversationId, repair] = found;
+    const continuation = repair.reason === 'compaction' ? continuationForSession(repair.sessionId) : null;
+    const observeOnly = !!continuation && compactionPhaseOf(continuation) === 'writing';
+    // Older companions treat compaction handouts as reload permission. They may
+    // not claim any compaction pickup without the current readiness/observation fences.
+    if (repair.reason === 'compaction' && (body as Record<string, unknown>).observeOnly !== true)
+      return json(res, 200, { allowed: false, reason: 'compaction_observation_required' }, origin);
     const session = await getSession(repair.sessionId);
     // A Compact & resume the user pressed may act on the chat they closed: handout and claim agree.
     const current = session?.conversationId === conversationId && departureAllowsRepairFor(session, repair.reason, repair.episode) &&
@@ -2830,7 +2841,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       if (repair.attribution && repair.attribution.incident.firstAttemptAt === null)
         repair.attribution.incident.firstAttemptAt = Date.now();
     }
-    return json(res, 200, { allowed,
+    return json(res, 200, { allowed, ...(allowed && observeOnly ? { observeOnly: true } : {}),
       ...(allowed && repair.reason === 'silence' && recoveryInputAllowed(repair.sessionId, conversationId)
         ? { continueAfterRepair: true } : {}) }, origin);
   }
@@ -3029,6 +3040,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // deadline into that same outbox row before acknowledging the observation.
     if (activeUntil.get(id)?.thinkingFailed) await fileSilenceInputTicket(id, Date.now());
     if (committed?.wake) wakeBrowserWork();
+    if (committed?.sessionId) {
+      const entry = continuationForSession(committed.sessionId);
+      if (entry?.from === id && entry.state === 'awaiting-summary' &&
+          entry.sourceSend.state === 'sent' && entry.sourceSend.messageId)
+        await captureRecordedBrief(id, entry.token, entry.sourceSend.messageId, 'background');
+    }
     return json(res, 200, { sessionId: committed!.sessionId, stored: committed!.stored }, origin);
   }
 
@@ -3714,18 +3731,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const armed = await dispatchContinuationSourceSendNow(checkpointToken, before);
       return json(res, armed ? 200 : 409, armed ? { armed: true } : { error: 'source_send_reclaimed' }, origin);
     }
-    // A later document's proof that the armed click never reached ChatGPT: it still shows, as
-    // the newest user message, the one that was newest before the click.
+    // Old companions can still report this checkpoint. An incomplete later page
+    // is not proof of provider rejection and can never release dispatch custody.
     if (body['sourceUndelivered'] === true) {
       const entry = continuationByToken(checkpointToken);
       if (!entry || entry.from !== id) return json(res, 409, { error: 'no_such_continuation' }, origin);
-      const newest = typeof body['newestUserMessage'] === 'string' ? body['newestUserMessage'] : null;
-      const since = typeof body['documentSince'] === 'number' ? body['documentSince'] : 0;
-      const released = await releaseUndeliveredSourceDispatchNow(checkpointToken, newest, since);
-      if (!released) return json(res, 409, { error: 'source_send_not_releasable' }, origin);
-      logInfo(`bridge: the handoff click for ${entry.sessionId} never reached ChatGPT; it may be sent once more`);
-      changed();
-      return json(res, 200, { released: true, sourceSend: released, job: resumeJobFor(entry.sessionId) }, origin);
+      return json(res, 409, { error: 'source_send_not_releasable', job: resumeJobFor(entry.sessionId) }, origin);
     }
     if (body['sourceAttempt'] === true) {
       const entry = continuationByToken(checkpointToken);
@@ -3900,6 +3911,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const token = typeof body['token'] === 'string' ? body['token'] : '';
       const entry = continuationByToken(token);
       if (!entry || entry.sessionId !== sessionId) return json(res, 409, { error: 'no_such_continuation' }, origin);
+      // A sent/uncertain request can only capture its recorder-proven response. Neither a
+      // mounted branch nor an older extension's clipped summary can bypass that verdict.
+      if (!entry.handoffId && !sendUnattempted(entry.sourceSend)) {
+        const captured = entry.sourceSend.state === 'sent' && entry.sourceSend.messageId
+          ? await captureRecordedBrief(id, token, entry.sourceSend.messageId) : null;
+        if (captured) return json(res, captured.status, captured.body, origin);
+        return json(res, 409, { error: 'brief_not_verified', sessionId, job: resumeJobFor(sessionId) }, origin);
+      }
       const captured = await captureCompactionBrief(id, entry, body['summary'], known);
       return json(res, captured.status, captured.body, origin);
     }
@@ -6098,11 +6117,31 @@ export interface ResumeJobView {
     messageId: string | null;
   };
   error: string | null;
+  captureIssue?: HandoffCaptureIssue | null;
   /** A retained source refusal or exhausted pickup needs user attention. */
   needsAttention?: true;
 }
 
 const RUNNING_STAGES = new Set<ResumeStage>(['handoff-pending', 'opening', 'waiting-for-browser']);
+
+const CAPTURE_DIAGNOSTICS: Record<HandoffCaptureIssue, string> = {
+  'anchor-not-recorded': 'The sent handoff user message is not yet recorded. Its absence does not authorize another send.',
+  'marker-mismatch': 'The recorded user message does not identify this handoff ticket and conversation.',
+  'snapshot-changed': 'The recorder changed during capture. Waiting for a stable observation.',
+  'history-bound-reached': 'The handoff response exceeded the bounded history scan; completeness is uncertain.',
+  'generation-not-terminal': 'The handoff generation has no recorded terminal boundary yet.',
+  'generation-unidentified': 'The handoff response has no exact generation identity.',
+  'multiple-generations': 'Multiple generations answered this handoff request; capture is ambiguous.',
+  'multiple-finals': 'Multiple final replies answered this handoff request; capture is ambiguous.',
+  'final-not-recorded': 'The generation completed, but its authored final reply is not recorded yet.',
+  'response-failed': 'The handoff generation ended without a successful response. The original send remains retained.',
+  'response-truncated': 'The handoff observation was truncated before storage. Waiting for complete authored text.',
+  'overflow-unavailable': 'The handoff response overflow could not be read completely.',
+  'brief-too-short': 'The completed handoff reply is too short to safely continue this session.',
+  'deadline-exceeded': 'The handoff waiting deadline passed. Send custody is retained and late evidence can still recover it.'
+};
+
+function handoffCaptureDiagnostic(issue: HandoffCaptureIssue): string { return CAPTURE_DIAGNOSTICS[issue]; }
 
 /**
  * The token of the last continuation opened for a session.
@@ -6148,9 +6187,10 @@ export function resumeJobFor(sessionId: string): ResumeJobView | null {
     handoffId: entry.handoffId,
     sourceSend: entry.sourceSend,
     destinationSend: entry.destinationSend,
+    captureIssue: entry.captureIssue,
     ...(RUNNING_STAGES.has(stage) && (entry.error || (entry.pickup?.told && entry.pickup.phase === compactionPhaseOf(entry)))
       ? { needsAttention: true as const } : {}),
-    error: entry.error === 'handoff_never_sent'
+    error: RUNNING_STAGES.has(stage) && entry.captureIssue ? handoffCaptureDiagnostic(entry.captureIssue) : entry.error === 'handoff_never_sent'
       ? 'The handoff request could not be sent after bounded browser pickup attempts. Open the source chat in the paired browser, verify sign-in and clear any draft before trying Compact & Resume again.'
       : entry.error ?? (RUNNING_STAGES.has(stage) && entry.pickup?.told && entry.pickup.phase === compactionPhaseOf(entry)
       ? compactionPickupBlocker(entry) : null)
@@ -6563,7 +6603,9 @@ async function captureCompactionBrief(
   conversationId: string,
   entry: ContinuationView,
   text: string,
-  known: SessionSummary | null
+  known: SessionSummary | null,
+  delivery: 'page' | 'background' = 'page',
+  accept?: ContinuationCaptureFence
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const { sessionId, token } = entry;
   // The handoff owner freezes and budgets the brief with its saved plan and
@@ -6580,6 +6622,10 @@ async function captureCompactionBrief(
   const source = known ?? (await getSession(sessionId));
   const shortfall = entry.handoffId ? null : briefShortfall(brief, source?.estimatedTokens ?? 0);
   if (shortfall) {
+    if (entry.sourceSend.state === 'sent' || entry.sourceSend.state === 'dispatched-unresolved') {
+      await reportContinuationCaptureIssueNow(token, entry.sourceSend.messageId, 'brief-too-short');
+      return { status: 409, body: { error: 'brief_incomplete', message: shortfall, sessionId, job: resumeJobFor(sessionId) } };
+    }
     logWarn(`bridge: refused the compaction brief for ${sessionId} — ${shortfall}`);
     try {
       await cancelResumeNow(sessionId);
@@ -6613,7 +6659,7 @@ async function captureCompactionBrief(
       }
     };
   }
-  const handoff = await attachSummary(token, brief);
+  const handoff = await attachSummary(token, brief, accept);
   if (!handoff) {
     // `attachSummary` deliberately turns a rejected continuation-WAL write back into an
     // `awaiting-summary` transaction so the exact token/brief can be retried. Report that
@@ -6633,6 +6679,11 @@ async function captureCompactionBrief(
     };
   }
   const command = queueResumeCommand(sessionId, token);
+  if (delivery === 'background') {
+    scheduleDeliver();
+    return { status: 200, body: { stored: true, sessionId, handoffId: handoff.id,
+      commandId: command.id, job: resumeJobFor(sessionId) } };
+  }
   // This request is chat A's own page asking for the handoff it is in the middle of, so the
   // reply below can hand it the successor to open. Delivery may hold the OS opener back for
   // exactly as long as that is true — see offerPlacement.
@@ -6671,24 +6722,43 @@ async function captureCompactionBrief(
 async function captureRecordedBrief(
   conversationId: string,
   token: string,
-  anchor: string
+  anchor: string,
+  delivery: 'page' | 'background' = 'page'
 ): Promise<{ status: number; body: Record<string, unknown> } | null> {
   const entry = continuationByToken(token);
   if (!entry || entry.from !== conversationId || entry.state !== 'awaiting-summary' ||
       entry.sourceSend.state !== 'sent' || entry.sourceSend.messageId !== anchor ||
-      runningToolCalls(conversationId) > 0) return null;
+      runningToolCalls(conversationId) > 0 || isChatBlocked(conversationId) || stopRequestedFor(conversationId)) return null;
   const session = await getSession(entry.sessionId);
-  if (session?.conversationId !== conversationId || (entry.automatic && !automaticCompactionAllowed(session))) return null;
+  if (session?.conversationId !== conversationId || providerUnavailableFor(session, conversationId) ||
+      (delivery === 'background' && session.browserRecoveryDismissedAt !== undefined) ||
+      (entry.automatic && !automaticCompactionAllowed(session))) return null;
   const response = await readHandoffResponse(entry.sessionId, conversationId, anchor, token);
   if (response.status === 'ambiguous') {
     noticeRefusal(`handoff-ambiguous:${token}`,
-      `bridge: compaction ${token.slice(0, 8)} has more than one answer to its handoff request — not capturing either`);
+      `bridge: compaction ${token.slice(0, 8)} refused capture: ${handoffCaptureDiagnostic(response.reason)}`);
   }
-  if (response.status !== 'complete') return null;
+  if (response.status !== 'complete') {
+    await reportContinuationCaptureIssueNow(token, anchor, response.reason);
+    return null;
+  }
   const current = continuationByToken(token);
   if (!current || current.state !== 'awaiting-summary' || current.sourceSend.state !== 'sent' ||
-      current.sourceSend.messageId !== anchor) return null;
-  return captureCompactionBrief(conversationId, current, response.text, session);
+      current.from !== conversationId || current.sourceSend.messageId !== anchor || runningToolCalls(conversationId) > 0) return null;
+  const latestSession = await getSession(current.sessionId);
+  if (latestSession?.conversationId !== conversationId || (current.automatic && !automaticCompactionAllowed(latestSession))) return null;
+  return captureCompactionBrief(conversationId, current, response.text, latestSession, delivery,
+    publish => withSessionMutationFence(current.sessionId, async summary => {
+      const owner = continuationByToken(token);
+      if (owner?.state !== 'awaiting-summary' || owner.from !== conversationId ||
+          owner.sourceSend.state !== 'sent' || owner.sourceSend.messageId !== anchor ||
+          summary.conversationId !== conversationId || providerUnavailableFor(summary, conversationId) ||
+          (delivery === 'background' && summary.browserRecoveryDismissedAt !== undefined) ||
+          isChatBlocked(conversationId) || stopRequestedFor(conversationId) || runningToolCalls(conversationId) > 0 ||
+          (owner.automatic && !automaticCompactionAllowed(summary)) ||
+          !handoffResponseUnchanged(current.sessionId, conversationId, response.revision)) return false;
+      return publish();
+    }));
 }
 
 /**
@@ -9060,6 +9130,14 @@ async function inspectOwedCompactions(now: number): Promise<boolean> {
       await cancelAutomaticResumesNow(entry.sessionId);
       continue;
     }
+    // Recorder completion owns capture even when the page lost its next checkpoint
+    // or all browser pickups were spent. Reconcile before any schedule/exhaustion gate.
+    if (entry.state === 'awaiting-summary' && entry.sourceSend.state === 'sent' && entry.sourceSend.messageId) {
+      const captured = await captureRecordedBrief(entry.from, entry.token, entry.sourceSend.messageId, 'background');
+      if (captured?.body.stored === true) { queued = true; continue; }
+      const current = continuationByToken(entry.token);
+      if (!current || current.state !== 'awaiting-summary') continue;
+    }
     const phase = compactionPhaseOf(entry);
     let watch = compactionWatch.get(entry.from);
     if (!watch || watch.token !== entry.token || watch.phase !== phase) {
@@ -9894,6 +9972,7 @@ const REPAIR_FAIL_REASONS: Record<string, string> = {
  * check moved. Unknown values are dropped, never echoed.
  */
 const REPAIR_CHANGE_DETAILS: Record<string, string> = {
+  'page-not-ready': 'the compaction source was generating or its readiness was unverified',
   navigating: 'the tab was navigating',
   'other-chat': 'the tab showed another chat',
   'new-document': 'the page was reloaded or replaced',

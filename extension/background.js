@@ -3395,6 +3395,7 @@ async function performBrowserRepairs(repairs, policy) {
     const repairAction = target ? 'reloaded' : 'reopened';
     try {
       let continueAfterRepair = false;
+      let observeOnly = false;
       const documentId = target ? tabDocuments[String(target.id)] : null;
       // Suspension grants a reload of a still-suspended shell, never a new tab.
       if (suspended) {
@@ -3431,9 +3432,11 @@ async function performBrowserRepairs(repairs, policy) {
           await call(`/status?repairHeld=${encodeURIComponent(token)}&why=${encodeURIComponent(check.why || 'unknown')}`);
           continue;
         }
-        const claim = await call('/repairs/claim', { method: 'POST', body: JSON.stringify({ token }) });
+        const claim = await call('/repairs/claim', { method: 'POST', body: JSON.stringify({ token,
+          ...(reason === 'compaction' ? { observeOnly: true } : {}) }) });
         if (!claim.ok || claim.data?.allowed !== true) continue;
         continueAfterRepair = claim.data.continueAfterRepair === true;
+        observeOnly = claim.data.observeOnly === true;
         if (target && !suspended) {
           const latest = inspectTurn ? await tabReply(target.id, { type: 'clf-repair-check', conversationId, draftOnly,
             ...(check?.safe === true ? { expected: { revision: check.revision, turnId: check.turnId, questionId: check.questionId } } : {}) },
@@ -3475,6 +3478,21 @@ async function performBrowserRepairs(repairs, policy) {
           { type: 'clf-resume-compaction', conversationId }, documentId ? { documentId } : undefined);
         if (resumed?.accepted === true) {
           await call(`/status?repaired=${encodeURIComponent(token)}&repairAction=resumed`);
+          continue;
+        }
+        // The app's sent-request custody permits observation, never navigation.
+        // A missed nudge or an incomplete page is not proof generation stopped.
+        if (observeOnly) {
+          await call(`/status?repaired=${encodeURIComponent(token)}&repairAction=preserved`);
+          continue;
+        }
+        const status = await tabReply(target.id, { type: 'clf-page-status' },
+          documentId ? { documentId } : undefined);
+        const tab = await chrome.tabs.get(target.id);
+        if (tab.pendingUrl || tab.status === 'loading' || conversationForTab(tab) !== conversationId ||
+            tabDocuments[String(target.id)] !== documentId || status?.ok !== true ||
+            status.streaming !== false || status.generating !== false || status.compactionReloadSafe !== true) {
+          await call(`/status?repairFailed=${encodeURIComponent(token)}&repairAction=${repairAction}&why=changed&detail=page-not-ready`);
           continue;
         }
       }

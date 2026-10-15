@@ -403,6 +403,8 @@ export type SessionEvent =
       messageId?: string;
       /** ChatGPT's canonical rendered representation captured from the page. */
       renderedHtml?: StoredText;
+      /** Authored text was clipped before recorder storage; overflow cannot restore it. */
+      textIncomplete?: boolean;
       /** Public provider object UUID. Evidence for identity drift; not a canonical key or turn owner. */
       providerMessageId?: string;
       /**
@@ -795,6 +797,15 @@ export interface SessionChange {
   /** A cross-session mutation without enumerable owners; every open transcript is stale. */
   allTranscripts?: true;
 }
+
+/** Bounded diagnostics for one exact response; never submission authority. */
+export const HANDOFF_CAPTURE_ISSUES = [
+  'anchor-not-recorded', 'marker-mismatch', 'snapshot-changed', 'history-bound-reached',
+  'generation-not-terminal', 'generation-unidentified', 'multiple-generations', 'multiple-finals',
+  'final-not-recorded', 'response-failed', 'response-truncated', 'overflow-unavailable',
+  'brief-too-short', 'deadline-exceeded'
+] as const;
+export type HandoffCaptureIssue = (typeof HANDOFF_CAPTURE_ISSUES)[number];
 
 export interface HandoffProvenance {
   /** ChatGPT frontend that authored the brief. */

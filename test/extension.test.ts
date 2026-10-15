@@ -1379,7 +1379,7 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
           trace.push('claim');
           if (mode === 'navigated-during-claim') navigated = true;
           expect(init.method).toBe('POST');
-          expect(JSON.parse(String(init.body))).toEqual({ token: 'attribution-attempt' });
+          expect(JSON.parse(String(init.body))).toEqual({ token: 'attribution-attempt', ...(reason === 'compaction' ? { observeOnly: true } : {}) });
           return mode === 'claim-unavailable' ? response(503, {}) : response(200, { allowed: !resolved });
         }
         if (url.pathname === '/status') {
@@ -1424,6 +1424,40 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
       expect(worker.tabsCreate).not.toHaveBeenCalled();
     }
   );
+
+  it.each([
+    { label: 'generating a handoff', tabStatus: 'complete', page: { ok: true, streaming: true, generating: true, assistantError: false } },
+    { label: 'not yet readable', tabStatus: 'loading', page: null },
+    { label: 'unavailable to inspect', tabStatus: 'complete', page: null }
+  ])('preserves a compaction source that is $label', async ({ tabStatus, page }) => {
+    let armed = false, handed = false;
+    const fetch = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/repairs/claim') return response(200, { allowed: true });
+      if (url.pathname === '/status' && armed && !handed) {
+        handed = true;
+        return response(200, { repairs: [{ conversationId: CHAT, token: 'writing-pickup', reason: 'compaction', requiresClaim: true }] });
+      }
+      return response(200, { repairs: [] });
+    });
+    const worker = loadWorker({ local: new FakeStorageArea(paired), session: new FakeStorageArea(), fetch,
+      tabsGet: async () => ({ id: 21, status: tabStatus, url: `https://chatgpt.com/c/${CHAT}` }),
+      tabsQuery: async () => [{ id: 21, status: tabStatus, url: `https://chatgpt.com/c/${CHAT}` }],
+      tabsSendMessage: async (_id, message) => message.type === 'clf-repair-check'
+        ? { safe: true, revision: 1, turnId: 'handoff-turn', questionId: 'handoff-user' }
+        : message.type === 'clf-resume-compaction' ? { accepted: false }
+        : message.type === 'clf-page-status' ? page : { ok: true }
+    });
+    await worker.registerTab(21);
+    await worker.send({ type: 'bind', conversationId: CHAT }, 21);
+    await worker.fireAlarm();
+    armed = true;
+    await worker.fireAlarm();
+    expect(handed).toBe(true);
+    expect(worker.tabsReload).not.toHaveBeenCalled();
+    expect(worker.tabsCreate).not.toHaveBeenCalled();
+  });
 
   it.each([
     { page: 'still loading', status: 'loading', answers: false, reload: false },
@@ -1589,8 +1623,10 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
       const checks: Record<string, unknown>[] = [];
       const worker = loadWorker({ local: new FakeStorageArea(paired), session: new FakeStorageArea(), fetch,
         tabsQuery: async () => [{ id: 21, url: `https://chatgpt.com/c/${CHAT}` }],
-        tabsGet: async () => ({ id: 21, url: `https://chatgpt.com/c/${CHAT}` }),
+        tabsGet: async () => ({ id: 21, status: 'complete', url: `https://chatgpt.com/c/${CHAT}` }),
         tabsSendMessage: async (_id, message) => {
+          if (message.type === 'clf-page-status') return scenario === 'empty'
+            ? { ok: true, streaming: false, generating: false, compactionReloadSafe: true } : null;
           if (message.type !== 'clf-repair-check') return { ok: true };
           checks.push(message);
           if (scenario === 'unresponsive') return null;
@@ -1601,12 +1637,12 @@ describe('exact chat recovery from a fresh Chrome tab scan', () => {
       await worker.registerTab(21);
       await worker.send({ type: 'bind', conversationId: CHAT }, 21);
       await worker.fireAlarm(); armed = true; await worker.fireAlarm();
-      const reloads = scenario === 'empty' || scenario === 'unresponsive' ? 1 : 0;
+      const reloads = scenario === 'empty' ? 1 : 0;
       expect(worker.tabsReload).toHaveBeenCalledTimes(reloads);
       expect(worker.tabsCreate).not.toHaveBeenCalled();
       expect(repaired).toBe(reloads);
       expect(claimed).toBe(scenario !== 'draft-before-claim');
-      expect(failed).toBe(scenario === 'draft-after-claim' || scenario === 'question-after-claim' ? 1 : 0);
+      expect(failed).toBe(scenario === 'draft-after-claim' || scenario === 'question-after-claim' || scenario === 'unresponsive' ? 1 : 0);
       expect(checks).toHaveLength(claimed ? 2 : 1);
       expect(checks.every(message => message.draftOnly === true)).toBe(true);
       if (claimed && scenario !== 'unresponsive') expect(checks[1]!.expected)

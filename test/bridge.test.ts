@@ -2459,14 +2459,14 @@ describe('automatic compaction', () => {
     const before = await request('GET', '/status');
     const errorRepair = before.body.repairs.find((row: { conversationId: string }) => row.conversationId === conversationId);
     expect(errorRepair?.reason).toBe('assistant-error');
-    if (claimed) expect((await request('POST', '/repairs/claim', { body: { token: errorRepair.token } })).body.allowed).toBe(true);
+    if (claimed) expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: errorRepair.token } })).body.allowed).toBe(true);
     const session = (await findSessionByConversation(conversationId))!;
     await compactSession(session.id);
     const after = await request('GET', '/status');
     const repairs = after.body.repairs.filter((row: { conversationId: string }) => row.conversationId === conversationId);
     expect(repairs).toHaveLength(claimed ? 0 : 1);
     if (!claimed) expect(repairs[0]).toMatchObject({ reason: 'compaction', requiresClaim: true });
-    expect((await request('POST', '/repairs/claim', { body: { token: errorRepair.token } })).body.allowed).toBe(false);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: errorRepair.token } })).body.allowed).toBe(false);
   });
 
   it.each(['cancelled', 'replaced', 'dispatched'] as const)('opens a manual source immediately and revokes a %s ticket before browser action', async scenario => {
@@ -2485,7 +2485,7 @@ describe('automatic compaction', () => {
       await request('POST', '/compact', { body: { conversationId, cancel: true } });
       if (scenario === 'replaced') await request('POST', '/compact', { body: { conversationId, ticket: true } });
     }
-    expect((await request('POST', '/repairs/claim', { body: { token: repair.token } })).body.allowed).toBe(false);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair.token } })).body.allowed).toBe(false);
     const after = await request('GET', '/status');
     expect(after.body.repairs?.some((row: { token: string }) => row.token === repair.token)).toBe(false);
   });
@@ -2520,7 +2520,7 @@ describe('automatic compaction', () => {
     const handout = (await request('GET', '/status')).body.repairs
       .find((row: { conversationId: string }) => row.conversationId === conversationId);
     expect(handout).toMatchObject({ reason: 'compaction' });
-    await request('POST', '/repairs/claim', { body: { token: handout.token } });
+    await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout.token } });
     await request('GET', `/status?repaired=${encodeURIComponent(handout.token)}&repairAction=reloaded`);
     const rows = foldProgress((await readEvents(session.id, { kinds: ['progress'] })).filter(
       (event): event is Extract<SessionEvent, { kind: 'progress' }> => event.kind === 'progress' && !!event.progressId?.startsWith('browser-repair:')
@@ -2546,7 +2546,7 @@ describe('automatic compaction', () => {
     expect(handout).toEqual([expect.objectContaining({ reason: 'compaction' })]);
     // The browser may also claim it, and so open the chat's tab again. A refused claim left the
     // offer unclaimed until the app gave up ("no page; not offering again"), 2026-10-06 on 2.1.28.
-    expect((await request('POST', '/repairs/claim', { body: { token: handout[0].token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout[0].token } })).body.allowed).toBe(true);
   });
 
   it('keeps the concrete pre-send failure and refuses a stale page abort of a newer ticket', async () => {
@@ -3786,7 +3786,22 @@ describe('releasing a handoff click ChatGPT never received', () => {
   const undelivered = (conversationId: string, token: string, newestUserMessage: string, documentSince: number) =>
     request('POST', '/compact', { body: { conversationId, token, sourceUndelivered: true, newestUserMessage, documentSince } });
 
-  it('hands the click back once a later idle document still shows the pre-click newest message, and allows one new Send', async () => {
+  it('never releases uncertain source delivery because a later page omits its handoff', async () => {
+    vi.useFakeTimers();
+    try {
+      const conversationId = 'a1a1a1a1-0000-4000-8000-00000000ad04';
+      const token = await armed(conversationId, 'm-before');
+      const checkpoint = { ...continuationByToken(token)!.sourceSend };
+      await vi.advanceTimersByTimeAsync(60_000);
+      const result = await undelivered(conversationId, token, 'm-before', checkpoint.dispatchedAt! + 10_000);
+      expect(result.status).toBe(409);
+      expect(continuationByToken(token)?.sourceSend).toEqual(checkpoint);
+      expect((await request('POST', '/compact', { body: { conversationId, token, sourceAttempt: true } })).body.allowed).toBe(false);
+      expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true } })).status).toBe(409);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps the click fenced when a later idle document shows only the pre-click message', async () => {
     vi.useFakeTimers();
     try {
       const conversationId = 'a1a1a1a1-0000-4000-8000-00000000ad01';
@@ -3794,9 +3809,9 @@ describe('releasing a handoff click ChatGPT never received', () => {
       const dispatchedAt = continuationByToken(token)!.sourceSend.dispatchedAt!;
       await vi.advanceTimersByTimeAsync(20_000);
       const released = await undelivered(conversationId, token, 'm-before', dispatchedAt + 10_000);
-      expect(released.status).toBe(200);
-      expect(continuationByToken(token)?.sourceSend.state).toBe('attempted-unresolved');
-      expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true, before: 'm-before' } })).body.armed).toBe(true);
+      expect(released.status).toBe(409);
+      expect(continuationByToken(token)?.sourceSend.state).toBe('dispatched-unresolved');
+      expect((await request('POST', '/compact', { body: { conversationId, token, sourceDispatch: true, before: 'm-before' } })).status).toBe(409);
     } finally {
       vi.useRealTimers();
     }
@@ -3857,12 +3872,217 @@ describe('capturing a sent handoff from the recorder', () => {
   }
 
   /** One local generation: a streaming id that the remount replaced, then its final and end. */
-  const generation = (turnId: string, finalId: string, text: string) => [
+  const generation = (turnId: string, finalId: string, text: string): import('../src/main/session/recorder.js').ChatObservation[] => [
     { kind: 'turn_start', time: Date.now(), turnId },
     { kind: 'assistant_message', time: Date.now(), turnId, messageId: `${turnId}-streaming`, text: text.slice(0, 40), state: 'streaming', final: false },
     { kind: 'assistant_message', time: Date.now(), turnId, messageId: finalId, text, state: 'final', final: true },
     { kind: 'turn_end', time: Date.now(), turnId, outcome: 'completed' }
   ];
+
+  it('captures recorder completion without another browser checkpoint', async () => {
+    await pair();
+    const conversationId = 'c0c0c0c0-7870-4000-8000-000000000006';
+    const { token, sessionId, anchor } = await sentHandoff(conversationId);
+    expect((await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } })).body.stored).toBeUndefined();
+    await request('POST', '/events', { body: { conversationId,
+      events: generation('handoff-late-turn', 'handoff-late-final', SAMPLE_BRIEF) } });
+    await sweepStaleSwarm();
+    expect(continuationByToken(token)?.state).not.toBe('awaiting-summary');
+    expect(continuationByToken(token)?.handoffId).toBeTruthy();
+    expect((await getSession(sessionId))?.conversationId).toBe(conversationId);
+    expect(pendingCommands().filter(command => command.what.startsWith('resume:'))).toHaveLength(1);
+  });
+
+  it.each([
+    { name: 'missing anchor', anchor: 'not-recorded', issue: 'anchor-not-recorded', events: [] },
+    { name: 'unfinished generation', issue: 'generation-not-terminal', events: [{ kind: 'turn_start', time: 0, turnId: 'diagnostic-turn' }] },
+    { name: 'missing final', issue: 'final-not-recorded', events: [
+      { kind: 'turn_start', time: 0, turnId: 'diagnostic-turn' },
+      { kind: 'turn_end', time: 0, turnId: 'diagnostic-turn', outcome: 'completed' }
+    ] },
+    { name: 'failed response', issue: 'response-failed', events: [
+      { kind: 'turn_start', time: 0, turnId: 'diagnostic-turn' },
+      { kind: 'turn_end', time: 0, turnId: 'diagnostic-turn', outcome: 'failed', reason: 'thinking_failed' }
+    ] }
+  ])('diagnoses $name without granting another source send', async ({ anchor: alternate, issue, events }) => {
+    await pair();
+    const conversationId = randomUUID();
+    const { token, sessionId, anchor } = await sentHandoff(conversationId);
+    if (events.length) await request('POST', '/events', { body: { conversationId,
+      events: events.map((event, index) => ({ ...event, time: Date.now() + index })) } });
+    const reader = await sessionStoreModule.readHandoffResponse(sessionId, conversationId, alternate ?? anchor, token);
+    expect(reader).toMatchObject({ status: 'pending', reason: issue });
+    await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: alternate ?? anchor } });
+    expect(resumeJobFor(sessionId)?.error).toBeTruthy();
+    expect(continuationByToken(token)?.sourceSend.state).toBe('sent');
+  });
+
+  it('reports an observation truncated before storage instead of capturing its apparent final', async () => {
+    await pair();
+    const conversationId = 'c0c0c0c0-7870-4000-8000-000000000009';
+    const { token, sessionId, anchor } = await sentHandoff(conversationId);
+    await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+    await request('POST', '/events', { body: { conversationId,
+      events: generation('truncated-handoff', 'truncated-final', 'TASK\n' + 'x'.repeat(260_000) + '\nEND_OF_BRIEF') } });
+    expect(await sessionStoreModule.readHandoffResponse(sessionId, conversationId, anchor, token))
+      .toMatchObject({ status: 'pending', reason: 'response-truncated' });
+    expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary', handoffId: null,
+      sourceSend: { state: 'sent', messageId: anchor }, captureIssue: 'response-truncated' });
+    expect(resumeJobFor(sessionId)?.error).toContain('truncated');
+  });
+
+  it('holds late recorder capture while blocked and recovers the same ticket after release', async () => {
+    await pair();
+    const conversationId = randomUUID();
+    const { token, anchor } = await sentHandoff(conversationId);
+    await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+    setChatBlocked(conversationId, true);
+    try {
+      await request('POST', '/events', { body: { conversationId,
+        events: generation('blocked-capture-turn', 'blocked-capture-final', SAMPLE_BRIEF) } });
+      await sweepStaleSwarm();
+      expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary', handoffId: null,
+        sourceSend: { state: 'sent', messageId: anchor } });
+      expect(pendingCommands().filter(command => command.what.startsWith('resume:'))).toHaveLength(0);
+    } finally { setChatBlocked(conversationId, false); }
+    await sweepStaleSwarm();
+    expect(continuationByToken(token)?.handoffId).toBeTruthy();
+    expect(pendingCommands().filter(command => command.what.startsWith('resume:'))).toHaveLength(1);
+  });
+
+  it('rechecks recorder identity when a Retry arrives while the handoff file is being prepared', async () => {
+    await pair();
+    const conversationId = randomUUID();
+    const { token, sessionId, anchor } = await sentHandoff(conversationId);
+    await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = sessionStoreModule.saveHandoff;
+    const spy = vi.spyOn(sessionStoreModule, 'saveHandoff').mockImplementation(async (...args) => {
+      entered(); await gate; return original(...args);
+    });
+    try {
+      const capture = request('POST', '/events', { body: { conversationId,
+        events: generation('capture-race-turn', 'capture-race-final', SAMPLE_BRIEF) } });
+      await started;
+      await recordChatObservations(conversationId, generation('capture-race-retry', 'capture-race-retry-final', SAMPLE_BRIEF));
+      release();
+      await capture;
+      await sweepStaleSwarm();
+      expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary', handoffId: null, captureIssue: 'multiple-generations' });
+      expect((await getSession(sessionId))?.lastHandoffId).toBeNull();
+      expect(pendingCommands().filter(command => command.what.startsWith('resume:'))).toHaveLength(0);
+    } finally { release(); spy.mockRestore(); }
+  });
+
+  it.each(['truncated', 'ambiguous', 'missing'] as const)('does not let page summary bypass recorder refusal (%s)', async kind => {
+    await pair();
+    const conversationId = randomUUID();
+    const { token, anchor } = await sentHandoff(conversationId);
+    const events = kind === 'missing' ? [] : generation('refused-handoff', 'refused-final', SAMPLE_BRIEF);
+    if (kind === 'truncated') events.find(event => event.kind === 'assistant_message' && event.final)!.textIncomplete = true;
+    if (kind === 'ambiguous') events.push(...generation('regenerated-handoff', 'regenerated-final', SAMPLE_BRIEF));
+    if (events.length) await request('POST', '/events', { body: { conversationId, events } });
+    await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+    expect(continuationByToken(token)?.handoffId).toBeNull();
+    const capture = await request('POST', '/compact', { body: { conversationId, token, summary: SAMPLE_BRIEF } });
+    expect(capture.status).toBe(409);
+    expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary', handoffId: null, sourceSend: { state: 'sent', messageId: anchor } });
+    expect(pendingCommands().filter(command => command.what.startsWith('resume:'))).toHaveLength(0);
+  });
+
+  it('retains truncation across sparse older observations and captures a later complete revision once', async () => {
+    await pair();
+    const conversationId = randomUUID();
+    const { token, sessionId, anchor } = await sentHandoff(conversationId);
+    await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+    const events = generation('complete-revision-turn', 'complete-revision-final', SAMPLE_BRIEF);
+    const final = events.find(event => event.kind === 'assistant_message' && event.final)!;
+    final.textIncomplete = true;
+    await request('POST', '/events', { body: { conversationId, events } });
+    delete final.textIncomplete;
+    await request('POST', '/events', { body: { conversationId, events: [final] } });
+    expect(await sessionStoreModule.readHandoffResponse(sessionId, conversationId, anchor, token))
+      .toMatchObject({ status: 'pending', reason: 'response-truncated' });
+    final.textIncomplete = false;
+    await request('POST', '/events', { body: { conversationId, events: [final] } });
+    const handoffId = continuationByToken(token)?.handoffId;
+    expect(handoffId).toBeTruthy();
+    await request('POST', '/events', { body: { conversationId, events: [final] } });
+    await sweepStaleSwarm();
+    expect(continuationByToken(token)?.handoffId).toBe(handoffId);
+    expect(continuationByToken(token)?.captureIssue).toBeNull();
+    expect(pendingCommands().filter(command => command.what.startsWith('resume:'))).toHaveLength(1);
+  });
+
+  it('refuses an older extension reload claim for a sent handoff and negotiates observation only', async () => {
+    vi.useFakeTimers();
+    try {
+      await pair();
+      const conversationId = randomUUID();
+      const { token, anchor } = await sentHandoff(conversationId);
+      await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await sweepStaleSwarm();
+      const repair = (await request('GET', '/status')).body.repairs?.[0];
+      expect(repair).toMatchObject({ reason: 'compaction', conversationId });
+      expect((await request('POST', '/repairs/claim', { body: { token: repair.token } })).body)
+        .toMatchObject({ allowed: false, reason: 'compaction_observation_required' });
+      expect((await request('POST', '/repairs/claim', { body: { token: repair.token, observeOnly: true } })).body)
+        .toMatchObject({ allowed: true, observeOnly: true });
+      expect(continuationByToken(token)?.sourceSend).toMatchObject({ state: 'sent', messageId: anchor });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('rejects unauthenticated response observations without losing source custody', async () => {
+    await pair();
+    const conversationId = randomUUID();
+    const { token, anchor } = await sentHandoff(conversationId);
+    await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+    const checkpoint = continuationByToken(token)!.sourceSend;
+    const response = await request('POST', '/events', { auth: 'expired-bridge-token', body: { conversationId,
+      events: generation('auth-failed-turn', 'auth-failed-final', SAMPLE_BRIEF) } });
+    expect(response.status).toBe(401);
+    expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary', sourceSend: checkpoint, handoffId: null });
+  });
+
+  it('retains a sent ticket and its diagnostic when the source final is too short', async () => {
+    await pair();
+    const conversationId = 'c0c0c0c0-7870-4000-8000-00000000000a';
+    const { token, anchor } = await sentHandoff(conversationId);
+    await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+    await request('POST', '/events', { body: { conversationId, events: generation('short-handoff', 'short-final', 'TASK') } });
+    expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary', handoffId: null,
+      sourceSend: { state: 'sent', messageId: anchor }, captureIssue: 'brief-too-short' });
+  });
+
+  it('collects late recorder evidence after three exhausted writing pickups without a fourth reload', async () => {
+    vi.useFakeTimers();
+    try {
+      await pair();
+      const conversationId = 'c0c0c0c0-7870-4000-8000-000000000007';
+      const { token, anchor } = await sentHandoff(conversationId);
+      await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+        await sweepStaleSwarm();
+        const repair = (await request('GET', '/status')).body.repairs?.[0];
+        expect(repair).toMatchObject({ conversationId, reason: 'compaction' });
+        await request('GET', `/status?repaired=${repair.token}&repairAction=reloaded`);
+      }
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await sweepStaleSwarm();
+      expect(continuationByToken(token)?.pickup).toMatchObject({ attempts: 3, told: true });
+      // Recorder restoration/late journal publication need not send another /compact checkpoint.
+      await recordChatObservations(conversationId, generation('handoff-exhausted-turn', 'handoff-exhausted-final', SAMPLE_BRIEF));
+      await sweepStaleSwarm();
+      expect(continuationByToken(token)?.handoffId).toBeTruthy();
+      expect(continuationByToken(token)?.sourceSend).toMatchObject({ state: 'sent', messageId: anchor });
+      expect((await request('GET', '/status')).body.repairs ?? []).toHaveLength(0);
+      expect(pendingCommands().filter(command => command.what.startsWith('resume:'))).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
 
   it('captures a completed handoff whose streaming and final assistant ids differ after remount', async () => {
     await pair();
@@ -4296,8 +4516,6 @@ describe('delivering a bootstrap', () => {
     const command = queueResume(sessionId, token)!;
     expect((await redeem(command.id, 'tab-1')).text).toContain('the lost brief');
     expect((await request('POST', '/compact', { body: { token, commandId: command.id, client: 'tab-1', destinationAttempt: true } })).body.allowed).toBe(true);
-    expect((await request('POST', '/compact', { body: { token, commandId: command.id, client: 'tab-1', destinationDispatch: true } })).body.armed).toBe(true);
-    expect((await request('POST', '/commands/redeem', { body: { id: command.id, client: 'tab-2' } })).status).toBe(409);
 
     const before = opened.length;
     const lost = await request('POST', '/compact', { body: { token, commandId: command.id, client: 'tab-1', destinationLost: true } });
@@ -8412,7 +8630,7 @@ describe('unattributed activity recovery', () => {
       expect(repair).toMatchObject({ conversationId: chat, reason: 'assistant-error' });
       // Deletion is independent authoritative evidence, not the preceding stream 404.
       await request('POST', '/conversation-deleted', { body: { conversationId: chat } });
-      expect((await request('POST', '/repairs/claim', { body: { token: repair!.token, conversationId: chat } })).body.allowed).toBe(false);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token, conversationId: chat } })).body.allowed).toBe(false);
       await events(chat, [{ kind: 'turn_end', time: Date.now(), turnId: 'deleted-turn', outcome: 'failed',
         detail: 'This chat was deleted in ChatGPT. Start a new chat to continue.' }]);
       for (const hours of [4, 8, 12, 24]) {
@@ -8634,11 +8852,11 @@ describe('unattributed activity recovery', () => {
     expect(await readEvents(session!.id, { kinds: ['chat_error'] })).toHaveLength(1);
     expect((await getSession(session!.id))?.activeTurnId).toBe('h2-turn');
     // A deferred live-stream action returns the same episode without spending its budget.
-    expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(true);
     await request('GET', `/status?repairFailed=${repair!.token}&repairAction=reloaded`);
     const retry = await maintenance();
     expect(retry?.reason).toBe('assistant-error');
-    expect((await request('POST', '/repairs/claim', { body: { token: retry!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: retry!.token } })).body.allowed).toBe(true);
     await maintenance(retry!.token, 'reloaded');
     await events(OTHER, [{ kind: 'chat_error', time: Date.now(), turnId: 'h2-turn', text: 'another notice', recoverable: true, reason: 'stream_gone' }]);
     expect(await maintenance()).toBeNull();
@@ -8667,7 +8885,7 @@ describe('unattributed activity recovery', () => {
     expect(await shown()).toHaveLength(1);
     // Once the browser has claimed the reload it is already happening; cancel no longer applies.
     const repair = await maintenance();
-    expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(true);
     expect(await cancelAssistantRecovery(session.id)).toBe(false);
   });
 
@@ -8759,7 +8977,7 @@ describe('unattributed activity recovery', () => {
       expect(swarmStateForCaller({ conversationId: PRIME }).agents.find(row => row.id === 'worker-1')?.state).toBe('sleeping');
       // No bridge maintenance sweep intervenes: the kernel's sleep must revoke the
       // issued token immediately, before Chrome can claim it or protect the old tab.
-      expect((await request('POST', '/repairs/claim', { body: { token: offered!.token } })).body.allowed).toBe(false);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: offered!.token } })).body.allowed).toBe(false);
       const status = await request('POST', '/status', { body: { openConversations: [WORKER] } });
       expect(status.body.repairs).toEqual([]);
       expect(status.body.nonDiscardableConversations).not.toContain(WORKER);
@@ -8771,7 +8989,7 @@ describe('unattributed activity recovery', () => {
       const staged = stageMessages({ conversationId: PRIME }, [{ to: 'worker-1', text: 'A new task.' }]);
       staged.commit();
       expect(swarmStateForCaller({ conversationId: PRIME }).agents.find(row => row.id === 'worker-1')?.state).toBe('waking');
-      expect((await request('POST', '/repairs/claim', { body: { token: offered!.token } })).body.allowed).toBe(false);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: offered!.token } })).body.allowed).toBe(false);
     } finally { clock.mockRestore(); }
   });
 
@@ -9095,7 +9313,7 @@ describe('unattributed activity recovery', () => {
       // the page paints it among the turn's tool calls rather than between turns.
       expect((await snapshots()).map((event) => event.turnId)).toEqual(['turn-reload-note']);
 
-      await request('POST', '/repairs/claim', { body: { token: handout!.token } });
+      await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout!.token } });
       const failed = await request(
         'GET',
         `/status?repairFailed=${encodeURIComponent(handout!.token)}&repairAction=reloaded`
@@ -9260,7 +9478,7 @@ describe('unattributed activity recovery', () => {
       if (kind === 'blocked') await setChatBlocked(PRIME, true);
       if (kind === 'resolved') await request('POST', '/correlations', { body: { conversationId: PRIME,
         calls: [{ requestId: id, messageId: `claim-proof-${kind}`, tool: 'read', order: 0, answered: false }] } });
-      expect((await request('POST', '/repairs/claim', { body: { token: first!.token } })).body.allowed).toBe(false);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: first!.token } })).body.allowed).toBe(false);
     } finally { vi.useRealTimers(); }
   });
 
@@ -9272,8 +9490,8 @@ describe('unattributed activity recovery', () => {
       await unattributedTurn('delayed-claim-request'); const openedAt = Date.now();
       await vi.advanceTimersByTimeAsync(15_000); const first = await maintenance();
       await vi.advanceTimersByTimeAsync(1); await unattributedTurn('delayed-claim-request');
-      expect((await request('POST', '/repairs/claim', { body: { token: first!.token } })).body.allowed).toBe(true);
-      expect((await request('POST', '/repairs/claim', { body: { token: first!.token } })).body.allowed).toBe(false);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: first!.token } })).body.allowed).toBe(true);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: first!.token } })).body.allowed).toBe(false);
       await maintenance(first!.token);
       await vi.advanceTimersByTimeAsync(openedAt + 300_000 - Date.now());
       expect(await maintenance()).toBeNull();
@@ -9842,7 +10060,7 @@ describe('unattributed activity recovery', () => {
       await sweepStaleSwarm(Date.now());
       const repair = await maintenance();
       expect(repair).toMatchObject({ conversationId: chat, reason: 'silence' });
-      expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(true);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(true);
       // An acknowledged claim retains custody rather than buying another reload.
       expect(await maintenance()).toBeNull();
       await maintenance(repair!.token, 'reloaded');
@@ -9983,7 +10201,7 @@ describe('unattributed activity recovery', () => {
       await sweepStaleSwarm(Date.now());
       const repair = await maintenance();
       expect(repair).toMatchObject({ conversationId: OTHER, reason: 'silence' });
-      expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(true);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(true);
       await maintenance(repair!.token, 'reopened');
       // The restored page can discover a real final and retire this source's activity.
       // Outbox/Goal pickup is exercised with the production hooks in input integration.
@@ -10071,7 +10289,7 @@ describe('unattributed activity recovery', () => {
     const session = (await findSessionByConversation(PRIME))!;
     expect((await sessionControlsFor(session.id)).recovery).toEqual([{ kind: 'assistant-error', deadline: expect.any(Number) }]);
     await request('POST', '/closed', { body: { conversationId: PRIME, manual: true } });
-    expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(false);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(false);
     expect(await maintenance(repair!.token)).toBeNull();
   });
 
@@ -10641,10 +10859,10 @@ describe('unattributed activity recovery', () => {
       expect((await sessionControlsFor(session.id)).recovery).toEqual([{
         kind: 'silence', deadline: Math.max(before[0]!.deadline, retryAt)
       }]);
-      expect((await request('POST', '/repairs/claim', { body: { token: handout!.token } })).body.allowed).toBe(false);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout!.token } })).body.allowed).toBe(false);
 
       await vi.advanceTimersByTimeAsync(31_001);
-      expect((await request('POST', '/repairs/claim', { body: { token: handout!.token } })).body.allowed).toBe(true);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout!.token } })).body.allowed).toBe(true);
     } finally { vi.useRealTimers(); }
   });
 
@@ -10849,7 +11067,7 @@ describe('unattributed activity recovery', () => {
       await events(PRIME, [{ kind: 'chat_error', time: Date.now(), text: 'Message delivery timed out', recoverable: true }]);
       const error = await maintenance();
       expect(error?.reason).toBe('assistant-error');
-      expect((await request('POST', '/repairs/claim', { body: { token: error!.token } })).body.allowed).toBe(true);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: error!.token } })).body.allowed).toBe(true);
       // Chrome reloaded, but the action receipt never reached main.
       await vi.advanceTimersByTimeAsync(CHAT_SILENCE_MS);
       await sweepStaleSwarm(Date.now());
@@ -10873,11 +11091,11 @@ describe('unattributed activity recovery', () => {
     await events(PRIME, [openTurn('failed-browser-action'), { kind: 'chat_error', time: Date.now(),
       text: 'Connection interrupted', recoverable: true }]);
     const first = await maintenance();
-    expect((await request('POST', '/repairs/claim', { body: { token: first!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: first!.token } })).body.allowed).toBe(true);
     const failed = await request('GET', `/status?repairFailed=${first!.token}&repairAction=reloaded`);
     const retry = failed.body.repairs?.[0] ?? await maintenance();
     expect(retry?.reason).toBe('assistant-error');
-    expect((await request('POST', '/repairs/claim', { body: { token: retry!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: retry!.token } })).body.allowed).toBe(true);
   });
 
   it('says a recovered answer is being waited for instead of a failed reload, and still retries after it', async () => {
@@ -10894,7 +11112,7 @@ describe('unattributed activity recovery', () => {
     let handout = await maintenance();
     for (let pass = 0; pass < 2; pass++) {
       expect(handout?.reason).toBe('assistant-error');
-      expect((await request('POST', '/repairs/claim', { body: { token: handout!.token } })).body.allowed).toBe(true);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout!.token } })).body.allowed).toBe(true);
       const waiting = await request('GET', `/status?repairFailed=${handout!.token}&repairAction=reloaded&why=streaming`);
       expect(await rows()).toEqual(['ChatGPT is answering again; recovery waits until it finishes.']);
       handout = waiting.body.repairs?.[0] ?? await maintenance();
@@ -10903,7 +11121,7 @@ describe('unattributed activity recovery', () => {
     expect(lines('is answering again') - waitingBefore).toBe(1);
     expect(lines('reported failed assistant-error recovery') - failedBefore).toBe(0);
     // A real failure afterwards still says so, with the page's reason.
-    expect((await request('POST', '/repairs/claim', { body: { token: handout!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout!.token } })).body.allowed).toBe(true);
     await request('GET', `/status?repairFailed=${handout!.token}&repairAction=reloaded&why=changed&detail=changed-progress%3Aapp-progress`);
     // The exact cause, in words (#1086): ten refusals in a row used to say only "the page changed".
     expect(getLog().some((entry) => entry.message.includes(
@@ -10912,7 +11130,7 @@ describe('unattributed activity recovery', () => {
     expect(await rows()).toEqual(['Reload failed while recovering an interrupted response; will retry.']);
     // A detail the app does not know is dropped, never echoed into the log.
     handout = await maintenance();
-    expect((await request('POST', '/repairs/claim', { body: { token: handout!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout!.token } })).body.allowed).toBe(true);
     await request('GET', `/status?repairFailed=${handout!.token}&repairAction=reloaded&why=changed&detail=%3Cscript%3E`);
     expect(getLog().at(-1)!.message).toMatch(/\(reloaded: the page changed before the action\)$/);
   });
@@ -10927,7 +11145,7 @@ describe('unattributed activity recovery', () => {
     ]);
     const repair = await maintenance();
     expect(repair?.reason).toBe('assistant-error');
-    expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(true);
 
     const preserved = await request('GET', `/status?repaired=${repair!.token}&repairAction=preserved`);
     expect(preserved.status).toBe(200);
@@ -10940,7 +11158,7 @@ describe('unattributed activity recovery', () => {
       text: 'Connection interrupted. Waiting for the complete answer', recoverable: true }]);
     const retry = await maintenance();
     expect(retry?.reason).toBe('assistant-error');
-    expect((await request('POST', '/repairs/claim', { body: { token: retry!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: retry!.token } })).body.allowed).toBe(true);
   });
 
   it('does not refund error recovery when reload remints a generation for the same authored question', async () => {
@@ -10980,7 +11198,7 @@ describe('unattributed activity recovery', () => {
       endTurn('claim-answer', 'completed')
     ]);
     else await events(PRIME, [{ kind: 'user_message', time: Date.now(), messageId: 'claim-next-question', text: 'Now extend it' }, openTurn('claim-next-answer')]);
-    const claimed = await request('POST', '/repairs/claim', { body: { token: repair!.token } });
+    const claimed = await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } });
     expect(claimed.body.allowed).toBe(false);
     expect(await maintenance()).toBeNull();
   });
@@ -10991,9 +11209,9 @@ describe('unattributed activity recovery', () => {
     await events(PRIME, [{ kind: 'chat_error', time: Date.now(), turnId: 'claim-once', text: 'Connection interrupted', recoverable: true }]);
     const repair = await maintenance();
     expect((await maintenance())?.token).toBe(repair!.token);
-    expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(true);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(true);
     expect(await maintenance()).toBeNull();
-    expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(false);
+    expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(false);
     expect(await maintenance(repair!.token)).toBeNull();
   });
 
@@ -12224,7 +12442,7 @@ describe('unattributed activity recovery', () => {
       await sweepStaleSwarm(Date.now());
       const repair = (await maintenanceBatch()).find(row => row.conversationId === chat);
       expect(repair).toMatchObject({ conversationId: chat, reason: 'silence' });
-      expect((await request('POST', '/repairs/claim', { body: { token: repair!.token } })).body.allowed).toBe(true);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: repair!.token } })).body.allowed).toBe(true);
       // A subsequently discovered real final consumes the same source and its repair.
       await recordFinalForTest(chat, turnId);
       await events(chat, [endTurn(turnId, 'completed')]);
@@ -15065,7 +15283,7 @@ describe('the goal loop over the bridge', () => {
         kind: 'chat_error', time: Date.now(), recoverable: false, blocking: true, retryAt,
         text: 'ChatGPT temporarily rate-limited loading this conversation history.'
       }] } });
-      expect((await request('POST', '/repairs/claim', { body: { token: handout!.token } })).body.allowed).toBe(false);
+      expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout!.token } })).body.allowed).toBe(false);
       expect(recoveryBrowserWake).not.toHaveBeenCalled();
 
       // No further browser poll occurs: the handed token remains unclaimed while the browser is
@@ -15400,7 +15618,7 @@ describe('the goal loop over the bridge', () => {
         // An unclaimed offer retains the exact token. After claiming, missing
         // acknowledgement may not authorize another browser action.
         expect((await request('GET', '/status')).body.repairs).toEqual([expect.objectContaining({ token: handout!.token })]);
-        expect((await request('POST', '/repairs/claim', { body: { token: handout!.token } })).body.allowed).toBe(true);
+        expect((await request('POST', '/repairs/claim', { body: { observeOnly: true, token: handout!.token } })).body.allowed).toBe(true);
         expect((await request('GET', '/status')).body.repairs).toEqual([]);
         expect((await request('GET', '/status')).body.repairs).toEqual([]);
         expect((await request('GET', `/status?repaired=${handout!.token}&repairAction=reloaded`)).status).toBe(200);

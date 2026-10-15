@@ -737,14 +737,23 @@ describe('committing', () => {
     expect(await bindContinuationDestinationMessageNow(token, CHAT_B, 'another-message')).toBe(false);
   });
 
-  it('hands an armed replacement dispatch back on proof that nothing left the page, never once sent', async () => {
+  it('never releases an uncertain replacement submission on missing composer evidence', async () => {
+    const { token } = await readyContinuation();
+    await claimContinuationNow(token, 'tab-1');
+    await beginContinuationDestinationSendNow(token);
+    await dispatchContinuationDestinationSendNow(token);
+    const checkpoint = continuationByToken(token)!.destinationSend;
+    expect(await releaseContinuationDestinationSendNow(token)).toBe(false);
+    expect(continuationByToken(token)!.destinationSend).toEqual(checkpoint);
+    expect((await beginContinuationDestinationSendNow(token))?.allowed).toBe(false);
+  });
+
+  it('releases a lost replacement draft only before dispatch, never once sent', async () => {
     // 2026-09-02: the brief landed in the replacement chat and the user's Escape emptied the
     // composer in the same instant. The armed dispatch then sat for its six hours.
     const { token } = await readyContinuation();
     await claimContinuationNow(token, 'tab-1');
     expect((await beginContinuationDestinationSendNow(token))?.allowed).toBe(true);
-    expect(await dispatchContinuationDestinationSendNow(token)).toBe(true);
-    expect((await beginContinuationDestinationSendNow(token))?.allowed).toBe(false);
 
     expect(await releaseContinuationDestinationSendNow(token)).toBe(true);
     expect(continuationByToken(token)).toMatchObject({
@@ -1270,7 +1279,147 @@ describe('the swarm handover', () => {
 });
 
 describe('restart lifetime recovery', () => {
-  it('gives up an automatic handover that never lands, so the source chat gets its tools back', async () => {
+  it.each([false, true].flatMap(automatic =>
+    [undefined, 'not-attempted', 'attempted-unresolved'].map(checkpoint => ({ automatic, checkpoint }))
+  ))('preserves prior source dispatch evidence over a legacy $checkpoint checkpoint (automatic $automatic)', async ({ automatic, checkpoint }) => {
+    vi.useFakeTimers();
+    const summary = await createSession({ title: 'historical dispatch reset', conversationId: CHAT_A });
+    const ticket = await openContinuationNow(summary.id, CHAT_A, automatic);
+    await beginContinuationSourceSendNow(ticket.token);
+    await dispatchContinuationSourceSendNow(ticket.token);
+    const saved = snapshotContinuations();
+    const raw = saved.entries[0]!;
+    const askedAt = raw.askedAt;
+    expect(askedAt).toBeGreaterThan(0);
+    // The retired DOM-absence release actually wrote attempted-unresolved without
+    // clearing askedAt. Missing/contradictory older checkpoints cannot erase it either.
+    if (checkpoint === undefined) delete raw.sourceSend;
+    else raw.sourceSend = { state: checkpoint as 'not-attempted' | 'attempted-unresolved', messageId: null };
+    raw.armed = false;
+    for (const age of [0, 7 * 60 * 60_000]) {
+      vi.setSystemTime(Number(askedAt) + age);
+      resetContinuationsForTests();
+      await restoreContinuations(saved);
+      expect(continuationByToken(ticket.token)).toMatchObject({ state: 'awaiting-summary', askedAt,
+        sourceSend: { state: 'dispatched-unresolved' }, destinationSend: { state: 'not-attempted' } });
+      expect((await beginContinuationSourceSendNow(ticket.token))?.allowed).toBe(false);
+      expect(await dispatchContinuationSourceSendNow(ticket.token)).toBe(false);
+      expect(snapshotContinuations().entries[0]?.askedAt).toBe(askedAt);
+      expect((await getSession(summary.id))?.conversationId).toBe(CHAT_A);
+    }
+  });
+
+  it.each([undefined, 'not-attempted', 'attempted-unresolved'])('keeps genuinely predispatch legacy %s intent claimable', async checkpoint => {
+    const summary = await createSession({ title: 'legacy unsent intent', conversationId: CHAT_A });
+    const ticket = await openContinuationNow(summary.id, CHAT_A);
+    const saved = snapshotContinuations();
+    const raw = saved.entries[0]!;
+    if (checkpoint === undefined) delete raw.sourceSend;
+    else raw.sourceSend = { state: checkpoint as 'not-attempted' | 'attempted-unresolved', messageId: null };
+    raw.armed = false;
+    expect(raw.askedAt).toBeNull();
+    resetContinuationsForTests();
+    await restoreContinuations(saved);
+    expect((await beginContinuationSourceSendNow(ticket.token))?.allowed).toBe(true);
+  });
+
+  it('does not infer source dispatch from a pre-Send cancellation timestamp', async () => {
+    const summary = await createSession({ title: 'unsent cancellation', conversationId: CHAT_A });
+    const ticket = await openContinuationNow(summary.id, CHAT_A);
+    await abortContinuationSourceBeforeSendNow(ticket.token, 'handoff_never_sent');
+    const saved = snapshotContinuations();
+    expect(saved.entries[0]?.askedAt).toBeGreaterThan(0);
+    resetContinuationsForTests();
+    await restoreContinuations(saved);
+    expect(continuationByToken(ticket.token)).toMatchObject({ state: 'aborted', sourceSend: { state: 'not-attempted' } });
+  });
+
+  it.each([false, true])('retains an uncertain source send after its deadline and restart (automatic %s)', async automatic => {
+    vi.useFakeTimers();
+    const summary = await createSession({ title: 'uncertain handoff custody', conversationId: CHAT_A });
+    const ticket = await openContinuationNow(summary.id, CHAT_A, automatic);
+    await beginContinuationSourceSendNow(ticket.token);
+    await dispatchContinuationSourceSendNow(ticket.token, 'source-before');
+    const checkpoint = { ...continuationByToken(ticket.token)!.sourceSend };
+    const saved = snapshotContinuations();
+    vi.setSystemTime(Date.now() + 7 * 60 * 60_000);
+    expect(continuationForSession(summary.id)).toMatchObject({ token: ticket.token, state: 'awaiting-summary',
+      sourceSend: checkpoint, captureIssue: 'deadline-exceeded' });
+    resetContinuationsForTests();
+    await restoreContinuations(saved);
+    expect(continuationForSession(summary.id)).toMatchObject({ token: ticket.token, state: 'awaiting-summary',
+      sourceSend: checkpoint, captureIssue: 'deadline-exceeded' });
+    expect((await beginContinuationSourceSendNow(ticket.token))?.allowed).toBe(false);
+    expect((await getSession(summary.id))?.conversationId).toBe(CHAT_A);
+  });
+
+  it('refuses unknown persisted send states without clearing the current ledger', async () => {
+    const summary = await createSession({ title: 'unknown checkpoint', conversationId: CHAT_A });
+    const ticket = await openContinuationNow(summary.id, CHAT_A);
+    await beginContinuationSourceSendNow(ticket.token);
+    await dispatchContinuationSourceSendNow(ticket.token);
+    const saved = snapshotContinuations();
+    (saved.entries[0]!.sourceSend as { state: string }).state = 'unknown-future-submission';
+    await expect(restoreContinuations(saved)).rejects.toThrow('checkpoint');
+    expect(continuationByToken(ticket.token)?.sourceSend.state).toBe('dispatched-unresolved');
+  });
+
+  it('retains terminal send checkpoints through age and restart', async () => {
+    vi.useFakeTimers();
+    const summary = await createSession({ title: 'terminal custody', conversationId: CHAT_A });
+    const ticket = await openContinuationNow(summary.id, CHAT_A);
+    await beginContinuationSourceSendNow(ticket.token);
+    await dispatchContinuationSourceSendNow(ticket.token);
+    await abortContinuationNow(ticket.token, 'explicit cancellation');
+    vi.setSystemTime(Date.now() + 24 * 60 * 60_000);
+    expect(continuationByToken(ticket.token)?.sourceSend.state).toBe('dispatched-unresolved');
+    const saved = snapshotContinuations();
+    resetContinuationsForTests();
+    await restoreContinuations(saved);
+    expect(continuationByToken(ticket.token)).toMatchObject({ state: 'aborted', sourceSend: { state: 'dispatched-unresolved' } });
+  });
+
+  it('refuses malformed sent transaction identity before replacing the ledger', async () => {
+    const summary = await createSession({ title: 'invalid persisted identity', conversationId: CHAT_A });
+    const ticket = await openContinuationNow(summary.id, CHAT_A);
+    await beginContinuationSourceSendNow(ticket.token);
+    await dispatchContinuationSourceSendNow(ticket.token);
+    const saved = snapshotContinuations();
+    (saved.entries[0] as { state: string }).state = 'unknown-future-transaction';
+    await expect(restoreContinuations(saved)).rejects.toThrow('identity');
+    expect(continuationByToken(ticket.token)?.sourceSend.state).toBe('dispatched-unresolved');
+  });
+
+  it('keeps legacy claimed replacement delivery uncertain when checkpoint fields are absent', async () => {
+    const { token } = await readyContinuation();
+    await claimContinuationNow(token, 'legacy-page');
+    const saved = snapshotContinuations();
+    const raw = saved.entries.find(entry => entry.token === token)!;
+    delete raw.sourceSend; delete raw.destinationSend; raw.armed = true;
+    resetContinuationsForTests();
+    await restoreContinuations(saved);
+    expect(continuationByToken(token)?.destinationSend.state).toBe('dispatched-unresolved');
+    expect((await beginContinuationDestinationSendNow(token))?.allowed).toBe(false);
+    expect(await releaseContinuationDestinationSendNow(token)).toBe(false);
+  });
+
+  it('refuses duplicate ticket records before they can overwrite dispatch custody', async () => {
+    const summary = await createSession({ title: 'duplicate custody', conversationId: CHAT_A });
+    const ticket = await openContinuationNow(summary.id, CHAT_A);
+    await beginContinuationSourceSendNow(ticket.token);
+    await dispatchContinuationSourceSendNow(ticket.token);
+    const saved = snapshotContinuations();
+    saved.entries.push({ ...saved.entries[0]!, sourceSend: { state: 'not-attempted', messageId: null } });
+    await expect(restoreContinuations(saved)).rejects.toThrow('duplicate');
+    expect(continuationByToken(ticket.token)?.sourceSend.state).toBe('dispatched-unresolved');
+  });
+
+  it('fails closed on an unsupported continuation ledger instead of treating it as empty', async () => {
+    await expect(restoreContinuations({ version: 2, entries: [], savedAt: Date.now() } as unknown as import('../src/main/session/continuation.js').ContinuationSnapshot))
+      .rejects.toThrow('continuation');
+  });
+
+  it('keeps automatic send custody and source fencing after its waiting deadline', async () => {
     vi.useFakeTimers();
     const summary = await createSession({ title: 'stuck auto handover', conversationId: CHAT_A });
     const opened = await openContinuationNow(summary.id, CHAT_A, true);
@@ -1290,14 +1439,14 @@ describe('restart lifetime recovery', () => {
     const saved = snapshotContinuations();
 
     vi.setSystemTime(Date.now() + 2);
-    expect(compactingConversation(CHAT_A)).toBeNull();
-    expect(continuationForSession(summary.id)).toBeNull();
+    expect(compactingConversation(CHAT_A)?.token).toBe(opened.token);
+    expect(continuationForSession(summary.id)?.captureIssue).toBe('deadline-exceeded');
 
     // The same verdict when a restart finds the record on disk.
     resetContinuationsForTests();
     await restoreContinuations(saved);
-    expect(compactingConversation(CHAT_A)).toBeNull();
-    expect(continuationForSession(summary.id)).toBeNull();
+    expect(compactingConversation(CHAT_A)?.token).toBe(opened.token);
+    expect(continuationForSession(summary.id)?.captureIssue).toBe('deadline-exceeded');
   });
 
   it('keeps a committed record committed when the session has since moved on again', async () => {
@@ -1952,7 +2101,7 @@ describe('the window in which a replacement chat is expected', () => {
  * second test here is for.
  */
 describe('an exact handoff response owns its waiting deadline', () => {
-  it('survives growing output and restart but expires after unchanged snapshots', async () => {
+  it('survives growing output and restart and reports a deadline after unchanged snapshots', async () => {
     vi.useFakeTimers();
     try {
       const session = await createSession({ title: 'long handoff', conversationId: CHAT_A });
@@ -1972,8 +2121,9 @@ describe('an exact handoff response owns its waiting deadline', () => {
       expect(continuationByToken(opened.token)?.state).toBe('awaiting-summary');
       expect(await bindContinuationSourceMessageNow(opened.token, 'exact-user-message', 500)).toBe(true);
       vi.setSystemTime(Date.now() + CONTINUATION_WRITING_TTL_MS);
-      expect(continuationByToken(opened.token)?.state).toBe('aborted');
-      expect(await bindContinuationSourceMessageNow(opened.token, 'exact-user-message', 1000)).toBe(false);
+      expect(continuationByToken(opened.token)?.captureIssue).toBe('deadline-exceeded');
+      expect(await bindContinuationSourceMessageNow(opened.token, 'exact-user-message', 1000)).toBe(true);
+      expect(continuationByToken(opened.token)?.captureIssue).toBeNull();
     } finally { vi.useRealTimers(); }
   });
 
@@ -1999,11 +2149,11 @@ describe('an exact handoff response owns its waiting deadline', () => {
       vi.setSystemTime(sentAt + CONTINUATION_WRITING_TTL_MS - 1);
       expect(continuationByToken(opened.token)?.state).toBe('awaiting-summary');
       vi.setSystemTime(sentAt + CONTINUATION_WRITING_TTL_MS + 1);
-      expect(continuationByToken(opened.token)?.state).toBe(pro ? 'awaiting-summary' : 'aborted');
+      expect(continuationByToken(opened.token)?.captureIssue).toBe(pro ? null : 'deadline-exceeded');
 
       // The Pro writing clock is still a clock: a genuinely silent ticket expires.
       vi.setSystemTime(Date.now() + CONTINUATION_PRO_WRITING_TTL_MS);
-      expect(continuationForSession(session.id)).toBeNull();
+      expect(continuationForSession(session.id)?.captureIssue).toBe('deadline-exceeded');
     } finally { vi.useRealTimers(); }
   });
 
@@ -2027,7 +2177,7 @@ describe('an exact handoff response owns its waiting deadline', () => {
 
       // Past the Pro writing clock after restore, it expires on the same terms as live.
       vi.setSystemTime(Date.now() + CONTINUATION_PRO_WRITING_TTL_MS);
-      expect(continuationByToken(opened.token)?.state).toBe('aborted');
+      expect(continuationByToken(opened.token)?.captureIssue).toBe('deadline-exceeded');
     } finally { vi.useRealTimers(); }
   });
 
@@ -2048,7 +2198,7 @@ describe('an exact handoff response owns its waiting deadline', () => {
       expect(continuationByToken(opened.token)?.state).toBe('awaiting-chat');
       // Opening the replacement is app-paced work; the ordinary ten-minute clock is back.
       vi.setSystemTime(Date.now() + CONTINUATION_TTL_MS + 1);
-      expect(continuationByToken(opened.token)?.state).toBe('aborted');
+      expect(continuationByToken(opened.token)?.captureIssue).toBe('deadline-exceeded');
     } finally { vi.useRealTimers(); }
   });
 });

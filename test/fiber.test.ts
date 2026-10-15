@@ -261,6 +261,7 @@ interface TurnEvidence {
     createTime?: number | null;
     references?: Array<{ index: number; sources: Array<{ title: string; url: string; source?: string; date?: number; snippet?: string }> }>;
     rawText: string;
+    textIncomplete?: boolean;
     renderedHtml: string;
   }>;
   activities?: Array<{ messageId: string; label: string; order: number }>;
@@ -1030,9 +1031,19 @@ describe('the calls a turn says it made', () => {
         order: 3,
         createTime: null,
         rawText: publicText,
+        textIncomplete: false,
         renderedHtml: ''
       }
     ]);
+  });
+
+  it('marks authored text clipped by the public model budget as incomplete', async () => {
+    const id = '6d83d23a-24b5-474d-b0a6-410f875ac986';
+    const prose = 'x'.repeat(260_000) + 'END_OF_BRIEF';
+    const result = await scan([], [{ id: 'clipped-final', messages: [authored(id, prose, { endTurn: true, status: 'finished_successfully' })] }]);
+    const message = result.turns[0]!.messages[0]!;
+    expect(message.rawText.length).toBeLessThan(prose.length);
+    expect(message.textIncomplete).toBe(true);
   });
 
   it('retains the end of a long final from an exact GPT-6 DIL selection wrapper', async () => {
@@ -1258,6 +1269,7 @@ describe('the calls a turn says it made', () => {
         order: 0,
         createTime: null,
         rawText: 'A plain live update.',
+        textIncomplete: false,
         renderedHtml: 'A plain live update.',
         sectionIndex: 0
       }
