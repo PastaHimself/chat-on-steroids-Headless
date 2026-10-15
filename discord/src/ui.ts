@@ -83,14 +83,23 @@ export function sessionStatusIndicator(detail: any): { emoji: string; text: stri
   if (live?.stopPending) {
     return { emoji: '🔴', text: 'Stop Requested', color: EmbedColor.Danger };
   }
-  if (live?.activeTurnId) {
-    return { emoji: '🟢', text: 'Working', color: EmbedColor.Success };
-  }
-  if (live?.goalWait) {
-    return { emoji: '🟡', text: 'Waiting', color: EmbedColor.Warning };
+  if (live?.recovery?.some((row: any) => row.kind === 'provider-limit')) {
+    return { emoji: '🟡', text: 'Rate Limited', color: EmbedColor.Warning };
   }
   if (live?.job?.needsAttention) {
     return { emoji: '🟡', text: 'Attention Needed', color: EmbedColor.Warning };
+  }
+  if (live?.recovery?.some((row: any) => row.kind === 'pickup-stopped')) {
+    return { emoji: '🟡', text: 'Recovery Stopped', color: EmbedColor.Warning };
+  }
+  if (live?.recovery?.some((row: any) => ['post-reload', 'assistant-error', 'tab-recovery', 'pickup'].includes(row.kind))) {
+    return { emoji: '🟡', text: 'Recovering', color: EmbedColor.Warning };
+  }
+  if (live?.activeTurnId) {
+    return { emoji: '🔵', text: 'Turn Open', color: EmbedColor.Info };
+  }
+  if (live?.goalWait) {
+    return { emoji: '🟡', text: 'Waiting', color: EmbedColor.Warning };
   }
   return { emoji: '⚪', text: 'Idle', color: EmbedColor.Info };
 }
@@ -122,10 +131,11 @@ export function sessionDescription(detail: any): string {
   return [
     `Session: ${session.title || 'Untitled session'}`,
     `Observed model: ${session.model ?? 'unknown'}`,
-    `State: ${status.emoji} ${live?.activeTurnId ? 'working' : live?.stopPending ? 'stop requested' : 'no proven active turn'}`,
+    `State: ${status.emoji} ${status.text.toLowerCase()}`,
     `Automation: ${live?.automation ?? 'unavailable'}`,
     live?.blocked ? `Blocked: ${live.blocked}` : '',
     live?.goalWait ? `Waiting: ${live.goalWait.reason}` : '',
+    ...(live?.recovery ?? []).map((row: any) => `Recovery: ${row.kind}${Number.isFinite(row.deadline) ? ` · ${new Date(row.deadline).toISOString()}` : ''}`),
     ...(live?.job ? [
       `Compact & Resume: ${live.job.stage}`,
       `Handoff Send: ${live.job.sourceSend ?? 'unknown'}`,
@@ -135,7 +145,7 @@ export function sessionDescription(detail: any): string {
     ] : []),
     `Last recorded outcome: ${session.lastTurnOutcome ?? 'unknown'}`,
     `Updated: ${new Date(session.updatedAt).toISOString()}`,
-    'A stopped generation alone does not prove task success.'
+    'An open recorded turn does not prove current provider activity. A stopped generation alone does not prove task success.'
   ].filter(Boolean).join('\n');
 }
 

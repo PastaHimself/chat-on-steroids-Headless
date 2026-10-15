@@ -21,7 +21,7 @@ changed lines before applying an older patch. Document the work and its actual v
 the code currently does it. Known implementation gaps are collected in §21 instead of being
 mixed into the happy path as features.
 
-Source alignment: **2026-09-17**, including the 2.1.14 release candidate. App/extension **2.1.14**,
+Runtime declarations rechecked **2026-10-15** for the Headless follow-up. App/extension **2.1.34**,
 bridge protocol **14** in the checked declarations (`package.json`, `src/main/version.ts`,
 `extension/manifest.json`). This does not prove release, installation or live Chrome behavior.
 
@@ -203,6 +203,7 @@ define the tool/config/wire contract. README and worklogs are secondary and can 
 | Strict chat allowlist | Off. | When on, every model-facing tool call needs exact attribution. Existing/direct browser chats require explicit Trust from the chat list. A fresh chat opened by the CoS composer gains an explicit Trust entry only after its exact opening row authoritatively binds to the new conversation. Broker-owned workers follow their exact owning prime and a committed Compact & Resume successor follows its durable source lineage. Block still wins, revocation is dynamic, and unattributed calls are refused even when the ordinary unattributed allowance is on. |
 | Recover ordinary/agent tabs | Off. | Goal/Loop can independently justify recovery; history alone cannot. |
 | Automatic Continue | On. | Unfinished-response recovery also serves enabled Goal/Loop. This switch controls ordinary chats; explicit Off survives and malformed config disables it. See §14. |
+| Timed fresh turns | Off (`ui.rotateTurnMinutes=0`, including migration). | Opt-in 1–120 minutes, normally 30. Only exactly owned ordinary non-Pro turns after attributed tool results; active broker families, workers/helpers, Goal/Loop and compaction stay excluded. Outbox receipts and tool drain gate Send. See §14. |
 | Goal / Loop | Off, preferred mode Goal. Both decision backends default to ChatGPT, helper `gpt-6` High (`DEFAULT_HELPER_CHAT_MODEL`, which High runs on its thinking lane); a config holding a superseded helper (`SUPERSEDED_HELPER_CHAT_MODELS`: `gpt-5.6-sol`, `gpt-6-thinking`) adopts it on load. | API uses the configured OpenRouter/custom endpoint and stored model. These defaults are not account-availability proof. |
 | Ordinary new-chat model | Automatic: no persisted model or reasoning override. | Optional `ui.defaultChatModel` / `ui.defaultChatReasoning` apply only to a fresh ordinary chat before it has a conversation selection. A recorded conversation or accepted opening input wins. Worker and Goal/Loop/Plan defaults remain separate. |
 | Desktop | Windows on; macOS retains its off default and separate native OS consent; Linux supports extension browser control. | Existing screen/control grants also govern browser tools; unsupported native clipboard remains masked. No new per-tab permission dialog. |
@@ -278,6 +279,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Goal control | `goal.ts` / `goal-objectives`, `goal-switches`, `goal-replies` | Objective, mode and reply debt are separate concepts; draft memory is disposable. See §21 for remaining atomicity gaps. |
 | Stop/block/finish | Stop command; `blocked-chats.ts` durable set; finish facts in recorded progress/session projection | Each names exact chat/turn; no false terminal event. |
 | Browser repair | `bridge.ts` process-memory episodes | Re-earn from live evidence; never restore an old reload token as action authority. |
+| Provider history restrictions | `provider-history-backoff.ts` / `state/provider-history-backoff.json` | Latest validated Retry-After persists before observation acknowledgment and restores before bridge traffic. Corrupt/unsupported state fails closed. No retry timer or send authority. |
 | Confirmed provider deletion | `store.ts` / `SessionSummary.providerUnavailable[conversationId]`, reconstructed from exact `chat_error` evidence | Persist before browser acknowledgment. A resume-stream 404 is not deletion. Page returns, MCP observations and restarts cannot clear it. Keep the durable session, objective, workers and receipts; fence new effects and old-chat repair. |
 | Catalog/usage | Saved successful `chat-models`; derived `usage-cache`; live usage snapshot | Catalog is observation, not a send receipt; estimates are not provider billing. |
 | Connector refresh | `plugin-refresh.ts` / `state/plugin-refresh.json` | Exact installed app id + schema fingerprint, claimed before Refresh, verified after. |
@@ -675,7 +677,13 @@ and never treats the limit itself as recovery authority. A deferred Goal/compact
 start reuses the existing single recovery scheduler when the deadline expires. A valid
 `Retry-After` or `x-oai-history-initial-retry-after` response header takes precedence;
 when neither is usable, a 60-second **local fallback** applies instead. This fallback is not
-a claim that ChatGPT supplied a retry deadline. The existing pending-repair and terminal
+a claim that ChatGPT supplied a retry deadline. The separate deadline owner
+`provider-history-backoff.ts` durably records every accepted extension deadline, including those
+whose timeline notices coalesce. Startup restores these exact per-conversation restrictions
+before commands/recovery become available; expired deadlines drop, earlier ones never shorten
+a newer restriction, and corrupt/unsupported state prevents bridge startup. A failed write
+retains the restrictive memory fence and withholds the HTTP receipt for replay. Tests:
+`provider-history-backoff`, `bridge`. The existing pending-repair and terminal
 pickup-stopped countdowns retain their prior precedence over the generic limit notice.
 Once a chat's history has been limited, the page's Retry presses after Retry-After back off to
 0 s, 2, 4, 8, then 15 minutes (`LOAD_FAILURE_LIMITED_BACKOFF_MS`), instead of the once-a-minute
@@ -2339,7 +2347,7 @@ a fixed `gpt-6-instant` ("immediate answers"), but no picker view offers it and 
 select it; the app offers exactly what the native picker offers and never substitutes a hidden slug.
 Ambiguous triggers and unrecognized state remain unknown. MAIN helper replacement removes the
 previous listener across protocol versions, because the picker/plugin reply protocols are shared.
-The isolated recorder version is 23; the MAIN helper remains version 22. Shell exchanges are
+The isolated recorder version is 25; the MAIN helper remains version 22. Shell exchanges are
 read only under the native main/thread anchors. Their `entry.turn.items` supply actual user/assistant ids, public text and
 per-call completion; DOM slot keys only join those exact items to the current scan. Missing ids
 do not become invented messages. Only a completed final item in a successfully completed turn
@@ -2824,8 +2832,21 @@ An authorized silence repair may preserve an exact transport-error page when its
 `continueAfterRepair`. Continue still belongs to the existing durable outbox and rechecks Stop,
 tools, final and native receipt before Send. Recovery Off retains the reload behavior. A
 preserved-action receipt records its own time and says provider recovery is unconfirmed.
-No timed turn rotation is enabled: native Stop cannot prove server-side cancellation, and
-workers or a pending Compact & Resume transaction may still own work.
+Timed fresh turns are opt-in (`ui.rotateTurnMinutes`, 0 by default; 1–120, normally 30).
+`turn-rotation.ts` considers an exact recorded source start only after an attributed tool
+result. `input.ts::fileRotationInput` freezes one automatic `purpose: rotation` browser row
+for that source, retaining cancelled/uncertain custody across restart. Terminal-history trimming
+keeps its guard until the canonical session proves departure or a different active turn;
+idle/unknown state cannot erase it. It uses the existing
+native active-turn steering path and never presses Stop. Native Stop cannot prove server-side
+cancellation. Pro, workers/helpers, active broker families, Goal/Loop, compaction, provider
+restrictions, manual departure, incomplete history and running/settling tools veto Send.
+Only the exact still-running source may accept it; it cannot become an after-turn instruction.
+User input replaces it before Send authorization. Old companions lacking final authorization
+cannot claim it. Elapsed time never grants another possibly delivered rotation. The bridge
+lifetime is rechecked around asynchronous preparation; a retired lifetime cannot wake a browser.
+Default/malformed settings keep it off until the installed browser is validated. There is no
+extra scheduler. Tests: `turn-rotation`, `bridge-turn-rotation`, `session-input`.
 
 `tabRecoveryWanted()` means **active Goal/Loop OR the user's recoverAgentTabs switch**. It gates
 silence/no-tab recovery for workers, primes and ordinary chats. Reload repair for exact errors,
@@ -3226,6 +3247,12 @@ hydration; an empty loading DOM must not be treated as a different conversation.
 rechecks the composer before insertion. After Compact & Resume's source-send permission round-trip,
 it reacquires the visible editable composer and validates the exact frozen prompt: a React remount alone
 does not invalidate an unchanged draft, while an actual text change still fails closed and preserves the draft.
+The inserted source handoff request uses the same raw-then-one-Markdown-unescape
+witnessed Send receipt as the destination bootstrap. Its original document, native message id
+and pre-send assistant baseline still decide ownership. A fast reply to an escaped marker/code
+request must open its local generation even without a Stop control; ordinary human typing
+retains exact comparison. This repairs future capture provenance, never invents generations
+for old unowned finals. `content-script` covers the previous missing-turn failure.
 Failed manual preparation retires only its exact pre-Send token and stores a bounded concrete failure reason.
 Existing user drafts remain intact. Ambiguous dispatched
 requests retain their existing custody and cannot be sent again merely because a receipt is absent.
@@ -3750,6 +3777,10 @@ leases, approved-root revalidation and caller incarnation; MCP and remote contro
 `discord/src/state.ts` owns only bot grants, setup drafts, local session mappings and notification
 checkpoints. It never reads backend ledgers. Discord status skips provider-scoped worker reads
 for an unbound admitted local session, so a legitimate `no_chat` cannot hide its input status.
+Discord status prioritizes provider restrictions, compaction attention and recovery attempts
+over a saved open-turn marker. An open recorded turn is shown as Turn Open and does not prove
+provider liveness; a reload alone does not prove assistant recovery. Recovery kinds/deadlines
+remain read-only projections of existing owners.
 Status and empty history project the existing outbox proof (queued awaiting claim, claimed before
 authorization, unconfirmed Send, confirmed receipt, or terminal non-delivery), startup diagnostics
 and provider attribution separately. These projections never retry or grant delivery authority.
@@ -4868,7 +4899,10 @@ Tests: `report-scrub.test.ts`, `diagnostics-report.test.ts` and `ipc.test.ts` (n
 
 ## 20. Build, installation, updater and release
 
-Source, bundle, package, installed bytes and live behavior are separate gates (§3). The app id
+Source, bundle, package, installed bytes and live behavior are separate gates (§3). `runtime/durable-formats.json`
+now includes `providerHistoryBackoff:1` and `freshTurns:1`; older code cannot ignore the
+restriction ledger or misparse rotation rows during a code-only downgrade. Use a matching
+encrypted pre-upgrade backup and the existing restore/reconciliation hold for rollback. The app id
 is `com.chatonsteroids.app`. Native release targets are Windows x64/arm64 NSIS, macOS x64/arm64
 DMG+ZIP and Linux x64/arm64 AppImage+DEB. Windows is per-user-capable and `asInvoker`; replacing
 the package preserves userData. Synchronize package/main/extension versions deliberately.

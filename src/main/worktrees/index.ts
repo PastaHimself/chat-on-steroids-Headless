@@ -182,6 +182,18 @@ function cleanGitEnvironment(): NodeJS.ProcessEnv {
   return environment;
 }
 
+// Adapted from upstream v2.1.38: Git worktree add/remove share the common admin
+// directory even when the workers have different allocation IDs. Concurrent adds
+// can observe another worktree before its commondir file exists.
+const worktreeChanges = new Map<string, Promise<unknown>>();
+function oneWorktreeChangeAtATime<T>(commonDir: string, change: () => Promise<T>): Promise<T> {
+  const run = (worktreeChanges.get(commonDir) ?? Promise.resolve()).then(change);
+  const tail = run.catch(() => undefined);
+  worktreeChanges.set(commonDir, tail);
+  void tail.then(() => { if (worktreeChanges.get(commonDir) === tail) worktreeChanges.delete(commonDir); });
+  return run;
+}
+
 async function runGit(cwd: string, args: readonly string[], maxBytes = MAX_GIT_BYTES): Promise<GitResult> {
   const executable = gitExecutable();
   return new Promise((resolve, reject) => {
@@ -756,7 +768,12 @@ async function allocate(input: {
       );
     }
   }
-  const add = await runGit(source.cwd, safeGitArgs(hooksPath, ['worktree', 'add', '--no-track', '-b', branch, worktreePath, baseOid]));
+  const add = await oneWorktreeChangeAtATime(source.commonDir, async () => {
+    // Waiting for another checkout is an await boundary: recheck all managed
+    // ancestors before allowing Git to write through them.
+    await ensureDirectoryTree(approved.real, [MANAGED_FOLDER, repoKey(source.commonDir), identity.runId, identity.agentId, 'hooks']);
+    return runGit(source.cwd, safeGitArgs(hooksPath, ['worktree', 'add', '--no-track', '-b', branch, worktreePath, baseOid]));
+  });
   if (add.code !== 0) {
     const raced = await readMarker(markerPath);
     if (raced) {
@@ -782,7 +799,8 @@ async function allocate(input: {
     // this tree. Never force-remove a slot bearing another owner's marker.
     const currentMarker = await readMarker(markerPath).catch(() => undefined);
     if (currentMarker === null || (currentMarker && markerMatchesLease(currentMarker, lease))) {
-      const removed = await runGit(source.cwd, safeGitArgs(hooksPath, ['worktree', 'remove', '--force', worktreePath])).catch(() => null);
+      const removed = await oneWorktreeChangeAtATime(source.commonDir,
+        () => runGit(source.cwd, safeGitArgs(hooksPath, ['worktree', 'remove', '--force', worktreePath]))).catch(() => null);
       if (removed?.code === 0) {
         await runGit(source.cwd, ['update-ref', '-d', branchRef, baseOid], 256).catch(() => undefined);
         if (currentMarker) await fs.unlink(markerPath).catch(() => undefined);
@@ -1271,7 +1289,7 @@ export function finalizeWorkerWorkspace(input: {
   /** Captured before the native dialog; only used for confirmation-gated cleanup. */
   expectedContentFingerprint?: string;
 }): Promise<WorkerFinalizeResult> {
-  return withLeaseMutation(input.lease, async () => {
+  return withLeaseMutation(input.lease, () => oneWorktreeChangeAtATime(input.lease.commonDir, async () => {
     const marker = await markerForLease(input.lease);
     const disposition = input.branch ?? { mode: 'keep' as const };
     if (disposition.mode === 'discard' && !['cancelled', 'failed', 'superseded'].includes(input.reason)) {
@@ -1317,12 +1335,13 @@ export function finalizeWorkerWorkspace(input: {
     await removeEmptyParents(marker);
     live.delete(keyOf(input.lease.runId, input.lease.agentId));
     return { removed: true, branchRemoved, branch: marker.branch, changes };
-  });
+  }));
 }
 
 /** Test seam only: does not touch disk or Git. */
 export function resetWorkerWorktreeRegistryForTests(): void {
   live.clear();
   allocations.clear();
+  worktreeChanges.clear();
   busy.clear();
 }

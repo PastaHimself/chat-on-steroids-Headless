@@ -409,7 +409,7 @@ export function projectInput(entry: InputEntry, projectWait?: ControlApiInput['p
     transportIntent: entry.transportIntent ?? null,
     // Filed by the app itself (a recovery pickup or an automatic follow-up), not typed by anyone.
     // A silence boundary alone is not that: it can ride a message a person typed.
-    automatic: !!(entry.recovery || entry.finishOwner),
+    automatic: !!(entry.recovery || entry.finishOwner || entry.purpose === 'rotation'),
     purpose: entry.purpose ?? null,
     createdAt: entry.createdAt,
     dueAt: entry.dueAt,

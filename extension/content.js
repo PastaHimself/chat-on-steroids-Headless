@@ -36,7 +36,7 @@
   // before touching the shared DOM. Otherwise old and new composer observers can continually
   // remove and reinsert each other's controls, starving transport/timers and freezing the tab.
   // A healthy incumbent in this context still wins the static/recovery injection race.
-  const RECORDER_VERSION = 24;
+  const RECORDER_VERSION = 25;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -10166,7 +10166,11 @@
           sourceChanged || userDraft
         ));
       }
-      rememberUserSend();
+      // This request was inserted by the app. ChatGPT may store its marker and code
+      // punctuation Markdown-escaped; retain the same witnessed Send baseline and
+      // raw-then-one-unescape receipt rule as the resumed bootstrap. Treating it as
+      // human-typed text can lose the entire brief's local generation on a fast reply.
+      rememberUserSend(true);
       const sent = await sendSubmittedText(current, true, async stillSending => {
         if (!stillSending() || !current() || !sameSource()) return false;
         // Native Send readiness precedes this irreversible checkpoint. A disabled
@@ -10185,7 +10189,7 @@
           return false;
         }
         return stillSending() && sameSource();
-      });
+      }, null, matchesSubmittedBootstrap);
       if (!current()) return;
       if (!sent) {
         CLF_DOM.clearPromptExact(prompt);

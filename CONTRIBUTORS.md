@@ -1,5 +1,15 @@
 # Contributors
 
+The October 15 Headless long-run update adapts [@Maximapple](https://github.com/Maximapple)'s
+fresh-turn implementation [#1402](https://github.com/totec448-spec/chat-on-steroids/pull/1402)
+and repository-scoped worktree serialization
+[`320fff18`](https://github.com/totec448-spec/chat-on-steroids/commit/320fff1818859aaedf05d43880068b2e60a53f9f),
+plus [@Akilaydin](https://github.com/Akilaydin)'s plugin timeout fix and subprocess regressions
+[`17579727`](https://github.com/totec448-spec/chat-on-steroids/commit/17579727308e334d9f6469f28584bdea975a99c2).
+These MIT-licensed sources were compared from the v2.1.38 archive at
+`84ecbd69f36e44b8207ab458d73433d56a74d0ee`; Headless keeps additional durable receipt,
+tool-drain, role, provider-restriction and conservative configuration fences.
+
 The October 14 Headless reliability follow-up adapts [@Maximapple](https://github.com/Maximapple)'s
 exact-grant silence-sweep correction from upstream
 [`6b939330`](https://github.com/totec448-spec/chat-on-steroids/commit/6b939330a3799d0185a8a7eaff4ec01ad823fcc3).

@@ -67,3 +67,8 @@ export function recoveryMessage(): string {
 
 /** The existing silence clock gets one half-window only when the native page is busy. */
 export const recoveryBusyMs = (pro: boolean): number => (pro ? 5 : 1) * 60_000;
+
+/** Upstream v2.1.38 #1402; continue the same task in the same conversation. */
+export function rotationMessage(): string {
+  return 'Continue the task from where you are. (Chat On Steroids starts a fresh turn every so often so long work stays reliable; nothing else changed.)';
+}

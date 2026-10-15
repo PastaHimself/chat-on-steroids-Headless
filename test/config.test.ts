@@ -44,6 +44,17 @@ describe('browser bridge port config', () => {
 });
 
 describe('settings migration', () => {
+  it('keeps fresh turns opt-in and preserves bounded saved intervals', async () => {
+    expect((await saveConfig(defaultConfig())).ui.rotateTurnMinutes).toBe(0);
+    for (const rotateTurnMinutes of [0, 1, 30, 120]) {
+      await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, rotateTurnMinutes } });
+      expect((await loadConfig()).ui.rotateTurnMinutes).toBe(rotateTurnMinutes);
+    }
+    for (const rotateTurnMinutes of [-1, 121, 0.5, '30', null]) {
+      await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(), ui: { ...defaultConfig().ui, rotateTurnMinutes } }));
+      expect((await loadConfig()).ui.rotateTurnMinutes).toBe(0);
+    }
+  });
   it('defaults command policy enforcement off in allow mode and round-trips both modes', async () => {
     expect(defaultConfig().commandAllowlist).toEqual({ enabled: false, mode: 'allow', rules: [] });
     const legacy = defaultConfig() as Partial<ReturnType<typeof defaultConfig>>;

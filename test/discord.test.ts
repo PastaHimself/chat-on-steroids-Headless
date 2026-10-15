@@ -9,7 +9,7 @@ import { ControlClient } from '../discord/src/api.js';
 import { definitions, commands, helpDescription } from '../discord/src/commands.js';
 import { DiscordController } from '../discord/src/bot.js';
 import { Notifications, recordedFinal } from '../discord/src/notifications.js';
-import { EmbedColor, inputDeliveryDescription } from '../discord/src/ui.js';
+import { EmbedColor, inputDeliveryDescription, sessionStatusIndicator, sessionDescription } from '../discord/src/ui.js';
 
 const admin = '111111111111111111', other = '222222222222222222', guild = '333333333333333333', channel = '444444444444444444';
 let dir: string; let store: StateStore; let config: Bootstrap;
@@ -53,6 +53,15 @@ beforeEach(async () => {
 });
 afterEach(async () => { await removeTempDir(dir); vi.restoreAllMocks(); });
 describe('Discord commands and authorization', () => {
+  it('reports a provider restriction and compaction attention before a stale open turn', () => {
+    const limited = { session: { updatedAt: Date.now() }, live: { activeTurnId: 'open-but-unverified',
+      recovery: [{ kind: 'provider-limit', deadline: Date.now() + 60_000 }] } };
+    expect(sessionStatusIndicator(limited).text).toBe('Rate Limited');
+    expect(sessionDescription(limited)).toContain('rate limited');
+    expect(sessionDescription(limited)).not.toContain('State: 🟢 working');
+    expect(sessionStatusIndicator({ live: { activeTurnId: 'old-turn', job: { needsAttention: true } } }).text).toBe('Attention Needed');
+    expect(sessionStatusIndicator({ live: { activeTurnId: 'open-turn', recovery: [{ kind: 'post-reload' }] } }).text).toBe('Recovering');
+  });
   it.each([
     { state: 'sent', delivery: 'sent', phrase: 'Provider receipt confirmed' },
     { state: 'browser', delivery: 'unconfirmed', phrase: 'provider receipt unconfirmed' },
@@ -188,9 +197,9 @@ describe('Discord commands and authorization', () => {
     const result = await controller.command(interaction('status'));
     expect(result.embeds).toHaveLength(1);
     const embedData = result.embeds[0].toJSON();
-    expect(embedData.color).toBe(EmbedColor.Success);
+    expect(embedData.color).toBe(EmbedColor.Info);
     expect(embedData.fields).toEqual([
-      { name: 'State', value: '🟢 Working', inline: true },
+      { name: 'State', value: '🔵 Turn Open', inline: true },
       { name: 'Project', value: 'approved', inline: true },
       { name: 'Workers', value: 'None', inline: true },
     ]);

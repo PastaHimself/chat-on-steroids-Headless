@@ -133,6 +133,8 @@ export type ChatBrowser = (typeof CHAT_BROWSERS)[number];
 export interface UiPrefs {
   /** Recover an unfinished silent executor turn only while Goal and Loop are both off. */
   autoContinue?: boolean;
+  /** Opt-in fresh turns for ordinary non-Pro executors; 0 disables, 1–120 minutes. */
+  rotateTurnMinutes?: number;
   /** Preferred account-observed model for a fresh ordinary chat; omitted keeps the catalog fallback. */
   defaultChatModel?: string;
   /** Preferred reasoning for a fresh ordinary chat; omitted keeps the model's normal fallback. */
