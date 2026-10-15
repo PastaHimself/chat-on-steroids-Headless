@@ -21,6 +21,7 @@ const startInput = await import('../src/main/session/start-input.js');
 const models = await import('../src/main/chat-models.js');
 const remote = await import('../src/main/remote-control.js');
 const agents = await import('../src/main/agents.js');
+const projects = await import('../src/main/projects.js');
 let directory: string; let session: string;
 const action = async (name: string, body: object) => remote.serveRemoteAction(`/v1/remote/${name}`, body);
 const read = (route: string) => remote.serveRemoteRead(route, new URLSearchParams());
@@ -40,6 +41,42 @@ afterEach(async () => {
   vi.unstubAllEnvs(); await removeTempDir(directory);
 });
 describe('authenticated remote service adapters', () => {
+  async function failedProject(uncertain = false) {
+    await config.updateConfig(value => ({ ...value, roots: [{ name: 'project', path: directory }] }));
+    const project = await projects.addProject(directory);
+    const requestId = (project.chatgpt as { requestId: string }).requestId;
+    await projects.claimProjectCreate(requestId, 'project-page');
+    if (uncertain) await projects.armProjectCreate(requestId, 'project-page');
+    await projects.failProjectCreate(requestId, 'project-page', 'Project unavailable');
+    return (await projects.getProject(project.id))!;
+  }
+  it.each(['failed', 'uncertain'] as const)('explicitly retries the exact observed Project failure once through its owner (%s)', async expectedState => {
+    const project = await failedProject(expectedState === 'uncertain');
+    const queued = await input.enqueueInput({ id: randomUUID(), sessionId: null, projectId: project.id,
+      text: 'Saved opening', mode: 'auto', dueAt: 0, model: null, reasoningEffort: null });
+    const body = { id: randomUUID(), projectId: project.id, expectedState, expectedUpdatedAt: project.chatgpt!.updatedAt,
+      ...(expectedState === 'uncertain' ? { allowDuplicate: true } : {}) };
+    const catalog: any = await read('/v1/remote/projects');
+    expect(catalog.projects[0].chatgpt).toEqual({ state: expectedState, updatedAt: project.chatgpt!.updatedAt, error: 'Project unavailable' });
+    expect(await action('project-retry', body)).toMatchObject({ status: 202, body: { result: { projectId: project.id, retried: true, state: 'requested' } } });
+    const requested = (await projects.getProject(project.id))!.chatgpt;
+    expect(await action('project-retry', body)).toMatchObject({ body: { replayed: true } });
+    expect((await projects.getProject(project.id))!.chatgpt).toEqual(requested);
+    expect(await input.listInputs()).toEqual([queued]);
+    await expect(action('project-retry', { ...body, id: randomUUID() })).rejects.toMatchObject({ code: 'project_changed' });
+  });
+  it('requires both configure/send grants and explicit duplicate-risk confirmation for an uncertain Project', async () => {
+    const project = await failedProject(true);
+    const body = { id: randomUUID(), projectId: project.id, expectedState: 'uncertain', expectedUpdatedAt: project.chatgpt!.updatedAt };
+    for (const grant of ['configure', 'send']) {
+      vi.stubEnv('COS_REMOTE_PERMISSIONS', grant);
+      await expect(action('project-retry', body)).rejects.toMatchObject({ code: 'remote_permission_disabled' });
+    }
+    vi.stubEnv('COS_REMOTE_PERMISSIONS', 'configure,send');
+    await expect(action('project-retry', body)).rejects.toMatchObject({ code: 'project_retry_confirmation_required' });
+    expect((await projects.getProject(project.id))!.chatgpt).toEqual(project.chatgpt);
+    expect(await input.listInputs()).toEqual([]);
+  });
   it('requires both allowActions and the separate local permission grant', async () => {
     vi.stubEnv('COS_REMOTE_PERMISSIONS', '');
     await expect(action('automation', { id: randomUUID(), sessionId: session, automation: 'goal' })).rejects.toMatchObject({ status: 403 });

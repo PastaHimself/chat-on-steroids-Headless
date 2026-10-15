@@ -975,8 +975,11 @@ before the click that creates the Project (`armProjectCreate`); from there it en
 id ChatGPT shows on the new Project's own page, reported by the page that armed it) or
 `uncertain` (the app's own timer, `PROJECT_CREATE_ARMED_MS`, also swept at start). `failed` is a
 failure before the click, or a linked Project ChatGPT no longer opens. `uncertain` and `failed`
-are never retried on their own: only the project's "Retry ChatGPT Project" menu item asks again,
-and for `uncertain` it warns that a second Project may result.
+are never retried on their own: the project's "Retry ChatGPT Project" menu item or an explicit
+Headless `POST /v1/remote/project-retry` asks again. The remote action requires configure and send
+grants, the observed failed/uncertain state and timestamp, and explicit duplicate-risk confirmation
+for `uncertain`. `retryProjectCreate` checks that observation inside the serialized catalog write;
+the remote operation UUID prevents replay. Both adapters wake the existing browser owner.
 
 The browser does it (`inspectProjectCreates` in background.js): one request at a time in one
 foreground helper tab `https://chatgpt.com/?cos-project-create=<request>` (the dialog needs a
@@ -996,6 +999,13 @@ row says so ("Creating this project in ChatGPT…", or the unavailable line poin
 deleted Project's page redirects to ChatGPT's home and drops the marker: the worker reports
 `gone` for the tab it opened for that Project, the link becomes `failed`, and nothing is sent.
 An opening remembers its Project, so a retry's new Project gets its own tab.
+
+`inputProjectWaits` projects that same opening gate from the current catalog and actual input
+target. `/v1/inputs` and remote new-chat admission expose only its state and a bounded, redacted
+error as `projectWait`. Discord admission, status and empty history explain this app-side wait
+before suggesting browser readiness. This observation never alters an outbox row or overrides
+provider delivery proof. The remote project catalog exposes state/timestamp/error for explicit
+repair, without the native id, page owner, request id or local path.
 
 ## 10. Files, terminal, patches and images
 

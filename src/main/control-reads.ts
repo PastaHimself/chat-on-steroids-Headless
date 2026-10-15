@@ -22,7 +22,7 @@ import { sessionControlsFor } from './bridge.js';
 import type { SessionControlsView } from './bridge.js';
 import { getLog, logWarn } from './logger.js';
 import { redactSecretText } from './redaction.js';
-import { deliveryProof, listInputs } from './session/input.js';
+import { deliveryProof, inputProjectWaits, listInputs } from './session/input.js';
 import type { InputEntry } from './session/input.js';
 import { readSession, readSessionEvents, readSessionList, sessionListCursorSchema } from './session/read-model.js';
 
@@ -396,7 +396,7 @@ async function sessionEvents(id: string, params: URLSearchParams): Promise<Contr
 
 // ---------------------------------------------------------------- inputs
 
-export function projectInput(entry: InputEntry): ControlApiInput {
+export function projectInput(entry: InputEntry, projectWait?: ControlApiInput['projectWait']): ControlApiInput {
   return {
     id: entry.id,
     sessionId: entry.sessionId,
@@ -417,6 +417,7 @@ export function projectInput(entry: InputEntry): ControlApiInput {
     browserPreparation: entry.browserPreparation ? {
       stage: entry.browserPreparation.stage, reason: entry.browserPreparation.reason, observedAt: entry.browserPreparation.observedAt
     } : null,
+    projectWait: projectWait ? { state: projectWait.state, error: projectWait.error ? line(projectWait.error, SUMMARY_CAP) : null } : null,
     deliveredAt: entry.deliveredAt ?? null,
     sendAuthorizedAt: entry.sendAuthorizedAt ?? null,
     requiresAuthorization: entry.requiresAuthorization === true,
@@ -447,7 +448,8 @@ export function selectInputs(rows: readonly InputEntry[], query: { state?: reado
 async function inputs(params: URLSearchParams): Promise<ControlApiInputs> {
   const query = parseQuery(params, { state: csv(keysOf(INPUT_STATES)).optional(), limit: integer(1, 500).optional() });
   const selected = selectInputs(await listInputs(), { state: query.state, limit: query.limit ?? 100 });
-  return { inputs: selected.rows.map(projectInput), total: selected.total };
+  const waits = await inputProjectWaits(selected.rows);
+  return { inputs: selected.rows.map(row => projectInput(row, waits.get(row.id))), total: selected.total };
 }
 
 // ---------------------------------------------------------------- agents

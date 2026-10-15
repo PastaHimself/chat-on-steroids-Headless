@@ -651,7 +651,7 @@ describe('input outbox', () => {
     expect(JSON.stringify(all.body)).not.toContain(apiKey);
     expect(Object.keys(row).sort()).toEqual([
       'attachments', 'automatic', 'browserPreparation', 'cancelledByUser', 'conversationId', 'createdAt', 'deliveredAt', 'deliveredSessionId', 'delivery',
-      'dueAt', 'error', 'id', 'images', 'messageId', 'mode', 'model', 'offeredAt', 'purpose', 'queueOrder', 'reasoningEffort',
+      'dueAt', 'error', 'id', 'images', 'messageId', 'mode', 'model', 'offeredAt', 'projectWait', 'purpose', 'queueOrder', 'reasoningEffort',
       'requiresAuthorization', 'sendAuthorizedAt', 'sessionId', 'state', 'text', 'transportIntent'
     ]);
     expect(row.delivery).toBe('pending');
@@ -675,6 +675,15 @@ describe('input outbox', () => {
       expect(raw).not.toContain(hidden);
     }
     expect(projected).toMatchObject({ attachments: 1, images: 0, state: 'queued', text: { text: 'hello', chars: 5, truncated: false } });
+  });
+
+  it('bounds and redacts the Project error and publishes no native Project ownership', () => {
+    const projected = reads.projectInput(entry({}), { state: 'failed', error: `Project failed ${apiKey} ${'x'.repeat(1000)}`,
+      owner: 'private-project-owner', requestId: 'private-request' } as any);
+    expect(projected.projectWait?.state).toBe('failed');
+    expect(projected.projectWait!.error!.length).toBeLessThanOrEqual(300);
+    expect(JSON.stringify(projected.projectWait)).not.toContain(apiKey);
+    expect(Object.keys(projected.projectWait!).sort()).toEqual(['error', 'state']);
   });
 
   it('selects by state, hides decision rows and keeps the newest rows by creation time', () => {

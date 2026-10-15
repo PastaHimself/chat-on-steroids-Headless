@@ -12,7 +12,8 @@ import { randomUUID } from 'node:crypto';
 import { userTitle } from './title.js';
 import { readDurable, writeDurableNow, writeDurableSoon } from '../durable.js';
 import { getSession, findSessionByConversation, createSession, deleteSession, rebindSession, conversationWasSuperseded, readRecentEvents, listUsageSessions, questionHasMcpCall, sessionDirectoryMissing, readCompletedFinal, readLatestUserMessage } from './store.js';
-import { assignSessionProject, getProject, projectWorkspace, getSessionProject } from '../projects.js';
+import { assignSessionProject, getProject, listProjects, projectWorkspace, getSessionProject } from '../projects.js';
+import type { ChatgptProjectWait } from '../../shared/projects.js';
 import { isChatBlocked } from './blocked-chats.js';
 import { wakeBrowserWork } from '../browser-wake.js';
 import { logInfo, logWarn } from '../logger.js';
@@ -1554,6 +1555,26 @@ async function completedStageBoundary(entry: InputEntry, current: InputEntry[]):
       row.dueAt <= Date.now() && ['queued', 'browser', 'tool'].includes(row.state))) return null;
   return turnId;
 }
+function opensNativeProject(entry: InputEntry, conversationId: string | null): boolean {
+  return !conversationId && !!entry.projectId && entry.purpose !== 'decision' && !entry.lifetime;
+}
+
+/** Project the same native Project gate as publication, without changing any queue/claim state. */
+export async function inputProjectWaits(entries: readonly InputEntry[]): Promise<Map<string, ChatgptProjectWait>> {
+  const candidates = entries.filter(entry => entry.state === 'queued' && deliveryProof(entry) === 'pending' &&
+    opensNativeProject(entry, null) && entry.delivery !== 'tool' && entry.transportIntent !== 'tool' && entry.attachmentDelivery !== 'tool');
+  const waits = new Map<string, ChatgptProjectWait>();
+  if (!candidates.length) return waits;
+  const projects = new Map((await listProjects()).map(project => [project.id, project]));
+  for (const entry of candidates) {
+    try { if (!opensNativeProject(entry, await target(entry))) continue; }
+    catch { continue; } // A deleted/blocked conversation is a separate gate, not a Project wait.
+    const link = projects.get(entry.projectId!)?.chatgpt;
+    if (link && link.state !== 'linked') waits.set(entry.id, { state: link.state, error: 'error' in link ? link.error : null });
+  }
+  return waits;
+}
+
 export function pendingBrowserInputs(): Promise<Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner'; project?: string }>> {
   return serial(async () => {
     const result: Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner'; project?: string }> = [];
@@ -1567,8 +1588,8 @@ export function pendingBrowserInputs(): Promise<Array<{ id: string; conversation
         const conversationId = await target(entry);
         // A new chat of a project with a native ChatGPT Project opens in that Project and nowhere
         // else: it waits while the Project is being created or could not be, never the root.
-        const chatgptProject = !conversationId && entry.projectId && entry.purpose !== 'decision' && !entry.lifetime
-          ? (await getProject(entry.projectId))?.chatgpt : undefined;
+        const chatgptProject = opensNativeProject(entry, conversationId)
+          ? (await getProject(entry.projectId!))?.chatgpt : undefined;
         if (chatgptProject && chatgptProject.state !== 'linked') continue;
         const [end] = !entry.silenceBoundary && manualInput(entry) && entry.sessionId
           ? await readRecentEvents(entry.sessionId, 1, { kinds: ['turn_start', 'turn_end'] }) : [];

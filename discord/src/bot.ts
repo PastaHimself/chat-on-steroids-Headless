@@ -119,7 +119,7 @@ export class DiscordController {
           await this.store.update(next => { next.selected[interaction.user.id] = result.sessionId; });
           await this.monitor(interaction, result.sessionId, result.inputId, 0, startedAt).catch(() => undefined);
         }
-        return panel('Conversation admitted', `Local session: ${result.sessionId}\nInput: ${result.inputId}\nDelivery: ${result.delivery}\n${args.prompt ? '' : 'Opening message: Start a new conversation. Await my next instruction.'}\nProvider opening and model selection require delivery acknowledgement.`, [], [], { color: EmbedColor.Success });
+        return panel('Conversation admitted', `Local session: ${result.sessionId}\n${inputDeliveryDescription({ ...result, id: result.inputId, state: result.state ?? 'queued' })}\n${args.prompt ? '' : 'Opening message: Start a new conversation. Await my next instruction.'}\nProvider opening and model selection require delivery acknowledgement.`, [], [], { color: result.projectWait ? EmbedColor.Warning : EmbedColor.Success });
       }
       case 'ask': {
         const startedAt = Date.now();

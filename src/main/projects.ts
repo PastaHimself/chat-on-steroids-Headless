@@ -236,10 +236,12 @@ export async function failProjectCreate(id: string, owner: string, error: string
 }
 
 /** The person asks again after a failed or uncertain creation; uncertain may leave a second Project. */
-export async function retryProjectCreate(projectId: string): Promise<LocalProject | null> {
+export async function retryProjectCreate(projectId: string, expected?: { state: 'failed' | 'uncertain'; updatedAt: number }): Promise<LocalProject | null> {
   z.string().uuid().parse(projectId);
   return updateChatgptLink((_link, project) => project.id === projectId, (link, now) =>
-    link.state === 'failed' || link.state === 'uncertain' ? { state: 'requested', requestId: randomUUID(), updatedAt: now } : null);
+    (link.state === 'failed' || link.state === 'uncertain') &&
+      (!expected || (link.state === expected.state && link.updatedAt === expected.updatedAt))
+      ? { state: 'requested', requestId: randomUUID(), updatedAt: now } : null);
 }
 
 /**

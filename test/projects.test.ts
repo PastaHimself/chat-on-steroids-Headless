@@ -223,6 +223,20 @@ it('turns only the exact linked Project ChatGPT no longer opens into a failure t
   expect((await retryProjectCreate(project.id))?.chatgpt).toMatchObject({ state: 'requested' });
 });
 
+it('serializes conditional Project retries so only the observed failure can be replaced', async () => {
+  const project = await addProject(path.join(approved, 'first'));
+  const id = (project.chatgpt as { requestId: string }).requestId;
+  await claimProjectCreate(id, 'page'); await failProjectCreate(id, 'page', 'Unavailable');
+  const failed = (await getProject(project.id))!.chatgpt!;
+  const expected = { state: 'failed' as const, updatedAt: failed.updatedAt };
+  const results = await Promise.all([retryProjectCreate(project.id, expected), retryProjectCreate(project.id, expected)]);
+  expect(results.filter(Boolean)).toHaveLength(1);
+  const requested = (await getProject(project.id))!.chatgpt;
+  expect(requested?.state).toBe('requested');
+  expect(await retryProjectCreate(project.id, expected)).toBeNull();
+  expect((await getProject(project.id))!.chatgpt).toEqual(requested);
+});
+
 it("turns an armed creation uncertain on the app's own clock, with no browser asking", async () => {
   const project = await addProject(path.join(approved, 'first'));
   const id = (project.chatgpt as { requestId: string }).requestId;

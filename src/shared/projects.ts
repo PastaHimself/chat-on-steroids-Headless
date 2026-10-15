@@ -34,5 +34,11 @@ export type ChatgptProjectLink =
   | { state: 'failed'; requestId: string; error: string; updatedAt: number }
   | { state: 'uncertain'; requestId: string; error: string; updatedAt: number };
 
+/** Read-only reason an ordinary opening has not reached browser delivery. */
+export interface ChatgptProjectWait {
+  state: Exclude<ChatgptProjectLink['state'], 'linked'>;
+  error: string | null;
+}
+
 /** ChatGPT addresses a Project as `g-p-` and 32 hex digits; nothing else is one. */
 export const CHATGPT_PROJECT_ID = /^g-p-[0-9a-f]{32}$/;
