@@ -1,3 +1,4 @@
+import { selectedChatBrowser } from './browser-selection.js';
 import { verifyDurableFormats } from '../../runtime/durable-formats.mjs';
 import { stopInputStartup } from './session/start-input.js';
 import { browserExtensionRequired } from '../shared/types.js';
@@ -376,7 +377,7 @@ function refreshTray(): void {
       { label: mainText('Open'), click: windowActivation.request },
       // The CoS browser lives in the tray: its windows never sit in a taskbar or dock. Only once
       // it is selected and loaded; the default extension path shows exactly the menu it had.
-      ...(cosBrowser && getConfig().ui.chatBrowser === 'cos' ? [{
+      ...(cosBrowser && selectedChatBrowser() === 'cos' ? [{
         label: mainText(cosBrowser.visible() ? 'Hide browser' : 'Show browser'),
         click: () => {
           if (cosBrowser.visible()) cosBrowser.hide();

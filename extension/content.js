@@ -36,7 +36,7 @@
   // before touching the shared DOM. Otherwise old and new composer observers can continually
   // remove and reinsert each other's controls, starving transport/timers and freezing the tab.
   // A healthy incumbent in this context still wins the static/recovery injection race.
-  const RECORDER_VERSION = 23;
+  const RECORDER_VERSION = 24;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -12892,10 +12892,11 @@
     const project = typeof message.project === 'string' && /^g-p-[0-9a-f]{32}$/.test(message.project) ? message.project : null;
     const freshMarker = () => {
       const url = new URL(location.href);
-      return url.searchParams.get('cos-input') === message.id || new URLSearchParams(url.hash.slice(1)).get('cos-input') === message.id;
+      const query = url.searchParams.get('cos-input'), hash = new URLSearchParams(url.hash.slice(1)).get('cos-input');
+      return (!query || !hash || query === hash) && (query || hash) === message.id;
     };
     const ownsFreshPage = () => !target && onTarget() && (project ? CLF_DOM.projectHomeId() === project : location.pathname === '/') &&
-      (project ? freshMarker() : new URL(location.href).searchParams.get('cos-input') === message.id) && !CLF_DOM.turns().length;
+      freshMarker() && !CLF_DOM.turns().length;
     if (!target && !ownsFreshPage()) return false;
     desktopInputBusy = true;
     let decision = null;
@@ -13430,11 +13431,12 @@
     const rows = CLF_DOM.messages();
     const home = !CLF_DOM.conversationId() && location.pathname === '/';
     const marker = new URL(location.href).searchParams;
+    const hashMarker = new URLSearchParams(location.hash.slice(1));
     return alive && !generating && !CLF_DOM.generating() && pendingTools === 0 && !desktopInputBusy &&
       !modelCatalogBusy && !pluginRefreshBusy && !desktopDecision && !commandAttempt && !commandJournalGate &&
       queue.length === 0 && !flushWork && CLF_DOM.composerVisible() && !CLF_DOM.hasComposerAttachments() &&
       !(CLF_DOM.composer()?.textContent || '').trim() &&
-      (home ? !rows.length && !marker.has('cos-input') && !marker.has('temporary-chat') :
+      (home ? !rows.length && !marker.has('cos-input') && !hashMarker.has('cos-input') && !marker.has('temporary-chat') :
         !!CLF_DOM.conversationId() && rows.at(-1)?.role === 'assistant');
   }
   async function prepareDesktopInputPage(message) {

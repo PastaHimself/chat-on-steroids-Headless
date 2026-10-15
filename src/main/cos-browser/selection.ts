@@ -4,7 +4,7 @@
  * path never loads it. A module cannot be unloaded; after switching away the browser is stopped
  * and its hooks do nothing.
  */
-import { getConfig } from '../config.js';
+import { selectedChatBrowser } from '../browser-selection.js';
 import { logWarn } from '../logger.js';
 import type { CosBrowser } from './host.js';
 
@@ -48,7 +48,7 @@ export async function loadCosBrowser(): Promise<CosBrowser> {
  * and starts it right away, so it is ready to use; the other browsers never load it just to stop it.
  */
 export async function syncCosBrowser(): Promise<void> {
-  if (getConfig().ui.chatBrowser !== 'cos') {
+  if (selectedChatBrowser() !== 'cos') {
     loaded?.syncCosBrowser();
     return;
   }

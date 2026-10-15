@@ -414,6 +414,9 @@ export function projectInput(entry: InputEntry): ControlApiInput {
     createdAt: entry.createdAt,
     dueAt: entry.dueAt,
     offeredAt: entry.offeredAt ?? null,
+    browserPreparation: entry.browserPreparation ? {
+      stage: entry.browserPreparation.stage, reason: entry.browserPreparation.reason, observedAt: entry.browserPreparation.observedAt
+    } : null,
     deliveredAt: entry.deliveredAt ?? null,
     sendAuthorizedAt: entry.sendAuthorizedAt ?? null,
     requiresAuthorization: entry.requiresAuthorization === true,

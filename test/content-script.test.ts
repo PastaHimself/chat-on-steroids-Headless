@@ -1539,8 +1539,8 @@ describe('desktop input delivery and helper ownership', () => {
     expect(live.document.querySelector('#prompt-textarea')!.textContent).toBe('');
   });
 
-  it('ACKs a fresh input only under its accepted exact user message and assigned conversation', async () => {
-    live = await harness(`https://chatgpt.com/?cos-input=${inputId}`, {
+  it.each(['query', 'hash'])('ACKs a fresh %s-marked input only under its exact user message and assigned conversation', async marker => {
+    live = await harness(`https://chatgpt.com/${marker === 'query' ? '?' : '#'}cos-input=${inputId}`, {
       desktop_input: message => ({ ok: true, data: message.authorize ? { ok: true } : message.ack ? { ok: true } : { input: claimed() } })
     });
     live.document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
@@ -1553,6 +1553,14 @@ describe('desktop input delivery and helper ownership', () => {
     expect(live.sent.filter(message => message.type === 'desktop_input' && message.ack)).toEqual([
       expect.objectContaining({ id: inputId, owner: 'input-owner', conversationId: chatA, ack: true })
     ]);
+    expect(await live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null })).toEqual({ ok: false });
+    expect(live.sent.filter(message => message.type === 'desktop_input' && message.authorize)).toHaveLength(1);
+  });
+
+  it('does not claim an opening with contradictory query and hash input owners', async () => {
+    live = await harness(`https://chatgpt.com/?cos-input=${inputId}#cos-input=${chatB}`);
+    expect(await live.runtimeMessage({ type: 'clf-desktop-input', id: inputId, conversationId: null })).toEqual({ ok: false });
+    expect(live.sent.filter(message => message.type === 'desktop_input')).toEqual([]);
   });
 
   /**
@@ -18629,7 +18637,7 @@ describe('one live isolated-world recorder per document', () => {
 
     await expect(live.runtimeMessage({ type: 'clf-recorder-ping' })).resolves.toEqual({
       ok: true,
-      recorderVersion: 23,
+      recorderVersion: 24,
       busy: false
     });
   });
@@ -22962,7 +22970,7 @@ describe('ordinary Continue native recovery', () => {
     // Chrome's static content cache can precede the helper read from disk by repair.
     win.__CLF_CONTENT_RECORDER__.stop();
     win.CLF_TEST_HOOK = (api: Hook) => { live!.hook = api; };
-    win.eval(contentSource.replace('const RECORDER_VERSION = 23;', 'const RECORDER_VERSION = 13;')
+    win.eval(contentSource.replace('const RECORDER_VERSION = 24;', 'const RECORDER_VERSION = 13;')
       .replace(`const FIBER_VERSION = ${fiberVersion};`, 'const FIBER_VERSION = 12;'));
     await settle();
     userTurn(live.document, 'source', 'Complete the task');

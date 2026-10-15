@@ -1,3 +1,5 @@
+import { selectedChatBrowser } from './browser-selection.js';
+import { noteInputBrowserPreparation } from './session/input.js';
 import { recoveryHeld } from './recovery-hold.js';
 import { conversationProgress } from './session/progress.js';
 import { cosSignInTransfer, SignInTransferError } from './cos-browser/sign-in-transfer.js';
@@ -2401,7 +2403,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (route === '/cos-browser/sign-in') {
-    if (getConfig().ui.chatBrowser !== 'cos') return json(res, 409, { error: 'transfer_expired' }, origin);
+    if (selectedChatBrowser() !== 'cos') return json(res, 409, { error: 'transfer_expired' }, origin);
     if (req.method === 'GET') return json(res, 200, { offer: cosSignInTransfer.pending() }, origin);
     if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' }, origin);
     const browserId = browserOf(req);
@@ -2414,7 +2416,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       if (typeof fields.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(fields.id) ||
         Object.keys(fields).some(key => !['id', 'cookies'].includes(key))) return json(res, 400, { error: 'bad_request' }, origin);
       await cosSignInTransfer.accept(fields.id, browserId, fields.cookies,
-        () => browserCredentialEpoch === epoch && getConfig().ui.chatBrowser === 'cos');
+        () => browserCredentialEpoch === epoch && selectedChatBrowser() === 'cos');
       return json(res, 200, { ok: true, imported: true }, origin);
     } catch (error) {
       const reason = error instanceof SignInTransferError ? error.reason : 'bad_request';
@@ -2546,7 +2548,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     let revealRequested = false;
     let imageExportRequested = false;
     if (req.method === 'POST') {
-      const body = await readBody(req) as { openConversations?: unknown; stalledConversations?: unknown; updateHold?: unknown; canReveal?: unknown; canExportImages?: unknown; chatGptSignedIn?: unknown };
+      const body = await readBody(req) as { openConversations?: unknown; stalledConversations?: unknown; inputPreparation?: unknown; updateHold?: unknown; canReveal?: unknown; canExportImages?: unknown; chatGptSignedIn?: unknown };
       if (!Array.isArray(body?.openConversations) || body.openConversations.length > 10_000 || body.openConversations.some(id => !conversationId(id))) {
         return json(res, 400, { error: 'invalid_open_conversations' }, origin);
       }
@@ -2556,6 +2558,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         return json(res, 400, { error: 'invalid_stalled_conversations' }, origin);
       }
       stalledConversations = (body.stalledConversations ?? []) as string[];
+      const browser = browserOf(req);
+      if (Array.isArray(body.inputPreparation)) await noteInputBrowserPreparation(body.inputPreparation.slice(0, 50).filter(raw => {
+        const id = raw && typeof raw === 'object' ? raw.id : null;
+        const holder = typeof id === 'string' ? openingCustody.get(id) : undefined;
+        return !holder || holder === browser;
+      }));
       noteExtensionUpdateHold(body.updateHold);
       revealRequested = body.canReveal === true;
       imageExportRequested = body.canExportImages === true;

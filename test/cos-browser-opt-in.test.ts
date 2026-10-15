@@ -71,6 +71,18 @@ beforeEach(() => {
 afterEach(() => { vi.resetModules(); });
 
 describe('with another browser selected', () => {
+  it('does not load the saved desktop built-in browser in Headless', async () => {
+    vi.stubEnv('COS_RUNTIME_MODE', 'headless');
+    app.config.ui.chatBrowser = 'cos';
+    try {
+      const selection = await import('../src/main/cos-browser/selection.js');
+      await selection.syncCosBrowser();
+      await settle();
+      expect(app.moduleLoads).toBe(0);
+      expect(app.browser.start).not.toHaveBeenCalled();
+      expect(app.config.ui.chatBrowser).toBe('cos');
+    } finally { vi.unstubAllEnvs(); }
+  });
   it.each(['chrome', 'edge', 'brave'])('never loads, starts or hooks the built-in browser (%s)', async browser => {
     app.config.ui.chatBrowser = browser;
     const selection = await import('../src/main/cos-browser/selection.js');

@@ -38,6 +38,11 @@ const { bridgePort, startBridge, stopBridge } = await import('../src/main/bridge
 const input = await import('../src/main/session/input.js');
 const goal = await import('../src/main/goal.js');
 const { makeTempDir, removeTempDir } = await import('./helpers.js');
+const { worker } = await import('./fixtures/desktop-input-worker.js');
+const { DiscordController } = await import('../discord/src/bot.js');
+const { StateStore } = await import('../discord/src/state.js');
+const { ControlClient } = await import('../discord/src/api.js');
+const controlApi = await import('../src/main/control-api.js');
 let directory: string;
 let bearer: string;
 const pushed = vi.fn();
@@ -63,6 +68,101 @@ beforeEach(async () => {
   await writeDurableNow('plugin-refresh', []);
   goal.resetGoalStateForTests(); input.resetInputForTests(); pushed.mockClear();
   await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, autoContinue: false }, goal: { ...defaultConfig().goal, enabled: false } });
+});
+
+it.each(['no-tab', 'home', 'lost-marker'])('delivers Discord /new through real HTTP and the shipped coordinator, records its exact session and continues /ask (%s; simulated provider)', async scenario => {
+  vi.stubEnv('COS_REMOTE_PERMISSIONS', 'send');
+  await saveConfig({ ...getConfig(), controlApi: { enabled: true, allowActions: true } });
+  controlApi.initControlApiPath(directory);
+  await controlApi.startControlApi();
+  const botState = new StateStore(path.join(directory, `bot-${scenario}`)); await botState.load();
+  const admin = '111111111111111111', guild = '333333333333333333', channel = '444444444444444444';
+  const client = new ControlClient(path.join(directory, 'control-api'));
+  const bot = new DiscordController({ token: 'disposable-bot-token', applicationId: admin, admins: [admin], guilds: [guild], channels: [channel],
+    apiDirectory: client.directory, dataDirectory: botState.directory }, botState, client);
+  let interactionSequence = BigInt('555555555555555555');
+  const command = (name: string, values: Record<string, unknown> = {}) => ({ id: String(++interactionSequence), commandName: name,
+    user: { id: admin }, guildId: guild, channelId: channel, options: { getString: (key: string) => values[key] ?? null,
+      getBoolean: () => null, getInteger: () => null } }) as any;
+  try {
+    const opening = command('new', { prompt: 'Hello' });
+    await bot.command(opening);
+    await expect(bot.command(opening)).rejects.toThrow('already handled');
+    const [row] = await input.listInputs();
+    expect(row).toMatchObject({ state: 'queued', opening: true, text: 'Hello' });
+    const sessionId = row!.sessionId!;
+    expect(botState.snapshot().selected[admin]).toBe(sessionId);
+    expect((await post('/status', { openConversations: [] })).body.inputs).toContainEqual({ id: row!.id, conversationId: null });
+    const h = await worker([], undefined, scenario === 'lost-marker' ? { inputOpenings: { [row!.id]: {
+      tab: 7, stage: 'ready', documentId: 'integration-page', navigationEpoch: 1, url: 'https://chatgpt.com/' } } } : {});
+    h.fetch.mockImplementation(async (url, init) => {
+      const target = new URL(url);
+      return fetch(`http://127.0.0.1:${bridgePort()}${target.pathname}${target.search}`, { ...init,
+        headers: { ...init?.headers, authorization: `Bearer ${bearer}`, 'x-extension-version': APP_VERSION,
+          'x-extension-protocol': String(BRIDGE_PROTOCOL), 'x-extension-browser': 'integration-brave' } });
+    });
+    if (scenario !== 'no-tab') {
+      h.tabs.push({ id: 7, url: 'https://chatgpt.com/' });
+      await h.authorizeDocument({ tab: { id: 7 }, documentId: 'integration-page', frameId: 0, url: h.tabs[0]!.url }, { navigationEpoch: 1 });
+    }
+    h.sendMessage.mockImplementation(async (id, message) => {
+      if (message.type === 'clf-input-reuse-state') return { safe: true, navigationEpoch: 1 } as never;
+      if (message.type === 'clf-prepare-desktop-input') h.tabs.find(tab => tab.id === id)!.url = `https://chatgpt.com/#cos-input=${message.id}`;
+      return { ok: true, ready: true, navigationEpoch: 1 };
+    });
+    await h.maintain();
+    const tab = h.tabs[0]!;
+    if (tab.pendingUrl) { tab.url = tab.pendingUrl; delete tab.pendingUrl; }
+    const sender = { tab, documentId: 'integration-page', frameId: 0, url: tab.url };
+    const source = await h.authorizeDocument(sender, { navigationEpoch: 1 });
+    await h.maintain();
+    expect(h.sendMessage.mock.calls.some(([, message]) => message.type === 'clf-desktop-input' && message.id === row!.id)).toBe(true);
+    expect(h.create).toHaveBeenCalledTimes(scenario === 'no-tab' ? 1 : 0);
+    const claim = await h.desktopInput({ id: row!.id, conversationId: null, requiresAuthorization: true }, sender, source);
+    expect(claim.data.input).toMatchObject({ id: row!.id, sessionId, state: 'browser' });
+    const send = { id: row!.id, conversationId: null, authorize: true };
+    expect((await h.desktopInput(send, sender, source)).data.ok).toBe(true);
+    expect((await h.desktopInput(send, sender, source)).data.ok).toBe(false);
+    // Provider evidence is deliberately synthetic. Chrome and ChatGPT are not contacted.
+    const chat = randomUUID(), turn = randomUUID(); tab.url = `https://chatgpt.com/c/${chat}`;
+    expect((await h.desktopInput({ id: row!.id, conversationId: chat, messageId: 'native-hello', owner: claim.data.input.owner, ack: true }, sender, source)).data.ok).toBe(true);
+    expect((await getSession(sessionId))?.conversationId).toBe(chat);
+    await post('/events', { conversationId: chat, events: [
+      { kind: 'turn_start', turnId: turn, time: Date.now() },
+      { kind: 'assistant_message', messageId: 'native-answer', turnId: turn, text: 'Hello from the simulated provider.', state: 'final', final: true, time: Date.now() },
+      { kind: 'turn_end', turnId: turn, outcome: 'completed', time: Date.now() }
+    ] });
+    expect((await bot.command(command('status'))).embeds[0].toJSON().description).toContain('Provider receipt confirmed');
+    expect(JSON.stringify(await bot.command(command('chat')))).toContain('Hello from the simulated provider.');
+    await bot.command(command('ask', { prompt: 'Continue', delivery: 'auto' }));
+    const follow = (await input.listInputs()).find(entry => entry.id !== row!.id)!;
+    expect(follow).toMatchObject({ sessionId, conversationId: chat, state: 'queued' });
+    await h.noteTabConversation(source, chat); await h.maintain();
+    const next = await h.desktopInput({ id: follow.id, conversationId: chat, requiresAuthorization: true }, sender, source);
+    expect(next.data.input?.sessionId).toBe(sessionId);
+    expect((await h.desktopInput({ id: follow.id, conversationId: chat, authorize: true }, sender, source)).data.ok).toBe(true);
+    expect((await h.desktopInput({ id: follow.id, conversationId: chat, messageId: 'native-followup', owner: next.data.input.owner, ack: true }, sender, source)).data.ok).toBe(true);
+    expect((await input.listInputs()).map(entry => entry.state)).toEqual(['sent', 'sent']);
+    await h.maintain();
+    expect(h.create).toHaveBeenCalledTimes(scenario === 'no-tab' ? 1 : 0);
+  } finally { await controlApi.stopControlApi(); vi.unstubAllEnvs(); }
+});
+
+it('retains safe browser-stage diagnostics across restart without changing claim or Send authority', async () => {
+  const row = await input.enqueueInput({ ...message(null, 'off'), mode: 'auto' });
+  expect((await post('/status', { openConversations: [], inputPreparation: [{ id: row.id, stage: 'ready', reason: 'tab-missing' }] })).status).toBe(200);
+  input.resetInputForTests();
+  expect((await input.listInputs())[0]).toMatchObject({ state: 'queued', owner: null,
+    browserPreparation: { stage: 'ready', reason: 'tab-missing' } });
+  const projected = (await import('../src/main/control-reads.js')).projectInput((await input.listInputs())[0]!);
+  expect(projected.browserPreparation?.reason).toBe('tab-missing');
+  await post('/status', { openConversations: [], inputPreparation: [{ id: row.id, stage: 'sent', reason: 'private-page-prose' }] });
+  expect((await input.listInputs())[0]?.browserPreparation?.reason).toBe('tab-missing');
+  expect(await input.claimBrowserInput(row.id, 'exact-page', null, true)).not.toBeNull();
+  expect(await input.authorizeBrowserInput(row.id, 'exact-page', null)).toBe(true);
+  await post('/status', { openConversations: [], inputPreparation: [{ id: row.id, stage: 'ready', reason: 'offered' }] });
+  expect((await input.listInputs())[0]?.browserPreparation?.reason).toBe('tab-missing');
+  expect((await post('/status', { openConversations: [] })).body.inputs).toEqual([]);
 });
 
 it.each([false, true])('pauses completed queued input at manual close through the final Send fence (claimed: %s)', async claimed => {

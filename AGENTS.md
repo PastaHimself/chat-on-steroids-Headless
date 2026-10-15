@@ -295,6 +295,10 @@ native-headless-browser claim. `deploy/systemd/cos-headless.target` owns continu
 availability; display/private Secret Service/Brave precede the backend. Stop the target for maintenance.
 The dedicated profile is passed on every external browser URL handoff and an explicit executable
 cannot fall back to another browser family. See `docs/headless-vps.md` and `scripts/verify-headless.mjs`.
+`browser-selection.ts::selectedChatBrowser` resolves Headless to Brave for every runtime consumer,
+including process absence probes and built-in-browser lifecycle. The saved desktop browser choice
+is preserved: temporary desktop bootstrap can still use the built-in browser without starting it
+or letting its companion compete for queued openings on the next Headless launch.
 
 **Intent:** open a usable local workspace, restore accepted work consistently, and exit without
 leaving an invisible process, tool, writer or installer competing with the next launch.
@@ -2433,6 +2437,14 @@ Chromium browser/profile separate from ChatGPT account state. Use the selected b
 process evidence; a disconnected bridge or sleeping MV3 socket does not prove it is closed.
 OS wake launches require positive process absence and coalesce within one absence episode.
 The socket is a heartbeat/wake path; HTTP remains command/evidence authority.
+Sign-in scripting is a bounded observation in the extension worker as well as inside the page:
+a suspended page that never executes the script cannot indefinitely hold `/status` input polling.
+An offered ordinary opening accepts an exact query or hash input marker, rejecting conflicting
+markers. After browser restart renumbers tabs, an election may adopt one existing exact-marked
+tab; this grants no new creation. A `preparing` or `ready` election whose marker vanished can
+reprepare its elected tab only after a fresh document/epoch/idle proof. New records retain that
+document; stale replacement documents, drafts, foreign markers and disappeared tabs remain held.
+Existing legacy election rows still require the live idle proof. A spent fallback stays spent.
 
 External navigation may hide its destination URL under ChatGPT-only host permissions.
 A completed tab absent from a successful ChatGPT URL query can release the departed
@@ -3731,6 +3743,10 @@ for an unbound admitted local session, so a legitimate `no_chat` cannot hide its
 Status and empty history project the existing outbox proof (queued awaiting claim, claimed before
 authorization, unconfirmed Send, confirmed receipt, or terminal non-delivery), startup diagnostics
 and provider attribution separately. These projections never retry or grant delivery authority.
+The optional outbox `browserPreparation` stores only the last validated, bounded companion
+stage/reason observation from `/status` (`inputPreparation`). Control API input reads and Discord
+project it separately from receipts; it survives restart, admits no page prose and cannot change
+claim, Send, attribution or retry authority. Diagnostics after authorization cannot rewrite it.
 Local bootstrap establishes administrators/guilds/
 channels; roles cannot grant access. Every interaction rechecks permission and panel ownership.
 Setup publishes after validation/confirmation, rejects a draft based on superseded settings and

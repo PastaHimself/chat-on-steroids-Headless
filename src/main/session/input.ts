@@ -54,7 +54,14 @@ export const inputArgs = z.object({
   reasoningEffort: z.enum(REASONING_EFFORTS).nullable()
 });
 export type InputArgs = z.infer<typeof inputArgs>;
+const browserPreparationSchema = z.object({
+  stage: z.enum(['opening', 'preparing', 'ready']),
+  reason: z.enum(['waiting', 'offered', 'tab-missing', 'marker-missing', 'page-loading', 'document-unavailable', 'document-changed', 'page-not-idle', 'preparation-unconfirmed']),
+  observedAt: z.number().finite().nonnegative()
+}).strict();
 const entrySchema = inputArgs.extend({
+  /** Last companion observation only; never claim, Send, retry or completion authority. */
+  browserPreparation: browserPreparationSchema.optional(),
   /** This exact outbox row owns the first native send of its reserved local session. */
   opening: z.literal(true).optional(),
   /** An explicit retry can keep its unbound local chat instead of reserving another. */
@@ -1148,6 +1155,26 @@ export function noteInputStartupError(id: string, error: string | null): Promise
     const next = { ...row, error: error ? error.slice(0, 200) : undefined, ...(released ? { dueAt: Math.max(row.dueAt, Date.now()) } : {}) };
     await commit(current.map(entry => entry === row ? next : entry));
     return { ...next };
+  });
+}
+/** Bounded diagnostic projection of the existing election owner. No delivery state changes. */
+export function noteInputBrowserPreparation(observations: unknown): Promise<void> {
+  return serial(async () => {
+    if (!Array.isArray(observations)) return;
+    const updates = new Map<string, z.infer<typeof browserPreparationSchema>>();
+    for (const raw of observations.slice(0, 50)) {
+      const parsed = z.object({ id: z.string().uuid(), stage: browserPreparationSchema.shape.stage,
+        reason: browserPreparationSchema.shape.reason }).strict().safeParse(raw);
+      if (parsed.success) { const { id, ...progress } = parsed.data; updates.set(id, { ...progress, observedAt: Date.now() }); }
+    }
+    if (!updates.size) return;
+    const current = await load();
+    const next = current.map(row => {
+      const progress = updates.get(row.id);
+      if (!progress || !preparable(row) || (row.browserPreparation?.stage === progress.stage && row.browserPreparation.reason === progress.reason)) return row;
+      return { ...row, browserPreparation: progress };
+    });
+    if (next.some((row, index) => row !== current[index])) await commit(next);
   });
 }
 /** The same exact source boundary must still apply at claim and final Send authorization. */

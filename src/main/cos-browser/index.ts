@@ -2,6 +2,7 @@
  * The app's one CoS browser, running while it is the selected ChatGPT browser. Load it through
  * selection.ts: this module installs app hooks as it loads, and the default path never loads it.
  */
+import { selectedChatBrowser } from '../browser-selection.js';
 import { app, ipcMain, Notification } from 'electron';
 import path from 'node:path';
 import { bridgeStatus, onBridgeChange } from '../bridge.js';
@@ -65,7 +66,7 @@ ipcMain.on('cos-browser:sign-in', (event, action: unknown, value: unknown) => {
 
 /** Starts the CoS browser when it is the selected browser and stops it when it no longer is. */
 export function syncCosBrowser(): void {
-  if (getConfig().ui.chatBrowser === 'cos') {
+  if (selectedChatBrowser() === 'cos') {
     // Started with what is already true, not with what changes next: ready the moment it shows.
     void cosBrowser.start().then(() => { paintCompanion(); paintGenerating(); })
       .catch(error => logWarn(`cos browser: could not start: ${error instanceof Error ? error.message : String(error)}`));

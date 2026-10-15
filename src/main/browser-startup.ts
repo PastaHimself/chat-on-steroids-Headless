@@ -1,7 +1,7 @@
 /** One browser startup owner for explicit work and durable recovery. */
+import { selectedChatBrowser } from './browser-selection.js';
 import { bridgeStatus, browserWakeConnected } from './bridge.js';
 import { isPreferredBrowserRunning, openInPreferredBrowser } from './browser.js';
-import { getConfig } from './config.js';
 
 let waking: { lastSeenAt: number | null; selected: string; work: Promise<void>; failed: boolean; finished: boolean } | null = null;
 /** One browser startup per absence episode, shared by authored sends, discovery and owed recovery. */
@@ -10,7 +10,7 @@ export async function wakeBrowserUrl(url: string, retry = false, backgroundStart
   if (authority && !await authority.current()) return;
   const browser = await bridgeStatus();
   if (browserWakeConnected()) { waking = null; return; }
-  const selected = getConfig().ui.chatBrowser ?? 'chrome';
+  const selected = selectedChatBrowser();
   // The companion can be missing because its protocol is incompatible or MV3 is
   // suspended. Only process absence permits an OS launch; forwarding a URL to
   // an existing Chrome process can activate it even with minimized startup flags.
@@ -20,7 +20,7 @@ export async function wakeBrowserUrl(url: string, retry = false, backgroundStart
   // the exact recovery meanwhile; a missing socket alone never proves Chrome exited.
   if (authority && !await authority.current()) return;
   // Both the process probe and durable recovery validation may yield.
-  if (selected !== (getConfig().ui.chatBrowser ?? 'chrome')) return;
+  if (selected !== selectedChatBrowser()) return;
   if (browserWakeConnected()) { waking = null; return; }
   if (!absent) return;
   if (retry && waking === prior && (waking?.failed || waking?.finished)) waking = null;

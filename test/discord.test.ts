@@ -136,6 +136,7 @@ describe('Discord commands and authorization', () => {
   });
   it.each([
     { state: 'queued', delivery: 'pending', phrase: 'waiting for browser claim' },
+    { state: 'queued', delivery: 'pending', browserPreparation: { stage: 'ready', reason: 'tab-missing', observedAt: 1 }, phrase: 'ready (tab-missing)' },
     { state: 'browser', delivery: 'pending', offeredAt: 10, phrase: 'Browser claimed' },
     { state: 'queued', delivery: 'pending', mode: 'after-turn', phrase: 'waiting for turn completion' },
     { state: 'queued', delivery: 'pending', mode: 'finish', phrase: 'waiting for a finish boundary' },
