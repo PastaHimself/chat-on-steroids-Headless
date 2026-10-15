@@ -1,5 +1,33 @@
 import { selectedChatBrowser } from './browser-selection.js';
-import { noteInputBrowserPreparation } from './session/input.js';
+import {
+  noteInputBrowserPreparation,
+  publishBrowserDecision,
+  authorizeBrowserInput,
+  sessionInputPolicy,
+  collectRecordedBrowserDecision,
+  unconfirmedSessionInputKnown,
+  type InputActivity,
+  pendingBrowserInputs,
+  claimBrowserInput,
+  acknowledgeBrowserInput,
+  bindBrowserInputProject,
+  failBrowserInput,
+  completeBrowserDecision,
+  listInputs,
+  fileSilenceInput,
+  fileRecoveryInput,
+  advanceRecoveryInput,
+  hasQueuedAfterTurnInput,
+  inputBeforeGoal,
+  pendingQueuedPickups,
+  recordQueuedPickupAttemptNow,
+  syncQueuedPickupRecoveryNow,
+  deferSilenceInput,
+  revokeSilenceInputs,
+  endRecoveryInput,
+  retryUnclaimedInput,
+  failInputsForDeletedConversation,
+} from './session/input.js';
 import { recoveryHeld } from './recovery-hold.js';
 import { conversationProgress } from './session/progress.js';
 import { cosSignInTransfer, SignInTransferError } from './cos-browser/sign-in-transfer.js';
@@ -22,7 +50,6 @@ import type { HandoffCaptureIssue, SessionSummary } from '../shared/session.js';
 import { runningExecProcesses } from './codex/ownership.js';
 import { messageReferences, providerUnavailableFor } from '../shared/session.js';
 import { turnTrace } from '../shared/turn-trace.js';
-import { publishBrowserDecision, authorizeBrowserInput, sessionInputPolicy, collectRecordedBrowserDecision, unconfirmedSessionInputKnown, type InputActivity } from './session/input.js';
 import { pluginRefreshPublications, pendingPluginRefreshes, claimPluginRefresh, requireManualPluginRefresh, completePluginRefresh, failPluginRefresh } from './plugin-refresh.js';
 import { attachBrowserWake, wakeBrowserWork } from './browser-wake.js';
 import { tunnelRouteSettling } from './tunnel/route-settle.js';
@@ -34,7 +61,6 @@ export { setBrowserWorkArea } from './browser-window-layout.js';
 import { pendingBrowserPreferenceRequest, acknowledgeBrowserPreferences } from './browser-preferences.js';
 import { sessionFinishHeld, releaseSessionFinish, getSessionFinishDraft, sessionFinishWaiting } from './session/finish.js';
 import { observeUsage } from './session/usage.js';
-import { pendingBrowserInputs, claimBrowserInput, acknowledgeBrowserInput, bindBrowserInputProject, failBrowserInput, completeBrowserDecision, listInputs, fileSilenceInput, fileRecoveryInput, advanceRecoveryInput, hasQueuedAfterTurnInput, inputBeforeGoal, pendingQueuedPickups, recordQueuedPickupAttemptNow, syncQueuedPickupRecoveryNow, deferSilenceInput, revokeSilenceInputs, endRecoveryInput, retryUnclaimedInput, failInputsForDeletedConversation } from './session/input.js';
 /**
  * The local bridge between the Chrome extension and this app.
  *
