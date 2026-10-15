@@ -2199,6 +2199,14 @@ function prepareDesktopInputReceipt(tabId, id, documentId) {
   return tabReply(tabId, { type: 'clf-prepare-desktop-input', id }, { documentId }, 15000);
 }
 
+function inputIdFromUrl(value) {
+  try {
+    const url = new URL(value);
+    const query = url.searchParams.get('cos-input'), hash = new URLSearchParams(url.hash.slice(1)).get('cos-input');
+    return (!query || !hash || query === hash) ? query || hash : null;
+  } catch { return null; }
+}
+
 function offerDesktopInput(tabId, message) {
   // The reply is not a delivery receipt: the content script synchronously owns
   // one desktopInputBusy slot, then the app's durable browser claim and one-time
@@ -2228,10 +2236,7 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
     if (!input || !/^[a-f0-9-]{36}$/i.test(input.id)) return false;
     const target = cleanConversationId(input.conversationId);
     if (target) return conversationForTab(tab) === target;
-    try {
-      const url = new URL(tab.pendingUrl || tab.url || '');
-      return url.searchParams.get('cos-input') === input.id || new URLSearchParams(url.hash.slice(1)).get('cos-input') === input.id;
-    } catch { return false; }
+    return inputIdFromUrl(tab.pendingUrl || tab.url) === input.id;
   };
   for (const input of inputs.slice(0, 50)) {
     if (!input || !/^[a-f0-9-]{36}$/i.test(input.id)) continue;
@@ -2240,6 +2245,13 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
     const candidates = tabs.filter(tab => matchesInput(input, tab));
     let tab = candidates.sort((a, b) => a.id - b.id)[0];
     let elected = elections[input.id];
+    const fallbackUsed = elected?.fallbackUsed === true;
+    const waiting = async reason => {
+      const row = elections[input.id];
+      if (!row || row.waitReason === reason) return;
+      row.waitReason = reason;
+      await persistLive();
+    };
     let recoveredReuse = null;
     // A fresh app offer can follow a session rebind or the user's actual return.
     // Transfer to an existing exact-chat document only. Opening authority stays
@@ -2259,7 +2271,16 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
       await persistLive();
       elected = null;
     }
+    // Browser restart can renumber tabs while the exact input marker survives.
+    // Adopt one existing marked page, never spend another tabs.create authority.
+    // The backend still fences the exclusive claim and one-time Send.
+    if (!target && elected && tab && !candidates.some(candidate => candidate.id === elected.tab)) {
+      await elect(input.id, { tab: tab.id, stage: 'ready', conversationId: null,
+        ...(projectInput ? { project: projectInput } : {}), ...(fallbackUsed ? { fallbackUsed: true } : {}) });
+      elected = elections[input.id];
+    }
     if (elected?.tab != null) tab = candidates.find(candidate => candidate.id === elected.tab);
+    if (!tab && Number.isInteger(elected?.tab)) await waiting(tabs.some(row => row.id === elected.tab) ? 'marker-missing' : 'tab-missing');
     // The tab opened on this linked Project's page for this new chat finished on ChatGPT's home,
     // its marker gone: ChatGPT sends a deleted or unavailable Project there (measured 2026-10-10).
     // Say so instead of leaving the message waiting with nothing on screen.
@@ -2275,7 +2296,7 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
     // A prepare receipt can be lost after its exact document changes nothing. Do
     // not replay from elapsed time: only the still-elected, still-owned document
     // can prove that it is idle again and therefore no old preparation is live.
-    if (!tab && !target && elected?.stage === 'preparing' && Number.isInteger(elected.tab)) {
+    if (!tab && !target && !projectInput && ['preparing', 'ready'].includes(elected?.stage) && Number.isInteger(elected.tab)) {
       const candidate = tabs.find(row => row.id === elected.tab);
       const reusable = new Set(reusableConversations);
       // A completed conversation registry entry can survive New Chat and an
@@ -2284,14 +2305,29 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
       // document/epoch/idle probe instead of deadlocking on stale metadata.
       const concreteConversation = conversationFromUrl(candidate?.url) || conversationFromUrl(candidate?.pendingUrl);
       if (candidate) {
+        if (!isChatGptUrl(candidate.url)) { await waiting('document-unavailable'); continue; }
+        const location = new URL(candidate.url);
+        if (location.searchParams.has('cos-input') || new URLSearchParams(location.hash.slice(1)).has('cos-input')) continue;
         if (candidate.pinned || candidate.pendingUrl || modelCatalogTarget?.tab === candidate.id ||
-            (concreteConversation && !reusable.has(concreteConversation))) continue;
+            (concreteConversation && !reusable.has(concreteConversation))) {
+          await waiting(candidate.pendingUrl ? 'page-loading' : 'page-not-idle'); continue;
+        }
         const source = { tab: candidate.id, documentId: tabDocuments[String(candidate.id)], navigationEpoch: tabEpochs[String(candidate.id)] };
-        if (!ownsDocument(source)) continue;
+        if (!ownsDocument(source)) { await waiting('document-unavailable'); continue; }
+        // New records retain the elected document. A replacement/extra navigation
+        // cannot inherit its preparation; legacy rows still need the fresh idle proof.
+        if (elected.documentId && (elected.documentId !== source.documentId ||
+            (source.navigationEpoch !== elected.navigationEpoch &&
+              !(elected.stage === 'preparing' && conversationFromUrl(elected.url) &&
+                source.navigationEpoch === elected.navigationEpoch + 1 && !concreteConversation)))) {
+          await waiting('document-changed'); continue;
+        }
         const proof = await inputReuseProbe(candidate.id, source.documentId);
         const current = await chrome.tabs.get(candidate.id).catch(() => null);
         if (proof?.safe !== true || proof.navigationEpoch !== source.navigationEpoch || !ownsDocument(source) ||
-            !current || current.pinned || current.pendingUrl || current.url !== candidate.url) continue;
+            !current || current.pinned || current.pendingUrl || current.url !== candidate.url) {
+          await waiting('page-not-idle'); continue;
+        }
         // Logically clear this pass for one same-tab retry while the durable row
         // remains custody if the document changes before preparation begins.
         elected = null;
@@ -2343,19 +2379,22 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
               !current || current.pinned || current.pendingUrl || current.url !== candidate.url) continue;
           const borrowed = conversationForTab(candidate);
           if (borrowed) tabReuses[String(candidate.id)] = { documentId: source.documentId, conversationId: borrowed, at: Date.now() };
-          await elect(input.id, { ...source, url: current.url, stage: 'preparing' });
+          await elect(input.id, { ...source, url: current.url, stage: 'preparing', ...(fallbackUsed ? { fallbackUsed: true } : {}) });
           const leased = await chrome.tabs.get(candidate.id).catch(() => null);
           if (!ownsDocument(source) || !leased || leased.pinned || leased.pendingUrl || leased.url !== current.url || !token || disconnected) break;
           const owner = (await chrome.storage.session.get('modelCatalogOwner')).modelCatalogOwner;
           if (owner?.tab === candidate.id) await chrome.storage.session.set({ modelCatalogOwner: { ...owner, handedToInput: input.id } });
           const prepared = await prepareDesktopInputReceipt(candidate.id, input.id, source.documentId);
           const latest = await chrome.tabs.get(candidate.id).catch(() => null);
-          if (!latest || latest.pendingUrl || tabDocuments[String(candidate.id)] !== source.documentId) break;
+          if (!latest || latest.pendingUrl || tabDocuments[String(candidate.id)] !== source.documentId) {
+            await waiting(!latest ? 'tab-missing' : latest.pendingUrl ? 'page-loading' : 'document-changed'); break;
+          }
           if (prepared?.ready === true && matchesInput(input, latest)) {
-            await elect(input.id, { tab: candidate.id, stage: 'ready' });
+            await elect(input.id, { ...source, navigationEpoch: tabEpochs[String(candidate.id)], url: latest.url, stage: 'ready', ...(fallbackUsed ? { fallbackUsed: true } : {}) });
             tab = latest;
+            await waiting('offered');
             offerDesktopInput(tab.id, { type: 'clf-desktop-input', id: input.id, conversationId: null });
-          } else if (prepared?.fallback === true && prepared.preSend === true) {
+          } else if (!fallbackUsed && prepared?.fallback === true && prepared.preSend === true) {
             // Explicit native transition failure, before claim/insertion/send, owns
             // exactly one replacement. Persist that expenditure before Chrome awaits.
             await elect(input.id, { tab: null, stage: 'opening', fallbackUsed: true });
@@ -2380,7 +2419,7 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
                 }
               } catch { /* A draft, navigation or missing proof keeps the document. */ }
             }
-          }
+          } else await waiting('preparation-unconfirmed');
           break;
         }
         if (elections[input.id]) continue;
@@ -2392,6 +2431,7 @@ async function deliverDesktopInputs(inputs, background, reusableConversations = 
       tabs.push(tab);
       continue;
     }
+    await waiting('offered');
     offerDesktopInput(tab.id, { type: 'clf-desktop-input', id: input.id, conversationId: target,
       ...(!target && typeof input.project === 'string' && /^g-p-[0-9a-f]{32}$/.test(input.project) ? { project: input.project } : {}),
       ...(input.recovery ? { recovery: input.recovery } : {}),
@@ -3179,6 +3219,7 @@ async function maintainOnce() {
     .map(conversationForTab)
     .filter(Boolean))];
   const reply = await call('/status', { method: 'POST', body: JSON.stringify({ openConversations, stalledConversations, canReveal: true, canExportImages: true,
+    inputPreparation: Object.entries(inputOpenings).slice(0, 50).map(([id, row]) => ({ id, stage: row.stage, reason: row.waitReason || 'waiting' })),
     chatGptSignedIn: chatGptSignedInState,
     ...(extensionUpdateHold ? { updateHold: extensionUpdateHold } : {}) }) });
   if (intent !== connectionEpoch || !token || disconnected) return;
@@ -3918,7 +3959,7 @@ const HANDLERS = {
       if (message.lifetime === 'temporary-planner' && (owner !== `${prefix}${source.navigationEpoch}` ||
           new URL(tab.url).searchParams.get('temporary-chat') !== 'true')) return { ok: false };
     } else {
-      if (!conversationId && !String(tab.url || '').includes(`cos-input=${id}`)) return { ok: false };
+      if (!conversationId && inputIdFromUrl(tab.url) !== id) return { ok: false };
       if (message.conversationId !== conversationId || !ownsDocument(source)) return { ok: false };
     }
     if (message.ack === true && message.lifetime !== 'temporary-planner') {
@@ -4977,7 +5018,7 @@ chrome.tabs.onUpdated.addListener((id, changeInfo, tab) => {
  * receive both its static manifest injection and this recovery injection.
  */
 const CHATGPT_TAB_URLS = ['https://chatgpt.com/*', 'https://chat.openai.com/*'];
-const PAGE_RECORDER_VERSION = 23;
+const PAGE_RECORDER_VERSION = 24;
 
 let deferredRecoveryWork = null;
 
@@ -5540,14 +5581,18 @@ if (chrome.tabs?.onRemoved && typeof chrome.tabs.onRemoved.addListener === 'func
 }
 
 async function askChatGptSignedIn(tabId) {
-  const [frame] = await chrome.scripting.executeScript({ target: { tabId }, func: async () => {
+  // The page-local fetch timeout cannot run while Chrome has not executed the
+  // script (for example a suspended document). Bound this read in the worker,
+  // too: login is an observation, never a dependency that can stop input polling.
+  const frames = await browserReply(() => chrome.scripting.executeScript({ target: { tabId }, func: async () => {
     try {
       const response = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(4000) });
       if (!response.ok) return null;
       const session = await response.json();
       return Boolean(session && typeof session === 'object' && (session.accessToken || session.user));
     } catch { return null; }
-  } });
+  } }), 5000);
+  const frame = frames?.[0];
   return typeof frame?.result === 'boolean' ? frame.result : null;
 }
 

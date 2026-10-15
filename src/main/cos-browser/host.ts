@@ -7,6 +7,7 @@
  * into the model. Windows belong to the app, so a window the extension keeps in the background is
  * simply never shown: nothing appears in a taskbar or dock on any platform.
  */
+import { selectedChatBrowser } from '../browser-selection.js';
 import { BaseWindow, BrowserWindow, WebContentsView, app, nativeImage, session, shell, type NativeImage, type Session, type WebContents } from 'electron';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -658,7 +659,7 @@ export class CosBrowser {
     const tabId = contents.id;
     const windowId = this.model.tab(tabId)?.windowId;
     const frame = windowId === undefined ? undefined : this.frames.get(windowId);
-    if (!this.ses || windowId === undefined || !frame || getConfig().ui.chatBrowser !== 'cos') return;
+    if (!this.ses || windowId === undefined || !frame || selectedChatBrowser() !== 'cos') return;
     const existing = this.signIn;
     if (existing) {
       this.model.activate(existing.contents.id);
@@ -747,7 +748,7 @@ export class CosBrowser {
     const epoch = this.browserEpoch;
     const contents = panel.contents;
     const current = () => this.signIn === panel && !!ses && this.ses === ses && epoch === this.browserEpoch && this.running() &&
-      getConfig().ui.chatBrowser === 'cos' && !contents.isDestroyed() && this.views.get(contents.id)?.webContents === contents;
+      selectedChatBrowser() === 'cos' && !contents.isDestroyed() && this.views.get(contents.id)?.webContents === contents;
     if (!current()) return;
     panel.launching = true;
     panel.notice = null;

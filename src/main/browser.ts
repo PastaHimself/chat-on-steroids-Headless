@@ -1,8 +1,8 @@
+import { selectedChatBrowser } from './browser-selection.js';
 import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { launchCommand, runCommand, runPowerShell } from './exec.js';
-import { getConfig } from './config.js';
 import type { ChatBrowser } from '../shared/types.js';
 import { browserWindowBounds } from './browser-window-layout.js';
 import { runtimeMode } from './runtime-mode.js';
@@ -52,7 +52,7 @@ export async function openBrowserSignIn(browser: ExternalChatBrowser,
 export async function isPreferredBrowserRunning(
   platform: NodeJS.Platform = process.platform,
   powershell: typeof runPowerShell = runPowerShell,
-  browser: ChatBrowser = getConfig().ui.chatBrowser ?? 'chrome',
+  browser: ChatBrowser = selectedChatBrowser(),
   command: typeof runCommand = runCommand
 ): Promise<boolean | null> {
   if (browser === 'cos') return (await import('./cos-browser/selection.js')).loadedCosBrowser()?.running() ?? false;
@@ -260,7 +260,7 @@ export async function openInPreferredBrowser(
   const env = options.env ?? process.env;
   const usable = options.usable ?? ((candidate: string) => isExecutableBrowser(candidate, platform));
   const launch = options.launch ?? launchCommand;
-  const selected = options.browser ?? getConfig().ui.chatBrowser ?? 'chrome';
+  const selected = selectedChatBrowser(env, options.browser);
   if (selected === 'cos') {
     // Loaded on demand, only when selected: the default extension path never loads it.
     const cosBrowser = await (await import('./cos-browser/selection.js')).loadCosBrowser();

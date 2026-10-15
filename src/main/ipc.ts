@@ -1,3 +1,4 @@
+import { selectedChatBrowser } from './browser-selection.js';
 import { operationalHealth } from './operational-health.js';
 import { registerWorkspaceTerminalIpc } from './workspace-terminal-ipc.js';
 import { registerDictationIpc } from './dictation.js';
@@ -1190,7 +1191,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     if (!ALLOWED_LINKS.has(url) && !safeExternalLink(url)) throw new Error('That link is not allowed');
     // Setup's ChatGPT and OpenAI pages open where the user is already signed in, unless the
     // user asked for their own browser instead.
-    if (!external && getConfig().ui.chatBrowser === 'cos' && opensInCosBrowser(url)) await openInPreferredBrowser(url, { reveal: true });
+    if (!external && selectedChatBrowser() === 'cos' && opensInCosBrowser(url)) await openInPreferredBrowser(url, { reveal: true });
     else await shell.openExternal(url);
     return true;
   });
@@ -1218,7 +1219,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
 
   // Setup's first step: the CoS browser on screen, on ChatGPT's login when signed out.
   handle('cosBrowser:show', async () => {
-    if (getConfig().ui.chatBrowser !== 'cos') throw new Error('The CoS browser is not the selected ChatGPT browser');
+    if (selectedChatBrowser() !== 'cos') throw new Error('The CoS browser is not the selected ChatGPT browser');
     await (await loadCosBrowser()).showSignIn();
     return true;
   });

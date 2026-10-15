@@ -106,7 +106,9 @@ export function inputDeliveryDescription(input: any): string {
     : input.mode === 'after-turn' ? 'Queued; waiting for turn completion before browser claim.'
     : input.mode === 'finish' ? 'Queued; waiting for a finish boundary before browser claim.'
     : 'Queued; waiting for browser claim. Check the paired browser, provider sign-in and model readiness.';
-  return `Input: ${input.id}\nOutbox: ${input.state}\n${phase}${input.error ? `\nDelivery diagnostic: ${input.error}` : ''}`;
+  const preparation = input.delivery === 'pending' && input.state === 'queued' && input.browserPreparation
+    ? `\nLast browser preparation: ${input.browserPreparation.stage} (${input.browserPreparation.reason}). This is not a Send receipt.` : '';
+  return `Input: ${input.id}\nOutbox: ${input.state}\n${phase}${preparation}${input.error ? `\nDelivery diagnostic: ${input.error}` : ''}`;
 }
 
 export function sessionDescription(detail: any): string {

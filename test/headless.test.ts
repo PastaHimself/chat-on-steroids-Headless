@@ -27,6 +27,12 @@ describe('headless runtime boundaries', () => {
     expect(JSON.stringify(launch.mock.calls)).not.toMatch(/no-sandbox|disable-setuid-sandbox|remote-debugging|headless|new-window/);
     expect(serverBrowserArgs({})).toEqual([]);
   });
+  it('routes a saved built-in desktop choice to the dedicated Brave in Headless', async () => {
+    const env = { COS_RUNTIME_MODE: 'headless', COS_BROWSER_PROFILE: '/srv/profile', COS_BROWSER_EXECUTABLE: '/custom/brave' };
+    const launch = vi.fn(async () => ({ pid: 123 }));
+    await openInPreferredBrowser('https://chatgpt.com/', { env, platform: 'linux', browser: 'cos', usable: () => true, launch });
+    expect(launch).toHaveBeenCalledExactlyOnceWith('/custom/brave', [...serverBrowserArgs(env), 'https://chatgpt.com/'], '/custom');
+  });
   it('headless activation never constructs a workspace window', () => {
     const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
     const start = source.indexOf('function createWindow(): void {');

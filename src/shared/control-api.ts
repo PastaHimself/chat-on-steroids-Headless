@@ -310,6 +310,8 @@ export interface ControlApiInput {
   createdAt: number;
   dueAt: number;
   offeredAt: number | null;
+  /** Last observed companion stage, not a provider receipt or permission to retry. */
+  browserPreparation?: { stage: string; reason: string; observedAt: number } | null;
   deliveredAt: number | null;
   sendAuthorizedAt: number | null;
   requiresAuthorization: boolean;

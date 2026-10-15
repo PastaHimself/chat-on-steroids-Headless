@@ -650,7 +650,7 @@ describe('input outbox', () => {
     expect(row.text.chars).toBeGreaterThan(4_000);
     expect(JSON.stringify(all.body)).not.toContain(apiKey);
     expect(Object.keys(row).sort()).toEqual([
-      'attachments', 'automatic', 'cancelledByUser', 'conversationId', 'createdAt', 'deliveredAt', 'deliveredSessionId', 'delivery',
+      'attachments', 'automatic', 'browserPreparation', 'cancelledByUser', 'conversationId', 'createdAt', 'deliveredAt', 'deliveredSessionId', 'delivery',
       'dueAt', 'error', 'id', 'images', 'messageId', 'mode', 'model', 'offeredAt', 'purpose', 'queueOrder', 'reasoningEffort',
       'requiresAuthorization', 'sendAuthorizedAt', 'sessionId', 'state', 'text', 'transportIntent'
     ]);
