@@ -1,0 +1,58 @@
+name: Import original Chat On Steroids v2.1.38 ZIP
+
+on:
+  push:
+    paths:
+      - ".github/workflows/import-upstream-2.1.38.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: import-upstream-2.1.38
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out target branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Download pinned upstream ZIP and verify exact user-provided archive hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="upstream/chat-on-steroids-2.1.38.zip"
+          if test -f "$target"; then
+            printf '%s  %s\n' 'fc7654e06f628f52307a7c2057fa32807ffc9684d97ffdfd9d44046e07be6e8a' "$target" | sha256sum -c -
+            echo "Already present and matches uploaded ZIP."
+            exit 0
+          fi
+          mkdir -p upstream
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://codeload.github.com/totec448-spec/chat-on-steroids/zip/refs/tags/v2.1.38" \
+            --output "$target"
+          test "$(stat -c %s "$target")" -eq 68296302
+          printf '%s  %s\n' 'fc7654e06f628f52307a7c2057fa32807ffc9684d97ffdfd9d44046e07be6e8a' "$target" | sha256sum -c -
+          unzip -tq "$target" > /dev/null
+          echo "Exact uploaded ZIP checksum and archive integrity verified."
+
+      - name: Commit archive directly to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- upstream/chat-on-steroids-2.1.38.zip
+          if git diff --cached --quiet; then
+            echo "Archive already tracked; no changes."
+            exit 0
+          fi
+          git commit -m "chore: archive original Chat On Steroids v2.1.38 source ZIP"
+          git push origin HEAD:main
