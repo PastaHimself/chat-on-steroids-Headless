@@ -1,26 +1,110 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder } from 'discord.js';
 import { safeText } from './config.js';
 
-export function panel(title: string, text: unknown, components: any[] = [], secrets: string[] = []) {
+export const EmbedColor = {
+  Success: 0x57f287,
+  Warning: 0xfee75c,
+  Danger: 0xed4245,
+  Info: 0x5865f2,
+  Neutral: 0x4f545c,
+} as const;
+
+export type PanelField = { name: string; value: string; inline?: boolean };
+
+export function panel(
+  title: string,
+  text: unknown,
+  components: any[] = [],
+  secrets: string[] = [],
+  options?: { color?: number; fields?: PanelField[] }
+) {
   const description = safeText(text, secrets);
-  return { embeds: [new EmbedBuilder().setTitle(safeText(title, secrets).slice(0, 256)).setDescription(description.slice(0, 3900) || 'No recorded data.')
-    .setFooter({ text: description.length > 3900 ? 'Display shortened; use history pages for more.' : 'Recorded state • refresh to inspect changes' })],
-    components, allowedMentions: { parse: [] as [] } };
+  const embed = new EmbedBuilder()
+    .setTitle(safeText(title, secrets).slice(0, 256))
+    .setDescription(description.slice(0, 3900) || 'No recorded data.')
+    .setFooter({ text: description.length > 3900 ? 'Display shortened; use history pages for more.' : 'Recorded state • refresh to inspect changes' });
+
+  if (options?.color !== undefined) {
+    embed.setColor(options.color);
+  }
+
+  if (options?.fields && options.fields.length > 0) {
+    const safeFields = options.fields.slice(0, 25).map(f => ({
+      name: safeText(f.name, secrets).slice(0, 256) || 'Field',
+      value: safeText(f.value, secrets).slice(0, 1024) || '—',
+      inline: f.inline ?? true,
+    }));
+    embed.addFields(safeFields);
+  }
+
+  return {
+    embeds: [embed],
+    components,
+    allowedMentions: { parse: [] as [] },
+  };
 }
+
 export function buttons(viewId: string, options: Array<[string, string, ButtonStyle?]>) {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(...options.slice(0, 5).map(([action, label, style]) =>
-    new ButtonBuilder().setCustomId(`${viewId}:${action}`).setLabel(label).setStyle(style ?? ButtonStyle.Secondary)));
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    ...options.slice(0, 5).map(([action, label, style]) =>
+      new ButtonBuilder()
+        .setCustomId(`${viewId}:${action}`)
+        .setLabel(label)
+        .setStyle(style ?? ButtonStyle.Secondary)
+    )
+  );
 }
-export function select(viewId: string, action: string, placeholder: string, options: Array<{ label: string; value: string; description?: string }>) {
-  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder().setCustomId(`${viewId}:${action}`)
-    .setPlaceholder(placeholder).addOptions(options.slice(0, 25).map(option => ({ ...option, label: safeText(option.label).slice(0, 100),
-      description: option.description ? safeText(option.description).slice(0, 100) : undefined }))));
+
+export function select(
+  viewId: string,
+  action: string,
+  placeholder: string,
+  options: Array<{ label: string; value: string; description?: string }>
+) {
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`${viewId}:${action}`)
+      .setPlaceholder(placeholder)
+      .addOptions(
+        options.slice(0, 25).map(option => ({
+          ...option,
+          label: safeText(option.label).slice(0, 100),
+          description: option.description ? safeText(option.description).slice(0, 100) : undefined,
+        }))
+      )
+  );
 }
+
+export function sessionStatusIndicator(detail: any): { emoji: string; text: string; color: number } {
+  const live = detail?.live;
+  if (live?.blocked) {
+    return { emoji: '🔴', text: 'Blocked', color: EmbedColor.Danger };
+  }
+  if (live?.stopPending) {
+    return { emoji: '🔴', text: 'Stop Requested', color: EmbedColor.Danger };
+  }
+  if (live?.activeTurnId) {
+    return { emoji: '🟢', text: 'Working', color: EmbedColor.Success };
+  }
+  if (live?.goalWait) {
+    return { emoji: '🟡', text: 'Waiting', color: EmbedColor.Warning };
+  }
+  if (live?.job?.needsAttention) {
+    return { emoji: '🟡', text: 'Attention Needed', color: EmbedColor.Warning };
+  }
+  return { emoji: '⚪', text: 'Idle', color: EmbedColor.Info };
+}
+
 export function sessionDescription(detail: any): string {
   const session = detail.session, live = detail.live;
-  return [`Session: ${session.title || 'Untitled session'}`,
-    `Observed model: ${session.model ?? 'unknown'}`, `State: ${live?.activeTurnId ? 'working' : live?.stopPending ? 'stop requested' : 'no proven active turn'}`,
-    `Automation: ${live?.automation ?? 'unavailable'}`, live?.blocked ? `Blocked: ${live.blocked}` : '',
+  const status = sessionStatusIndicator(detail);
+
+  return [
+    `Session: ${session.title || 'Untitled session'}`,
+    `Observed model: ${session.model ?? 'unknown'}`,
+    `State: ${status.emoji} ${live?.activeTurnId ? 'working' : live?.stopPending ? 'stop requested' : 'no proven active turn'}`,
+    `Automation: ${live?.automation ?? 'unavailable'}`,
+    live?.blocked ? `Blocked: ${live.blocked}` : '',
     live?.goalWait ? `Waiting: ${live.goalWait.reason}` : '',
     ...(live?.job ? [
       `Compact & Resume: ${live.job.stage}`,
@@ -29,32 +113,48 @@ export function sessionDescription(detail: any): string {
       live.job.needsAttention ? `Compaction needs attention: ${live.job.error ?? 'Inspect the paired browser and existing handoff receipts.'}` :
         live.job.error ? `Compaction note: ${live.job.error}` : ''
     ] : []),
-    `Last recorded outcome: ${session.lastTurnOutcome ?? 'unknown'}`, `Updated: ${new Date(session.updatedAt).toISOString()}`,
-    'A stopped generation alone does not prove task success.'].filter(Boolean).join('\n');
+    `Last recorded outcome: ${session.lastTurnOutcome ?? 'unknown'}`,
+    `Updated: ${new Date(session.updatedAt).toISOString()}`,
+    'A stopped generation alone does not prove task success.'
+  ].filter(Boolean).join('\n');
 }
+
 export function historyDescription(events: any[]): string {
-  return events.map(event => `**${event.kind} · ${event.position}**\n${event.message?.text ?? event.tool?.summary?.title ?? event.detail ?? event.outcome ?? event.delivery ?? ''}${event.message?.truncated ? '\n[recorded display shortened]' : ''}`).join('\n\n');
+  if (!events || events.length === 0) return 'No recorded history events.';
+  return events
+    .map(event => {
+      const emoji = event.kind === 'user_message' ? '💬' : event.kind === 'assistant_message' ? '🤖' : '⚙️';
+      return `**${emoji} ${event.kind} · ${event.position}**\n${event.message?.text ?? event.tool?.summary?.title ?? event.detail ?? event.outcome ?? event.delivery ?? ''}${event.message?.truncated ? '\n[recorded display shortened]' : ''}`;
+    })
+    .join('\n\n');
 }
+
 export function taskPlanDescription(plan: any): string {
   if (!plan) return 'No durable executor update_plan document is recorded.';
   const completed = plan.plan.filter((row: any) => row.status === 'completed').length;
-  return [`${completed}/${plan.plan.length} steps marked completed by the executor.`, plan.explanation ?? '',
-    ...plan.plan.map((row: any, index: number) => `${index + 1}. ${row.status === 'completed' ? '✓' : row.status === 'in_progress' ? '▶' : '○'} ${row.step}\n${row.details ?? ''}`),
-    'These are the executor’s recorded progress labels; inspect results for verification.'].join('\n');
+  return [
+    `**Progress:** ${completed}/${plan.plan.length} steps marked completed by executor.`,
+    plan.explanation ? `*Explanation:* ${plan.explanation}` : '',
+    ...plan.plan.map((row: any, index: number) => `${index + 1}. ${row.status === 'completed' ? '✅' : row.status === 'in_progress' ? '▶️' : '⚪'} **${row.step}**\n${row.details ? `└ ${row.details}` : ''}`),
+    '\n*These are the executor’s recorded progress labels; inspect results for verification.*'
+  ].filter(Boolean).join('\n');
 }
+
 export function resourceDescription(resource: any): string {
   const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
   const browsers = resource.processes.filter((row: any) => row.kind === 'browser');
-  return [`CPU: ${resource.cpuCount} cores · load ${resource.loadAverage.map((value: number) => value.toFixed(2)).join(' / ')}`,
-    `Physical RAM: ${gib(resource.memory.totalBytes)} · available ${gib(resource.memory.availableBytes)} · pressure ${resource.pressure}`,
-    `Backend resident memory: ${gib(resource.memory.app.rss)}`,
-    `Disk: ${gib(resource.disk.availableBytes)} available / ${gib(resource.disk.totalBytes)}`,
-    ...resource.swaps.map((row: any) => `${row.kind === 'zram' ? 'ZRAM' : 'Disk swap'}: ${gib(row.usedBytes)} used / ${gib(row.bytes)} · priority ${row.priority}`),
-    `Browser processes: ${browsers.length} · combined RSS ${gib(browsers.reduce((sum: number, row: any) => sum + row.rssBytes, 0))} (shared pages may be counted more than once)`,
-    `Terminal shells: ${resource.processes.filter((row: any) => row.kind === 'terminal').length}`,
-    `Possible orphan PIDs: ${resource.possibleOrphans.slice(0, 12).join(', ') || 'none observed'} (parent PID 1 can also mean a managed process)`,
-    `Dedicated browser profile: ${resource.browser?.configured ? resource.browser.accessible ? 'accessible' : 'unavailable' : 'not configured'}`,
-    ...(resource.systemd.services ?? []).map((row: any) => `${row.name}: ${row.active} / ${row.state}`),
-    resource.systemd.available ? '' : 'Systemd state unavailable; check systemctl locally.',
-    'Diagnostics never terminate active work. Browser presence does not prove ChatGPT authentication.'].filter(Boolean).join('\n');
+  return [
+    `💻 **CPU:** ${resource.cpuCount} cores · load ${resource.loadAverage.map((value: number) => value.toFixed(2)).join(' / ')}`,
+    `🧠 **Physical RAM:** ${gib(resource.memory.totalBytes)} · available ${gib(resource.memory.availableBytes)} · pressure ${resource.pressure}`,
+    `⚡ **Backend Resident Memory:** ${gib(resource.memory.app.rss)}`,
+    `💾 **Disk:** ${gib(resource.disk.availableBytes)} available / ${gib(resource.disk.totalBytes)}`,
+    ...resource.swaps.map((row: any) => `🔄 ${row.kind === 'zram' ? 'ZRAM' : 'Disk swap'}: ${gib(row.usedBytes)} used / ${gib(row.bytes)} · priority ${row.priority}`),
+    `🌐 **Browser Processes:** ${browsers.length} · combined RSS ${gib(browsers.reduce((sum: number, row: any) => sum + row.rssBytes, 0))} (shared pages may be counted more than once)`,
+    `🐚 **Terminal Shells:** ${resource.processes.filter((row: any) => row.kind === 'terminal').length}`,
+    `❓ **Possible Orphan PIDs:** ${resource.possibleOrphans.slice(0, 12).join(', ') || 'none observed'} (parent PID 1 can also mean a managed process)`,
+    `🌐 **Dedicated Browser Profile:** ${resource.browser?.configured ? resource.browser.accessible ? 'accessible' : 'unavailable' : 'not configured'}`,
+    ...(resource.systemd.services ?? []).map((row: any) => `⚙️ ${row.name}: ${row.active} / ${row.state}`),
+    resource.systemd.available ? '' : '⚠️ Systemd state unavailable; check systemctl locally.',
+    '\nDiagnostics never terminate active work. Browser presence does not prove ChatGPT authentication.'
+  ].filter(Boolean).join('\n');
 }
