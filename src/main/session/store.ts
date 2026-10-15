@@ -1962,15 +1962,29 @@ export async function readHandoffResponse(sessionId: string, conversationId: str
   const turns = entry.summary.timelineTurns;
   const next = events.findIndex(event => event.kind === 'user_message' && !injectedUserMessage(event, turns));
   const interval = next < 0 ? events : events.slice(0, next);
+  // Presentation chronology groups a turn's starts ahead of its ends. Recovery must
+  // instead respect publication order: a same-id app reopen retires the earlier end.
+  const boundaries = interval.filter(event => event.kind === 'turn_start' || event.kind === 'turn_end')
+    .sort((left, right) => left.seq - right.seq);
+  const boundary = boundaries.at(-1);
+  // A reload may lose the final's document-local owner. Only the CURRENT completed
+  // boundary's exact native final UUID can reconstruct it. Older segments, a sole
+  // nearby turn and timestamps grant no proof. Raw history and live state stay intact.
+  const terminal = boundary?.kind === 'turn_end' && boundary.outcome === 'completed' && boundary.turnId &&
+    boundary.providerMessageId && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(boundary.providerMessageId)
+    ? boundary : null;
   const generations = new Set<string>();
   for (const event of interval) {
     if (event.kind === 'user_message') continue;
     if (event.turnId) generations.add(responseTurnId(turns, event.turnId));
-    else if (event.kind !== 'assistant_message' || event.final) return ambiguous('generation-unidentified');
+    else if (event.kind !== 'assistant_message' || event.final) {
+      if (event.kind !== 'assistant_message' || !event.final || !terminal ||
+          event.providerMessageId !== terminal.providerMessageId) return ambiguous('generation-unidentified');
+      generations.add(responseTurnId(turns, terminal.turnId!));
+    }
   }
   if (generations.size > 1) return ambiguous('multiple-generations');
   const [generation] = generations;
-  const boundary = interval.filter(event => event.kind === 'turn_start' || event.kind === 'turn_end').at(-1);
   if (!generation || boundary?.kind !== 'turn_end') return pending('generation-not-terminal');
   if (boundary.outcome !== 'completed') return pending('response-failed');
   const finals = interval.filter((event): event is Extract<SessionEvent, { kind: 'assistant_message' }> =>
@@ -1978,6 +1992,15 @@ export async function readHandoffResponse(sessionId: string, conversationId: str
   if (finals.length > 1) return ambiguous('multiple-finals');
   const final = finals[0];
   if (!final) return pending('final-not-recorded');
+  if (boundary.providerMessageId && final.providerMessageId && boundary.providerMessageId !== final.providerMessageId)
+    return ambiguous('multiple-finals');
+  let ended = false, reopenedAt = 0;
+  for (const event of boundaries) {
+    if (event.kind === 'turn_end') ended = true;
+    else if (ended) reopenedAt = event.seq;
+  }
+  // Re-reporting old final HTML/identity cannot complete work reopened after it.
+  if (reopenedAt && (final.finalContentSeq ?? positionOf(final)) <= reopenedAt) return pending('final-not-recorded');
   if (final.textIncomplete === true || (final.textIncomplete !== false && final.message.chars >= 256_000))
     return pending('response-truncated');
   const text = final.message.truncated

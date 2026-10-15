@@ -9698,6 +9698,21 @@ describe('a stop button that goes missing while the turn is still running', () =
     ]);
   });
 
+  it('retains the exact native text-final UUID on its completed generation checkpoint', async () => {
+    live = await harness();
+    startGenerating(live.document);
+    const section = assistantTurn(live.document, 'native-text-checkpoint', []);
+    live.hook.observe(); await settle();
+    const provider = '11111111-2222-4333-8444-555555555555';
+    await bindFiberTurns([{ section, turn: { turnId: 'native-text-checkpoint', endMessageId: provider,
+      calls: [], activities: [], messages: [{ role: 'assistant', stable: true, messageId: provider,
+        rawMessageId: provider, rawText: 'Completed handoff.', renderedHtml: '<p>Completed handoff.</p>' }] } }]);
+    await live.hook.flush(); await settle();
+    expect(emitted(live.sent, 'turn_end').at(-1)?.event).toMatchObject({
+      turnId: emitted(live.sent, 'turn_start')[0]?.event.turnId, outcome: 'completed', providerMessageId: provider
+    });
+  });
+
   it('closes an image-only answer from exact Fiber terminal evidence without authored text', async () => {
     live = await harness();
     startGenerating(live.document);
@@ -18614,9 +18629,20 @@ describe('one live isolated-world recorder per document', () => {
 
     await expect(live.runtimeMessage({ type: 'clf-recorder-ping' })).resolves.toEqual({
       ok: true,
-      recorderVersion: 22,
+      recorderVersion: 23,
       busy: false
     });
+  });
+
+  it('replaces a healthy recorder from before native final checkpoint preservation', async () => {
+    live = await harness();
+    const win = live.window as any;
+    win.__CLF_CONTENT_RECORDER__.version = 22;
+    let successor: Hook | null = null;
+    win.CLF_TEST_HOOK = (api: Hook) => { successor = api; };
+    win.eval(contentSource); await settle();
+    expect(successor).toBeTruthy();
+    expect(win.__CLF_CONTENT_RECORDER__.version).toBeGreaterThan(22);
   });
 
   it('leaves a healthy incumbent recorder alone', async () => {
@@ -18766,6 +18792,38 @@ describe('a request id ChatGPT reused across retries', () => {
     // ChatGPT responses under one local turn and render the same answer twice.
     expect(answers.map((event) => event.messageId)).toEqual(['msg-first', 'msg-second']);
     expect(answers.map((event) => event.turnId)).toEqual([undefined, undefined]);
+  });
+
+  it('keeps a contradictory positive message-owner claim unowned on later scans', async () => {
+    live = await harness(undefined, { activity: () => {
+      const result = activity();
+      result.data.stream.push({ ...result.data.stream[0]!, seq: 2, turnId: 'g-other-generation', requestId: 'wfr_other_owner' });
+      return result;
+    } });
+    await live.hook.pullActivity(); await settle();
+    await replyFiber([], [settledTurn('page-only', 'conflicting-message', 'First observation.')]);
+    await live.hook.flush();
+    const conflict = settledTurn('page-only', 'conflicting-message', 'Contradictory observation.');
+    conflict.calls[0]!.requestId = 'wfr_other_owner';
+    await replyFiber([], [conflict]); await live.hook.flush();
+    await replyFiber([], [{ ...conflict, calls: [], messages: conflict.messages.map(message => ({ ...message, rawText: 'Later observation.' })) }]);
+    await live.hook.flush();
+    const rows = emitted(live.sent, 'assistant_message').filter(row => row.event.messageId === 'conflicting-message');
+    expect(rows[0]?.event.turnId).toBe('g-retried-8-11');
+    expect(rows.slice(1).every(row => !row.event.turnId)).toBe(true);
+    expect(rows.length).toBeGreaterThan(1);
+  });
+
+  it('publishes the retained message owner when a later scan loses its binding', async () => {
+    live = await harness(undefined, { activity });
+    await live.hook.pullActivity(); await settle();
+    await replyFiber([], [settledTurn('page-turn-only', 'stable-owned-answer', 'The answer.')]);
+    await live.hook.flush();
+    expect(emitted(live.sent, 'assistant_message').at(-1)?.event.turnId).toBe('g-retried-8-11');
+    const revised = { ...settledTurn('page-turn-only', 'stable-owned-answer', 'The complete answer.'), calls: [] };
+    await replyFiber([], [revised]); await live.hook.flush();
+    const rows = emitted(live.sent, 'assistant_message').filter(row => row.event.messageId === 'stable-owned-answer');
+    expect(rows.at(-1)?.event.turnId).toBe('g-retried-8-11');
   });
 
   it('still gives its turn id to the one page turn that claims it', async () => {
@@ -22904,7 +22962,7 @@ describe('ordinary Continue native recovery', () => {
     // Chrome's static content cache can precede the helper read from disk by repair.
     win.__CLF_CONTENT_RECORDER__.stop();
     win.CLF_TEST_HOOK = (api: Hook) => { live!.hook = api; };
-    win.eval(contentSource.replace('const RECORDER_VERSION = 22;', 'const RECORDER_VERSION = 13;')
+    win.eval(contentSource.replace('const RECORDER_VERSION = 23;', 'const RECORDER_VERSION = 13;')
       .replace(`const FIBER_VERSION = ${fiberVersion};`, 'const FIBER_VERSION = 12;'));
     await settle();
     userTurn(live.document, 'source', 'Complete the task');
