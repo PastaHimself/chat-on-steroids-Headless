@@ -1782,7 +1782,13 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
     // rather than vanish silently at twice the ordinary TTL.
     const retentionMs = manualWaitingTtlMs(raw.state, requestedModel(raw.requestedModel)) * 2;
     const lastTouchedAt = Number.isFinite(raw.touchedAt) && raw.touchedAt! <= now ? raw.touchedAt! : raw.openedAt;
-    const dispatched = raw.armed === true || raw.state === 'claimed' || raw.state === 'committing' ||
+    // The retired DOM-absence release wrote attempted-unresolved but kept askedAt.
+    // In awaiting-summary that timestamp proves prior dispatch, so it outranks a
+    // missing/predispatch checkpoint before even applying retention. Other phases
+    // also stamp askedAt without sending (e.g. a pre-Send abort), so do not infer it there.
+    const previouslyAsked = raw.state === 'awaiting-summary' &&
+      typeof raw.askedAt === 'number' && Number.isFinite(raw.askedAt) && raw.askedAt > 0;
+    const dispatched = previouslyAsked || raw.armed === true || raw.state === 'claimed' || raw.state === 'committing' ||
       (raw.sourceSend && !sendUnattempted(raw.sourceSend)) ||
       (raw.destinationSend && !sendUnattempted(raw.destinationSend));
     if (
@@ -1822,7 +1828,8 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
       sourceSend:
         raw.sourceSend && SEND_STATES.has(raw.sourceSend.state as ContinuationSendState)
           ? {
-              state: raw.sourceSend.state as ContinuationSendState,
+              state: previouslyAsked && sendUnattempted(raw.sourceSend)
+                ? 'dispatched-unresolved' : raw.sourceSend.state as ContinuationSendState,
               messageId:
                 typeof raw.sourceSend.messageId === 'string' ? raw.sourceSend.messageId.slice(0, 200) : null,
               ...(raw.sourceSend.state === 'dispatched-unresolved' && typeof raw.sourceSend.before === 'string' &&
@@ -1833,7 +1840,7 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
               // The retired `armed` flag was raised around the click, not before it, so it
               // cannot promise the prompt was never dispatched. It migrates to the ambiguous
               // state, which is exactly what it always meant.
-              state: raw.armed === true ? 'dispatched-unresolved' : 'not-attempted',
+              state: raw.armed === true || previouslyAsked ? 'dispatched-unresolved' : 'not-attempted',
               messageId: null
             },
       destinationSend:

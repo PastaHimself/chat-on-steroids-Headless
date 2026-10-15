@@ -3155,7 +3155,10 @@ Predispatch reload fallback requires a current, hydrated, idle page with an empt
 missing readiness and old content preserve the tab. DOM absence never releases source dispatch;
 replacement draft loss releases only predispatch custody. Unsupported/corrupt ledgers fail closed
 at startup. Legacy claimed/committing records without destination checkpoints migrate to uncertain
-dispatch. Retain terminal send receipts independently of the bounded source-tab close grace.
+dispatch. A positive persisted `askedAt` while awaiting the summary also preserves uncertain
+source custody over a missing/predispatch checkpoint, including the retired DOM-absence reset;
+apply that migration before retention. Other phases do not grant timestamp-based send inference.
+Retain terminal send receipts independently of the bounded source-tab close grace.
 Re-observe the exact page before advancing its state.
 A manual ticket whose frozen source selection is Pro instead gets a one-hour deadline while the
 brief is being written: Pro reasoning is not visible transcript, so it produces no text growth
