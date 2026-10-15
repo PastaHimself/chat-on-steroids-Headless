@@ -1,6 +1,6 @@
-# Compact & Resume recorder reconciliation and send custody — 2026-10-14
+# Compact & Resume reliability guarantees
 
-## Evidence and scope
+## Verified failure modes
 
 Inspected base `dea3ee1f11e881b2b2c2a7a19a6731a4c891fe4f` in a fresh isolated checkout. The incident report was an investigation baseline. Three source defects were reproduced before their repairs: compaction repair fell through to reload while generation/readiness was uncertain; a completed recorder reply needed another browser checkpoint and was missed after exhausted pickups; settled DOM absence released an uncertain source dispatch for resubmission. The first regression run had six expected failures across these three defects.
 
@@ -40,8 +40,8 @@ The baseline durable writer already syncs its temporary file and, on Linux, the 
 
 Bridge/store/continuation tests use real temporary files and loopback HTTP. Extension tests execute shipped JavaScript in isolated Chrome API VM and JSDOM/page-model harnesses. Provider output, Chrome APIs and Electron opening are simulated; these assertions prove application state transitions, custody and side-effect counts, not real ChatGPT persistence.
 
-## Validation
+## Verification boundary
 
-Validation results are recorded with the final branch revision. Targeted regressions, main/Discord TypeScript checks and desktop/Discord builds passed. The first broad verification passed 8,589 tests across both phases with platform-dependent tests skipped; final verification after review fixes is recorded in the PR. The container's initial ripgrep extraction failed because tar could not apply archive UID ownership; rerunning with `TAR_OPTIONS=--no-same-owner` passed the prerequisite without a source change.
+Run `npm run verify` for the full suite, including main/Discord TypeScript, privacy and notice checks; build with `npm run build` and `npm run discord:build`. PR CI also exercises the supported OS matrix and the fail-first comparison against base code. Exact execution results belong in the PR. In containers that cannot apply archive UID ownership, `TAR_OPTIONS=--no-same-owner` allows the existing ripgrep extraction prerequisite without changing source code.
 
 A signed-in Brave/provider acceptance test was not performed. No production connector, profile, credentials, session ledger, development repository, service restart, ticket recovery, deployment or merge was used. The separate [read-only recovery procedure](compact-resume-recovery.md) requires exact evidence and a separately authorized operational decision before any live change.
