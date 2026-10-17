@@ -16532,6 +16532,30 @@ describe('which extension build is running', () => {
     } finally { clock.mockRestore(); }
   });
 
+  it('does not let a stale companion reserve a new input before the current browser polls', async () => {
+    setShippedExtensionBuildForTest(SHIPPED);
+    await pair();
+    const input = await import('../src/main/session/input.js');
+    input.resetInputForTests();
+    await writeDurableNow('session-input', []);
+    const id = randomUUID();
+    try {
+      await input.enqueueInput({ id, sessionId: null, text: 'Open one synthetic chat', mode: 'auto',
+        dueAt: Date.now(), model: null, reasoningEffort: null });
+      // Presence alone does not elect an input. The stale browser gets the first offer poll.
+      await request('GET', '/hello', { auth: null, extensionBuild: SHIPPED });
+      const poll = async (build: string, browser: string) => (await request('POST', '/status', {
+        body: { openConversations: [] }, extensionBuild: build, browser
+      })).body.inputs.filter((row: { id: string }) => row.id === id);
+      expect(await poll('deadbeefcafe', 'a'.repeat(32))).toEqual([]);
+      expect(await poll(SHIPPED, 'b'.repeat(32))).toHaveLength(1);
+      // A deployment with a single older companion retains the established grace policy.
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+      try { expect(await poll('deadbeefcafe', 'a'.repeat(32))).toHaveLength(1); }
+      finally { clock.mockRestore(); }
+    } finally { input.resetInputForTests(); await writeDurableNow('session-input', []); }
+  });
+
   it('compares nothing in a checkout that was never packaged', async () => {
     setShippedExtensionBuildForTest(null);
     const warnings = () => getLog().filter((entry) => entry.message.includes('but this app ships')).length;

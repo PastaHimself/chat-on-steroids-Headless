@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
 const { defaultConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
 const { APP_VERSION, BRIDGE_PROTOCOL } = await import('../src/main/version.js');
 const { initSecretsPath, setSecret } = await import('../src/main/secrets.js');
-const { resetBridgeForTests, shutdownBridge, startBridge } = await import('../src/main/bridge.js');
+const { resetBridgeForTests, shutdownBridge, startBridge, sessionInputActivity } = await import('../src/main/bridge.js');
 const { flushDurable, initDurableStore, writeDurableSoon } = await import('../src/main/durable.js');
 const { findSessionByConversation, initSessionStore, resetSessionStoreForTests } = await import('../src/main/session/store.js');
 const { recordToolCall, resetRecorderForTests } = await import('../src/main/session/recorder.js');
@@ -188,6 +188,61 @@ describe('turn rotation (#1402)', () => {
     expect(rows).toEqual([{ turnId: 'g-rot-old-1', text: expect.stringContaining('Continue the task from where you are.') }]);
     await attributedCall(chat);
     expect(await rotationsFor(sessionId)).toHaveLength(1);
+  });
+
+  it.each(['off', 'goal', 'loop'] as const)('moves batched successor activity to its exact fresh turn (%s)', async mode => {
+    const chat = `f0f00003-1111-4111-8111-0000000000${mode === 'off' ? '08' : mode === 'goal' ? '09' : '10'}`;
+    const sessionId = await turnFor(chat, 'old-batched-turn', 1);
+    if (mode !== 'off') await setGoalSwitchNow(chat, mode, true);
+    await attributedCall(chat);
+    await events(chat, [
+      { kind: 'turn_end', time: Date.now(), turnId: 'old-batched-turn', outcome: 'interrupted', continued: true },
+      { kind: 'turn_start', time: Date.now() + 1, turnId: 'fresh-batched-turn' }
+    ]);
+    await events(chat, [{ kind: 'assistant_message', time: Date.now() + 2, turnId: 'fresh-batched-turn',
+      messageId: 'fresh-progress', text: 'Finishing the same task.', state: 'streaming' }]);
+    expect(sessionInputActivity((await findSessionByConversation(chat))!)).toMatchObject({ possible: true, exact: true });
+    await events(chat, [
+      { kind: 'assistant_message', time: Date.now() + 3, turnId: 'fresh-batched-turn',
+        messageId: 'fresh-progress', text: 'The requested work is complete.', state: 'final', final: true },
+      { kind: 'turn_end', time: Date.now() + 4, turnId: 'fresh-batched-turn', outcome: 'completed' }
+    ]);
+    expect(sessionInputActivity((await findSessionByConversation(chat))!)).toMatchObject({ possible: false, exact: false });
+    expect((await findSessionByConversation(chat))!.id).toBe(sessionId);
+    // Replaying the old end and final cannot spend a newer source's grant.
+    await events(chat, [{ kind: 'turn_start', time: Date.now() + 5, turnId: 'newest-turn' }]);
+    await events(chat, [{ kind: 'assistant_message', time: Date.now() + 3, turnId: 'fresh-batched-turn',
+      messageId: 'fresh-progress', text: 'The requested work is complete.', state: 'final', final: true }]);
+    expect(sessionInputActivity((await findSessionByConversation(chat))!)).toMatchObject({ possible: true, exact: true });
+  });
+
+  it('cannot resurrect a successor after its final arrives during outbox revocation', async () => {
+    const chat = 'f0f00003-1111-4111-8111-000000000011';
+    await turnFor(chat, 'race-old-turn', 1);
+    await attributedCall(chat);
+    const input = await import('../src/main/session/input.js');
+    const revoke = input.revokeSilenceInputs;
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const paused = vi.spyOn(input, 'revokeSilenceInputs').mockImplementationOnce(async id => {
+      enter(); await gate; return revoke(id);
+    });
+    let first: Promise<unknown> | undefined;
+    try {
+      first = events(chat, [
+        { kind: 'turn_end', time: Date.now(), turnId: 'race-old-turn', outcome: 'interrupted', continued: true },
+        { kind: 'turn_start', time: Date.now() + 1, turnId: 'race-fresh-turn' }
+      ]);
+      await entered;
+      await events(chat, [
+        { kind: 'assistant_message', time: Date.now() + 2, turnId: 'race-fresh-turn',
+          messageId: 'race-fresh-final', text: 'The requested work is complete.', state: 'final', final: true },
+        { kind: 'turn_end', time: Date.now() + 3, turnId: 'race-fresh-turn', outcome: 'completed' }
+      ]);
+      release(); await first;
+      expect(sessionInputActivity((await findSessionByConversation(chat))!)).toMatchObject({ possible: false, exact: false });
+    } finally { release(); await first; paused.mockRestore(); }
   });
 
   it('leaves a younger turn alone', async () => {

@@ -9,7 +9,7 @@ import {
   fileSilenceInput, deferSilenceInput, revokeSilenceInputs, pendingQueuedPickups, inputBeforeGoal, inputArgs, acknowledgeBrowserInput, cancelInput, claimBrowserInput, completeBrowserDecision, enqueueInput,
   failBrowserInput, listInputs, offerToolInput as offerToolInputBatch, acknowledgeToolInput, pendingBrowserInputs, requestBrowserDecision, resetInputForTests, configureInputDelivery,
   authorizeBrowserHelperRetry, pausedBrowserHelpers, hasEligibleToolInput, editQueuedInput, reorderQueuedInputs, setInputAutomation, authorizeBrowserInput, sessionInputPolicy, retryUnclaimedInput,
-  noteInputStartupError, fileRotationInput
+  noteInputStartupError, fileRotationInput, deliveryProof
 } from '../src/main/session/input.js';
 import type { InputArgs, InputEntry } from '../src/main/session/input.js';
 import { noteChatOrigin } from '../src/main/session/recorder.js';
@@ -245,25 +245,53 @@ describe('durable user input ownership', () => {
     expect((await listInputs())[0]?.text).toBe(text);
     expect(inputArgs.safeParse(input({ text: 'x'.repeat(96_001) })).success).toBe(false);
   });
-  it('sends a direct message once more when the page proves ChatGPT did not take the clicked Send', async () => {
+  it.each([false, true])('retains authorized Send custody despite a legacy DOM non-delivery claim (restart=%s)', async cold => {
     binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'plain-turn';
     binding.end = { kind: 'turn_start', outcome: '', turnId: 'plain-turn', time: 900 };
     const direct = await enqueueInput(input());
     expect(await claimBrowserInput(direct.id, 'native-page', binding.conversationId, true)).not.toBeNull();
     expect(await authorizeBrowserInput(direct.id, 'native-page', binding.conversationId)).toBe(true);
-    // Clicked in the second the turn ended: ChatGPT kept the text in its composer (VM 141, 2026-10-09).
-    binding.activeTurnId = null;
-    binding.end = { kind: 'turn_end', outcome: 'completed', turnId: 'plain-turn', time: 1001 };
+    const authorized = (await listInputs()).find(row => row.id === direct.id)!;
+    // The request may already have reached ChatGPT; stale composer/history views cannot refute it.
     expect(await failBrowserInput(direct.id, 'native-page', 'Native Send did not take the message.')).toBe(true);
-    expect((await listInputs()).find(row => row.id === direct.id)).toMatchObject({ state: 'queued', owner: null, notTakenRetries: 1 });
-    expect((await listInputs()).find(row => row.id === direct.id)?.sendAuthorizedAt).toBeUndefined();
-    expect(await pendingBrowserInputs()).toEqual([expect.objectContaining({ id: direct.id })]);
-    // A second refusal is reported, never retried forever.
-    expect(await claimBrowserInput(direct.id, 'native-page', binding.conversationId, true)).not.toBeNull();
-    expect(await authorizeBrowserInput(direct.id, 'native-page', binding.conversationId)).toBe(true);
-    expect(await failBrowserInput(direct.id, 'native-page', 'Native Send did not take the message.')).toBe(true);
-    expect((await listInputs()).find(row => row.id === direct.id)).toMatchObject({ state: 'failed', error: 'Not sent: ChatGPT did not accept the message.' });
+    if (cold) resetInputForTests();
+    const held = (await listInputs()).find(row => row.id === direct.id)!;
+    expect(held).toMatchObject({ state: 'cancelled', owner: authorized.owner,
+      sendAuthorizedAt: authorized.sendAuthorizedAt, deliveryText: authorized.deliveryText });
+    expect(deliveryProof(held)).toBe('unconfirmed');
     expect(await pendingBrowserInputs()).toEqual([]);
+    expect(await claimBrowserInput(direct.id, 'second-page', binding.conversationId, true)).toBeNull();
+    expect(await authorizeBrowserInput(direct.id, 'second-page', binding.conversationId)).toBe(false);
+    expect(await acknowledgeBrowserInput(direct.id, 'native-page', binding.conversationId, 'late-exact-native-row')).toBe(true);
+    expect(deliveryProof((await listInputs()).find(row => row.id === direct.id)!)).toBe('sent');
+  });
+
+  it.each(['queued', 'browser', 'failed'] as const)('holds legacy DOM-based retry debt without guessing a lost owner (%s)', async state => {
+    binding.finishEnabled = false;
+    const direct = await enqueueInput(input());
+    const legacy: InputEntry = { ...direct, state, owner: null, offeredAt: undefined,
+      sendAuthorizedAt: undefined, requiresAuthorization: undefined, notTakenRetries: 1 };
+    await writeDurableNow('session-input', [legacy]); resetInputForTests();
+    let held = (await listInputs()).find(row => row.id === direct.id)!;
+    expect(deliveryProof(held)).toBe('unconfirmed');
+    expect(await pendingBrowserInputs()).toEqual([]);
+    expect(await claimBrowserInput(direct.id, 'replacement-page', binding.conversationId, true)).toBeNull();
+    expect(held.owner).toBeNull();
+    // Uncertainty is retained beyond ordinary terminal-history trimming, including after restart.
+    for (let i = 0; i < 55; i++) { const row = await enqueueInput(input({ mode: 'after-turn' })); await cancelInput(row.id); }
+    resetInputForTests(); held = (await listInputs()).find(row => row.id === direct.id)!;
+    expect(held.text).toBe(direct.text); expect(deliveryProof(held)).toBe('unconfirmed');
+  });
+
+  it('still distinguishes a failure before Send authorization from uncertain delivery', async () => {
+    binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'plain-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'plain-turn', time: 900 };
+    const direct = await enqueueInput(input());
+    expect(await claimBrowserInput(direct.id, 'native-page', binding.conversationId, true)).not.toBeNull();
+    expect(await failBrowserInput(direct.id, 'native-page', 'Native Send did not take the message.')).toBe(true);
+    const held = (await listInputs()).find(row => row.id === direct.id)!;
+    expect(held.text).toBe(direct.text); expect(deliveryProof(held)).toBe('not_sent');
+    expect(held.sendAuthorizedAt).toBeUndefined();
   });
   it('still never replays a clicked Send whose result the page could not prove', async () => {
     binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'plain-turn';

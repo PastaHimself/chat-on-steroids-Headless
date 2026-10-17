@@ -342,6 +342,11 @@ var CLF_DOM = (() => {
   // "Stream cache expired" (2026-10-05).
   function transportFailure(value) {
     const line = String(value || '').replace(/\s+/g, ' ').trim();
+    // The same failures on a pt-BR account, as measured 2026-10-12 (a send that never reached the
+    // model, and its dropped answer). Only observed wording; other languages stay unrecognised.
+    if (/^(?:a entrega da mensagem atingiu o tempo limite(?:\. tente novamente\.?)?|conexão interrompida\.? aguardando a resposta completa\.?)(?: tentar novamente)?$/i.test(line)) return true;
+    // The same two on a German account, as measured 2026-10-14 after a long answer's stream broke.
+    if (/^(?:zeitüberschreitung bei der übermittlung der nachricht(?:\. bitte versuche es erneut\.?)?|verbindung unterbrochen\.? warten auf die vollständige antwort\.?)(?: erneut versuchen)?$/i.test(line)) return true;
     return /^(?:message delivery timed out(?:\. please try again\.?)?|connection interrupted\.? waiting for the complete answer\.?|chatgpt stream recovery polling timed out\.?|stream cache expired\.?|unknown error occurred\.?|there was an error generating (?:a|the) response\.?|error in message stream\.?|network error\.?|a network error occurred\.?(?: please check your connection and try again\.?)?|resume stream unavailable\.?|something went wrong\.?|something went wrong while generating the response(?:\. if this issue persists please contact us through our help center at help\.openai\.com\.?)?\.?)(?: retry)?$/i.test(line);
   }
 
@@ -2414,6 +2419,14 @@ var CLF_DOM = (() => {
     }
   }
 
+  /** Runs `run` on a later task. A message is not throttled like a timer in a background tab. */
+  function nextTask(run) {
+    if (typeof MessageChannel !== 'function') return void setTimeout(run, 0);
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => { channel.port1.close(); run(); };
+    channel.port2.postMessage(null);
+  }
+
   async function send({ acceptanceTimeoutMs = 30000, stillCurrent = () => true, matchesUser = null, observeEvidence = null, clearAcceptedDraft = true, beforeSend = null, acceptUserReceipt = null, receiptTimeoutMs = null, mention = null, explain = null, sentRequest = null, whileGenerating = false } = {}) {
     // Why a Send ended without acceptance, as one short code for the caller's diagnostics (#820).
     // It names the first refusal only and never changes what Send does.
@@ -2580,8 +2593,11 @@ var CLF_DOM = (() => {
                 mentionAdded = true;
                 mentioning = true;
                 resumeClick = () => click(true);
-                mentionTimers = [setTimeout(() => { mentionTicked = true; settleMention(); }, 0),
-                  setTimeout(() => { mentionTicked = true; settleMention(true); }, 1500)];
+                // One task later by a message, not a 0 ms timer: Firefox held that timer 25 s in
+                // the minimized window of app-opened chats (2026-10-15). The 1.5 s fallback for a
+                // dropped token may run late there; it only matters when the editor draws nothing.
+                nextTask(() => { mentionTicked = true; settleMention(); });
+                mentionTimers = [setTimeout(() => { mentionTicked = true; settleMention(true); }, 1500)];
                 return;
               }
             }

@@ -36,7 +36,7 @@
   // before touching the shared DOM. Otherwise old and new composer observers can continually
   // remove and reinsert each other's controls, starving transport/timers and freezing the tab.
   // A healthy incumbent in this context still wins the static/recovery injection race.
-  const RECORDER_VERSION = 25;
+  const RECORDER_VERSION = 26;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -799,6 +799,8 @@
    * never runs: the whole resumed turn's work fell into Unattributed activity.
    */
   const USER_SEND_RECEIPT_MS = 30_000;
+  // Upstream 2.1.40 (ac2cb86, baab1a0): retry a lost ACK reply, never native Send.
+  const ACK_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
   let userSendReceipt = null;
   const pageViewChecks = new Set(); // Existing readiness waits also observe accepted MAIN-world snapshots.
   const sendText = (value) => String(value || '').replace(/\s+/g, '');
@@ -894,8 +896,10 @@
    */
   const SENT_REQUEST_MS = 10_000;
   const sentRequests = [];
-  function sentRequestSince(since) {
-    const sent = sentRequests.find(entry => entry.epoch === epoch && entry.at >= since);
+  // A Send started in this document's earlier epoch keeps its request when the first route of
+  // the chat it opened advances the epoch (submittedSendLifetime holds that send through it).
+  function sentRequestSince(since, sendEpoch = epoch) {
+    const sent = sentRequests.find(entry => entry.epoch === sendEpoch && entry.at >= since);
     return sent && sent.at - since <= SENT_REQUEST_MS ? { id: sent.id } : null;
   }
   /** Temporary-planner-only fallback for an accepted user row left on the immediately older Fiber scan. */
@@ -1023,9 +1027,15 @@
       observeEvidence: check => { pageViewChecks.add(check); return () => pageViewChecks.delete(check); } });
   }
   const GOAL_MARKER_INSTRUCTION = '\n\nFor this Goal session only: at the end of each final reply, write exactly one separate last line: [[COS_GOAL:COMPLETE]] if the entire requested task is finished, or [[COS_GOAL:CONTINUE]] if requested work remains. Do not claim completion for partial work. If user input is required, explain it and omit both markers.';
+  function userSendReceiptLive(receipt) {
+    if (!receipt) return false;
+    // An app-owned source handoff retains its original witness across delayed native
+    // readback. Its exact run/document/route owns expiry; elapsed time cannot erase it.
+    if (receipt.current) return receipt.current();
+    return desktopInputBusy || commandAttempt || receipt.accepted || Date.now() - receipt.at <= USER_SEND_RECEIPT_MS;
+  }
   function matchesUserSendReceipt(message, receipt) {
-    if (!message || !receipt || (!desktopInputBusy && !commandAttempt && !receipt.accepted &&
-        Date.now() - receipt.at > USER_SEND_RECEIPT_MS)) return false;
+    if (!message || !userSendReceiptLive(receipt) || (receipt.current && !receipt.witnessed)) return false;
     const current = CLF_DOM.conversationId();
     const acceptedIdentity = receipt.accepted?.messageId === message.id &&
       receipt.accepted.conversationId === current && receipt.accepted.epoch === epoch;
@@ -1038,7 +1048,7 @@
       (acceptedIdentity || (receipt.inserted ? matchesSubmittedBootstrap : matchesSubmittedUser)(message, receipt.text));
   }
 
-  function rememberUserSend(inserted = false) {
+  function rememberUserSend(inserted = false, current = null) {
     if (!alive) return;
     // Only the explicitly selected offline Goal backend changes the user prompt.
     const composer = CLF_DOM.composer();
@@ -1051,6 +1061,13 @@
     const text = sendText(CLF_DOM.composerAuthoredText());
     const attachmentNames = CLF_DOM.composerAttachmentNames();
     if (!text && !attachmentNames.length) return;
+    // The native click/submit listeners witness this same prepared handoff. Keep its
+    // original answer baseline and revocable lifetime rather than replacing its owner.
+    if (!inserted && userSendReceipt?.inserted && userSendReceipt.text === text &&
+        userSendReceipt.conversationId === CLF_DOM.conversationId() && userSendReceipt.current?.()) {
+      userSendReceipt.witnessed = true;
+      return;
+    }
     // The same Send is recorded again by the page's own click and submit listeners; they cannot
     // tell who inserted the text, so they keep what the inserting caller said about it.
     if (!inserted && userSendReceipt?.inserted && userSendReceipt.text === text && Date.now() - userSendReceipt.at < USER_SEND_RECEIPT_MS)
@@ -1066,6 +1083,7 @@
     userSendReceipt = {
       text,
       inserted,
+      current,
       attachmentNames,
       conversationId: CLF_DOM.conversationId(),
       previousMessageId,
@@ -2523,7 +2541,7 @@
       if (message.id === openedUserMessageId) return false;
       const receipt = userSendReceipt;
       if (receipt) {
-        if (!desktopInputBusy && !commandAttempt && !receipt.accepted && Date.now() - receipt.at > USER_SEND_RECEIPT_MS) {
+        if (!userSendReceiptLive(receipt)) {
           userSendReceipt = null;
         } else {
           // A verified bootstrap or durable desktop ACK may precede the activity pull
@@ -2705,6 +2723,7 @@
     genNode = null;
   }
 
+  let observedRoute = null;
   function observe() {
     // This duplicate source document is only the native Project entry point. Its transcript
     // belongs to A's original recorder; do not adopt it while preparing the fresh composer.
@@ -2763,6 +2782,11 @@
           pendingObjectiveSend = opening.receipt;
           pendingObjectiveSend.current = submittedSendLifetime(id, epoch);
         }
+        // A Send the app already accepted for exactly this new chat moves with it, so its answer
+        // still opens the first turn. A hidden tab can prove the Send (ChatGPT's request and the
+        // new address) before this page adopts that address (2026-10-15).
+        const acceptedSend = userSendReceipt?.accepted;
+        if (acceptedSend && acceptedSend.conversationId === id && acceptedSend.epoch === epoch - 1) acceptedSend.epoch = epoch;
         // The same question boot asks, at the same moment boot asks it: which of this chat's
         // user messages does the app already hold? resetConversation() has just armed the
         // identity gate, and until it is answered this document reads no transcript at all,
@@ -2799,6 +2823,14 @@
     }
     publishHistoryRateLimit();
     flushStreamRequestOrigins();
+    // A Send waiting on its receipt re-checks once this document has taken a new address. A
+    // hidden tab (Firefox's minimized window for app-opened chats) can move to /c/<id> without
+    // drawing anything, and the receipt then waited for the next redraw: 40-95 s, once never
+    // (2026-10-15). After the adoption above, so the receipt belongs to the new chat's epoch.
+    if (id !== observedRoute) {
+      observedRoute = id;
+      if (id) for (const check of pageViewChecks) void check();
+    }
     // Route assignment and authored text can arrive in either order. This receipt is
     // evaluated on the existing observer, rather than only on the one route-change edge.
     if (id && pendingObjectiveSend?.accepted && pendingObjectiveSend.current()) {
@@ -10170,7 +10202,7 @@
       // punctuation Markdown-escaped; retain the same witnessed Send baseline and
       // raw-then-one-unescape receipt rule as the resumed bootstrap. Treating it as
       // human-typed text can lose the entire brief's local generation on a fast reply.
-      rememberUserSend(true);
+      rememberUserSend(true, current);
       const sent = await sendSubmittedText(current, true, async stillSending => {
         if (!stillSending() || !current() || !sameSource()) return false;
         // Native Send readiness precedes this irreversible checkpoint. A disabled
@@ -13120,7 +13152,7 @@
       // ChatGPT switches its own image tool off for a message that mentions an app).
       input.purpose === 'decision' || (input.coreMention === false && !input.recovery && !agent) ? null
         : input.recovery || agent || mentionCore ? currentCoreMention() : null,
-      sentRequestSince, !!message.directTurn);
+      since => sentRequestSince(since, forEpoch), !!message.directTurn);
       // #744: one retry when the editor was replaced before anything asked to send it.
       if (!(await nativeSend()) &&
           !(!authorizing && !sendAttempted && !receipt && !draft.current() && draftCurrent() && await nativeSend())) {
@@ -13128,14 +13160,12 @@
         // app retires it as an uncertain send, never a replay, and this document takes the next
         // input. The reason is a fixed code the app recognises (see failBrowserInput).
         if (sendAttempted && !receipt) {
-          // Proof that the click did not deliver: ChatGPT left this exact text in its composer and
-          // showed no new user message. Clearing that exact draft lets the app send it once more;
-          // anything less certain stays an unconfirmed send that is never replayed (#821).
+          // Hydration can leave both this draft and an older user row visible after
+          // ChatGPT accepted Send. Withdraw only our own unchanged draft; these page
+          // snapshots cannot release the original dispatch or authorize another click.
           if (onTarget() && sendText(CLF_DOM.composer()?.textContent) === submittedText &&
               CLF_DOM.messages().filter(row => row.role === 'user').at(-1)?.id === previousUserId) {
-            let cleared = false;
-            try { cleared = await draft.clear(); } catch { /* An unclearable draft is no proof. */ }
-            if (cleared) return fail('Native Send did not take the message.');
+            try { await draft.clear(); } catch { /* An unclearable draft is preserved. */ }
           }
           return fail('Native Send receipt was not confirmed.');
         }
@@ -13170,15 +13200,23 @@
         if (temporary) rememberServedPlanner(message.id, input.owner);
         completeDesktopDecision();
       }
-      // The claim remains inert if this ACK is lost; no duplicate send after a reload.
-      const acknowledged = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation, messageId: receipt.user?.id, owner: input.owner, lifetime: input.lifetime, ack: true });
+      // The worker journals this exact receipt. Losing its reply permits another ACK
+      // under the same input/owner/native message, never a second click or a new claim.
+      let acknowledged = null;
+      for (let attempt = 0; attempt <= ACK_RETRY_DELAYS_MS.length && alive; attempt++) {
+        if (attempt > 0) await sleep(ACK_RETRY_DELAYS_MS[attempt - 1]);
+        if (!alive) break;
+        acknowledged = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation, messageId: receipt.user?.id, owner: input.owner, lifetime: input.lifetime, ack: true });
+        if (acknowledged !== null && acknowledged !== undefined) break;
+      }
       const accepted = acknowledged?.data?.ok === true;
       if (accepted && deliveredConversation && receipt.user?.id && sendingTarget() &&
           userSendReceipt === witnessedSendReceipt && witnessedSendReceipt?.text === submittedText &&
           (witnessedSendReceipt.conversationId === target ||
             (!target && witnessedSendReceipt.conversationId === deliveredConversation)) &&
-          (witnessedSendReceipt.previousMessageId ?? null) === (previousUserId ?? null) &&
-          Date.now() - witnessedSendReceipt.at <= USER_SEND_RECEIPT_MS) {
+          (witnessedSendReceipt.previousMessageId ?? null) === (previousUserId ?? null)) {
+        // Upstream a62b6bc: these owner checks prove the same live Send even when
+        // a background page delivers its acknowledgement more than 30 seconds later.
         witnessedSendReceipt.accepted = { messageId: receipt.user.id, conversationId: deliveredConversation, epoch };
       }
       // Stop/composer-clear may precede the exact user row. This receipt, not that early
@@ -13598,6 +13636,15 @@
       }
       if (message.type === 'clf-keep-awake') {
         sendResponse({ ok: true, held: setKeepAwake(message.on === true) });
+        return false;
+      }
+      if (message.type === 'clf-route-changed') {
+        // The extension saw this page take a new address. A hidden tab's own observe tick can be
+        // held back for long; this observation runs now (2026-10-15).
+        if (recorderHandle.healthy()) {
+          try { observe(); } catch { /* The regular tick observes again. */ }
+        }
+        sendResponse({ ok: true });
         return false;
       }
       if (message.type === 'clf-recorder-ping') {

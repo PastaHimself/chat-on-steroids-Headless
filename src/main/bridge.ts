@@ -2611,6 +2611,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (canReveal) revealBrowsers.set(browser ?? '', Date.now());
     const follow = canReveal ? takeFollow(browser) : null;
     if (req.method === 'POST' && imageExportRequested) imageExportBrowsers.set(browser ?? '', Date.now());
+    // Upstream 2.1.40, 56c07de: an offer elects the opening browser. Do not let
+    // a companion whose claim would be refused reserve that input first.
+    const refusedAsStale = staleCompanion(req);
     const pendingInputs = await pendingBrowserInputs();
     const pendingIds = new Set(pendingInputs.map(input => input.id));
     for (const id of openingCustody.keys()) if (!pendingIds.has(id)) openingCustody.delete(id);
@@ -2633,7 +2636,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         inputOpeningIds: inputRows.filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).map(row => row.id),
         // A message for the running turn goes in while a call runs: ChatGPT keeps that call's result (#1231).
         // An existing chat waits out a new tunnel-client's takeover, or its next call waits ~2 min (#1220).
-        inputs: [...pendingInputs.filter(input => (!input.conversationId || input.directTurn || runningToolCalls(input.conversationId) === 0) &&
+        inputs: [...pendingInputs.filter(input => !refusedAsStale && (!input.conversationId || input.directTurn || runningToolCalls(input.conversationId) === 0) &&
             (!input.conversationId || !tunnelRouteSettling()) &&
             !inputHeldElsewhere(input, browser)),
           ...inputRows.filter(row => row.lifetime === 'temporary-planner' && ['sent', 'cancelled', 'failed'].includes(row.state))
@@ -8197,6 +8200,12 @@ async function noteRecoveryObservations(
   const provenDeliberate: { deliberate?: true } =
     selected?.conversationId === conversationId && isDeliberateEffort(selected.reasoningEffort) ? { deliberate: true } : {};
   const unresolved = activeUntil.get(conversationId);
+  // Upstream e417c18 exposed a rotation whose old end and fresh start share a batch.
+  // Repair the grant at that boundary: the recorder's still-open successor owns
+  // new work, even though this batch also accepted an older terminal. Do not later
+  // spend an arbitrary ended turn's grant on a different final.
+  const liveWork = activity.working && (!activity.terminal ||
+    (recorded?.conversationId === conversationId && !!recorded.activeTurnId && recorded.activeTurnId !== activity.endedTurnId));
   if (!activity.terminal && unresolved?.model === 'unknown' && unresolved.sessionId === sessionId &&
       recorded?.conversationId === conversationId && (recorded.activeTurnId === unresolved.turnId || unresolved.thinkingFailed) && provenModel !== 'unknown') {
     unresolved.model = provenModel;
@@ -8212,18 +8221,10 @@ async function noteRecoveryObservations(
   // existing deadline and repair/Goal pickup custody unless this batch proves work or a
   // terminal boundary. A completed answer must still retire the repair it supersedes.
   if (activity.meaningful && (activity.working || activity.terminal)) {
-    if (sessionId && activity.working && !activity.terminal) {
-      // Withdraw reload authority before awaiting the serialized input owner.
+    if (sessionId && liveWork) {
+      // Publish the exact live work owner before yielding to the outbox. A final
+      // arriving during that wait must consume this grant, not the previous turn's.
       noteRecoveryActivity(conversationId);
-      await revokeSilenceInputs(sessionId);
-      await revokeSilenceLoop(conversationId);
-    }
-    if (!sameFailedRepair && (!activity.terminal || !observations.some(item => item.kind === 'turn_end' && item.outcome === 'stalled')))
-      noteRecoveryActivity(conversationId);
-    notePickupActivity(conversationId);
-    // A current-turn interim can push an existing deadline; historical transcript/page rows
-    // never enter this verdict and therefore cannot keep a confirmed reload alive.
-    if (sessionId && !activity.terminal && activity.working) {
       const liveTurn = liveConversations().find(entry => entry.conversationId === conversationId && entry.sessionId === sessionId)?.activeTurnId;
       const previous = activeUntil.get(conversationId);
       const [sourceBoundary] = !previous && !liveTurn && activity.working
@@ -8247,7 +8248,15 @@ async function noteRecoveryObservations(
         if (item.kind === 'turn_start') selection = undefined;
       }
       grantActivity(conversationId, sessionId, Math.min(Date.now(), activity.at ?? Date.now()), CHAT_SILENCE_MS, turn);
+      const workOwner = activeUntil.get(conversationId);
+      await revokeSilenceInputs(sessionId);
+      if (activeUntil.get(conversationId) !== workOwner) return;
+      await revokeSilenceLoop(conversationId);
+      if (activeUntil.get(conversationId) !== workOwner) return;
     }
+    if (!sameFailedRepair && (!activity.terminal || !observations.some(item => item.kind === 'turn_end' && item.outcome === 'stalled')))
+      noteRecoveryActivity(conversationId);
+    notePickupActivity(conversationId);
   }
   const lastEnd = ended?.outcome ?? null;
   let terminalGrant = activeUntil.get(conversationId);
@@ -8340,7 +8349,7 @@ async function noteRecoveryObservations(
       armSilenceSweep();
     }
   }
-  if (!completedFinal && !thinkingFailed && !mcpTerminal && !awaitingSilenceRefresh && (proTerminal || (activity.terminal && terminalGrant?.model !== 'pro'))) {
+  if (!liveWork && !completedFinal && !thinkingFailed && !mcpTerminal && !awaitingSilenceRefresh && (proTerminal || (activity.terminal && terminalGrant?.model !== 'pro'))) {
     if (proTerminal) endActivity(conversationId);
     else if (lastEnd === 'unknown' && terminalGrant?.model === 'unknown' && terminalGrant.sessionId === sessionId) {
       // Loss of browser completion evidence does not change the last meaningful-work clock.
