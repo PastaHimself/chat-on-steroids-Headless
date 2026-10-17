@@ -1,5 +1,21 @@
 # Contributors
 
+The October 17 Headless recovery update adapts [@Maximapple](https://github.com/Maximapple)'s
+v2.1.39–2.1.40 delivery acknowledgements, hidden-page communication and regular-window placement
+([`a62b6bc`](https://github.com/totec448-spec/chat-on-steroids/commit/a62b6bc37e7dc04b9485a035f3ec7548b41a1c3d),
+[`ac2cb86`](https://github.com/totec448-spec/chat-on-steroids/commit/ac2cb86850e7b90928d745a690eefe492348f470),
+[`de19969`](https://github.com/totec448-spec/chat-on-steroids/commit/de199695ffc5f93c305f7f4b3387480b630fc049),
+[`45c5faa`](https://github.com/totec448-spec/chat-on-steroids/commit/45c5faa18113ef5260d95b79617ce2ce784674e5)),
+stale-companion offer gating and the batched-turn activity diagnosis. Headless repairs the
+activity owner at the successor start and retains its stricter durable send fences.
+Portuguese transport recognition and regressions adapt [@Haz4rdovisk](https://github.com/Haz4rdovisk)'s
+[`e935cce`](https://github.com/totec448-spec/chat-on-steroids/commit/e935ccef6620781cc9496c22e8139a541b6527e5);
+German recognition adapts @Maximapple's
+[`e9ba126`](https://github.com/totec448-spec/chat-on-steroids/commit/e9ba126682066f8118346949858701c6e9e58055).
+These MIT-licensed contributions were compared against the complete v2.1.40 snapshot at
+`429df1cdc7d4e0f7b47d8659af0f72037ec2b310`. The delayed source-handoff lifetime and manual-Send custody fixes are
+Headless-specific. See the focused reliability worklog for reproduction and validation evidence.
+
 The October 15 Headless long-run update adapts [@Maximapple](https://github.com/Maximapple)'s
 fresh-turn implementation [#1402](https://github.com/totec448-spec/chat-on-steroids/pull/1402)
 and repository-scoped worktree serialization

@@ -159,7 +159,6 @@ const UNCONFIRMED_SEND = 'Stopped waiting for delivery confirmation. The message
 const RECEIPT_UNCONFIRMED = 'Native Send receipt was not confirmed.';
 /** The page clicked Send, yet its exact text stayed in the composer and no new user row appeared. */
 const SEND_NOT_TAKEN = 'Native Send did not take the message.';
-const NOT_TAKEN_FAILED = 'Not sent: ChatGPT did not accept the message.';
 export const TOOL_INPUT_HEADER = '\n--- New instructions from the user ---\n';
 export interface ToolInputBatch {
   messages: Array<{ text: string; images: InputImage[] }>;
@@ -299,7 +298,7 @@ let chain: Promise<unknown> = Promise.resolve();
 const offered = new Map<string, number>();
 const terminal = (row: InputEntry): boolean => ['sent', 'cancelled', 'failed'].includes(row.state);
 /** Native Send was never authorized: the row was not claimed, or its claim still awaited authorization. */
-const neverAuthorized = (row: InputEntry): boolean => row.sendAuthorizedAt === undefined &&
+const neverAuthorized = (row: InputEntry): boolean => !(row.notTakenRetries && row.notTakenRetries > 0) && row.sendAuthorizedAt === undefined &&
   (row.offeredAt === undefined || row.requiresAuthorization === true);
 
 export type DeliveryProof = 'sent' | 'not_sent' | 'unconfirmed' | 'pending';
@@ -314,6 +313,9 @@ export type DeliveryProof = 'sent' | 'not_sent' | 'unconfirmed' | 'pending';
  */
 export function deliveryProof(row: Readonly<InputEntry>): DeliveryProof {
   if (row.deliveredAt !== undefined) return 'sent';
+  // Older versions erased Send custody for a DOM-based retry. The persisted counter
+  // proves uncertainty, not non-delivery; never reconstruct its lost owner or timestamp.
+  if ((row.notTakenRetries ?? 0) > 0) return 'unconfirmed';
   if (row.toolPublicationWithdrawnAt !== undefined) return 'not_sent';
   // `sent` says the page or the exact request confirmed it, so a row with that state and no
   // receipt is a gap in the record, not proof that nothing was sent.
@@ -495,6 +497,8 @@ async function retireRemovedSessionReceipts(current: InputEntry[], pendingOnly =
 async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
   const next = await Promise.all(current.map(async (row): Promise<InputEntry> => {
     if (companionOf(current, row)) return row;
+    if ((row.notTakenRetries ?? 0) > 0 && !terminal(row) && row.deliveredAt === undefined)
+      return { ...row, state: 'cancelled', error: UNCONFIRMED_SEND };
     if (row.recovery && row.state === 'browser' && row.sendAuthorizedAt !== undefined &&
         row.sessionId && row.conversationId && row.silenceBoundary?.conversationId === row.conversationId &&
         !row.companionInputId) {
@@ -2075,29 +2079,11 @@ export function failBrowserInput(id: string, owner: string, error: string, detai
     // unreported send reaches in expireQueued, without the wait: the session is free again,
     // nothing is replayed, and a late exact receipt still confirms it (acknowledgeBrowserInput
     // accepts a cancelled row). Openings and Continue included: they held their chat until then.
-    if (entry.sendAuthorizedAt !== undefined && error === RECEIPT_UNCONFIRMED) {
+    if (entry.sendAuthorizedAt !== undefined && (error === RECEIPT_UNCONFIRMED || error === SEND_NOT_TAKEN)) {
       logWarn(`input ${entry.id}: native Send was clicked, but its receipt was not confirmed`);
       await commit(current.map(row => sameDelivery(entry, row) ? { ...row, state: 'cancelled', error: UNCONFIRMED_SEND } : row));
       decisionWaiters.get(id)?.reject(new Error('goal_browser_send_failed: ' + UNCONFIRMED_SEND));
       decisionWaiters.delete(id);
-      return true;
-    }
-    // Unlike an unconfirmed receipt, this is proof the click did not deliver: ChatGPT left the
-    // exact text in its composer and showed no new user message, and the page has cleared that
-    // draft. Seen when a message for the running turn was clicked in the second the turn ended.
-    // One requeue sends it again; a second refusal is reported instead of retried forever.
-    if (entry.sendAuthorizedAt !== undefined && error === SEND_NOT_TAKEN) {
-      const retry = (entry.notTakenRetries ?? 0) === 0 && manualInput(entry) && !entry.recovery && !entry.opening &&
-        entry.purpose !== 'decision' && !entry.lifetime;
-      logWarn(`input ${entry.id}: ChatGPT did not take the clicked Send; ${retry ? 'queued once more' : 'reported as not sent'}`);
-      await commit(current.map(row => sameDelivery(entry, row) ? retry
-        ? { ...row, state: 'queued', owner: null, offeredAt: undefined, sendAuthorizedAt: undefined, requiresAuthorization: undefined,
-          deliveryText: undefined, error: undefined, notTakenRetries: (row.notTakenRetries ?? 0) + 1 }
-        : { ...row, state: 'failed', error: NOT_TAKEN_FAILED } : row));
-      if (!retry) {
-        decisionWaiters.get(id)?.reject(new Error('goal_browser_send_failed: ' + NOT_TAKEN_FAILED));
-        decisionWaiters.delete(id);
-      }
       return true;
     }
     if (entry.recovery && entry.requiresAuthorization === true && entry.sendAuthorizedAt === undefined) {

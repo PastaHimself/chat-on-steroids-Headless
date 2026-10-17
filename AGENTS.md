@@ -99,7 +99,10 @@ losing the project, history, workers or queued instructions when a chat grows to
   checks remain mandatory; selected or recently accessed Chrome tabs veto idle closure, and pins veto closure and
   New Chat reuse. Terminal, blocked, cancelled, superseded and duplicate cleanup retains its
   separate authority. Unknown/personal ownership, live work and pending delivery are not idle.
-  A Compact & Resume destination (origin `resume`) is the user's own chat moved forward, never an
+  New foreground/revealed chats and deferred revivals choose a regular browser window even
+  when the most recently focused window is incognito; an absent regular window grants one
+  normal-window creation under the existing opening owner. A Compact & Resume destination
+  (origin `resume`) is the user's own chat moved forward, never an
   app-owned page: it is excluded from `managedConversations` (#1012).
 - Unknown identity fails closed where a wrong choice could mutate, attribute or message the
   wrong owner. Presentation can degrade visibly; execution must not guess.
@@ -1315,7 +1318,8 @@ and renderer. A native upload converted from `auto` to `after-turn` retains `req
 show its pending delivery and Cancel control, never a task editor that main would reject.
 
 Browser delivery elects one exact tab/document/epoch and checks the right existing conversation
-or fresh-chat ownership. New-chat reuse requires a visible composer before election and after
+or fresh-chat ownership. A stale companion refused at claim time cannot reserve an input at
+offer time while a current build is present; the existing single-older-browser grace remains. New-chat reuse requires a visible composer before election and after
 native preparation; unavailable surfaces are skipped so the first send can open one clean chat.
 A failed native preparation can grant the existing pre-send fallback, before marking readiness.
 Before claiming an input it waits for a visible composer; a mounted
@@ -1323,7 +1327,10 @@ editor hidden behind a dialog leaves the input queued in its elected tab. It con
 model/effort, inserts the full text, uploads native files,
 rechecks composer and attachment nodes, crosses app authorization, then **rechecks again after
 every await before Send**. Native stable user-message and conversation identity establish
-acceptance. Composer insertion, button disappearance and a local “sent” variable do not.
+acceptance. Same-document URL promotion wakes existing receipt checks, pinned to the Chrome
+document; a replaced document gets no route notification. A Send request retains its original
+epoch through the first exactly owned route. The Core mention settles through a message task
+rather than a hidden page's throttled zero-delay timer. Composer insertion, button disappearance and a local “sent” variable do not.
 
 Direct active-turn corrections freeze `directTurn` in the same outbox entry. The exact turn
 start decides eligibility; earlier or running MCP calls do not revoke it. Recheck the exact claim
@@ -1490,6 +1497,13 @@ chat is in that same session's history. The outbox cancels only its wait and ret
 claim, authorization and late-receipt custody. An authored message, an unproved source or elapsed
 time alone cannot take this path. The same outbox expiry rule applies during normal use and restore.
 
+A lost desktop Send acknowledgement reply is retried at most four times after the initial ACK
+(1/2/4/8 seconds) through the existing page wait owner. Every attempt retains the exact input,
+owner, conversation and native user-message receipt. A structured refusal ends retries; no claim,
+Send or browser opening is repeated. A slow accepted ACK retains that same witnessed receipt
+past the ordinary 30-second human-send observation window, subject to document/route/baseline
+checks. A dead document cannot continue the ACK loop.
+
 Desktop delivery captures the native user-message identity inside the same Send acceptance
 operation that proves its text and route. It must not discard that receipt and rediscover the
 row after an await: React may already have replaced it. Navigation still revokes the operation;
@@ -1503,12 +1517,17 @@ unproven, the page reports the fixed reason `Native Send receipt was not confirm
 input slot. `failBrowserInput` then retires the authorized row as the same uncertain send the
 outbox expiry produces (cancelled, never resent, a late exact receipt still confirms it), openings
 and Continue included, so later messages in that chat are claimable without a reload (#821).
-The one exception is proof of non-delivery: if, after that wait, ChatGPT still holds exactly the
-submitted text in its composer and shows no newer user row, the page clears that exact draft and
-reports `Native Send did not take the message.` instead. `failBrowserInput` then requeues a manual
-message once (`notTakenRetries`); a second refusal, or any opening, Continue, helper decision or
-temporary planner, ends as failed (`Not sent: ChatGPT did not accept the message.`). Seen when a
-message for the running turn was clicked in the second that turn ended.
+An unchanged composer and an older visible user row cannot establish non-delivery after
+native Send authorization. Clear only the exact untouched app draft, report unconfirmed receipt
+and retain its original owner/authorization/delivery bytes; never automatically requeue it.
+The backend treats older companions' `Native Send did not take the message.` report the same
+way. A late exact receipt may still settle that original claim, including after restart.
+Legacy rows with positive `notTakenRetries` prove that an older implementation erased prior
+Send custody. Their missing authorization fields do not prove an unsent message: hold unreceived
+queued/browser rows as unconfirmed cancelled waits, retain their authored text and counter beyond
+ordinary terminal-history trimming, and never invent a lost owner or send timestamp. Confirmed
+receipts still win. Genuinely never-authorized preparation/pickup failures retain their existing
+pre-Send recovery policy.
 
 Confirmed terminal input receipts stop owning history retries after their exact local session
 directory is positively absent under an available history root. The outbox durably retires them
@@ -3247,6 +3266,11 @@ hydration; an empty loading DOM must not be treated as a different conversation.
 rechecks the composer before insertion. After Compact & Resume's source-send permission round-trip,
 it reacquires the visible editable composer and validates the exact frozen prompt: a React remount alone
 does not invalidate an unchanged draft, while an actual text change still fails closed and preserves the draft.
+The source handoff's existing Send witness retains its exact run/document/route lifetime
+through delayed native readback. Native click/submit listeners mark actual dispatch and preserve that witness and its
+original assistant baseline. Preparation or a refused dispatch cannot mint a generation from
+another document's already-recorded handoff. Cancellation, navigation or another compaction run revokes it;
+ordinary human receipts keep their bounded lifetime. Expiry never grants another Send.
 The inserted source handoff request uses the same raw-then-one-Markdown-unescape
 witnessed Send receipt as the destination bootstrap. Its original document, native message id
 and pre-send assistant baseline still decide ownership. A fast reply to an escaped marker/code
@@ -3717,7 +3741,13 @@ answer content before durable state publication; it is not a normal recorded exe
 The app's existing Goal/Loop composer row shows answer settling and real waiting reasons before
 a draft exists, then the generated continuation text and delivery state. Both app controls and
 the extension project the same pending reply and activity/listening deadlines. Display countdowns
-grant no execution authority. A full canonical final consumes silence immediately, including an
+grant no execution authority. When an old turn ends and its successor starts in one durable observation batch, the
+recorder's still-open successor owns the new activity grant. Its exact final consumes that grant;
+a replayed old final cannot consume a newer source's work. Publish that owner before awaiting
+outbox revocation and abandon a retired callback after the wait, so a concurrent final cannot
+be followed by a resurrected activity grant. This also releases queued input and
+Goal/Loop without waiting for an obsolete silence deadline.
+A full canonical final consumes silence immediately, including an
 exact final first backfilled after a completed turn; interim prose and Stop/Send changes never do.
 A completed MCP-backed response without final text is a recovery indication, not a terminal error:
 normal chats use two minutes before reload and one minute of listening after confirmed reload.

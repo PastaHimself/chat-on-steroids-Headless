@@ -133,7 +133,7 @@ describe('automatic Compact & Resume native pre-Send recovery (PR #5 follow-up)'
     expect(f.retired).not.toHaveBeenCalled();
     expect(f.ask).toHaveBeenCalledWith(expect.objectContaining({ sourceAttempt: true, token: TOKEN }));
     expect(f.ask.mock.calls.some(([request]) => request.sourceDispatch === true)).toBe(false);
-    expect(f.context.rememberUserSend).toHaveBeenCalledWith(true);
+    expect(f.context.rememberUserSend).toHaveBeenCalledWith(true, expect.any(Function));
     expect(f.context.sendSubmittedText.mock.calls[0]?.[4]).toBe(f.context.matchesSubmittedBootstrap);
   });
 
