@@ -42,6 +42,8 @@ add a watchdog, a second state machine, another outbox, or a new retry loop.
 - Plan queue regression advanced the same six simulated time horizons, reloaded
   the durable outbox at each one and verified all accepted checkpoint identities,
   ordering and queued states survived without duplicate browser pickup.
+- The final isolated Goal-control and input-queue rerun passed 263/263 tests
+  (40 Goal-control cases and 223 input-queue cases, including the new Plan case).
 - Adjacent suites: Goal 150, input queue/Plan 222, continuation 112,
   Goal resume handoff 7, and finish-input integration 5: all 496 passed.
 - Root and Discord TypeScript checks passed after installing independent
@@ -50,6 +52,14 @@ add a watchdog, a second state machine, another outbox, or a new retry loop.
   production reboot, privileged VPS restore or real multi-day runtime.
 - `verify:headless` cannot run on this development host without the missing
   `Xvfb` executable; its private display wait timed out before application boot.
+- Full `npm run verify:ci` finished with **one failure**: 8,751 tests passed,
+  140 skipped, one failed across 347 test files. The failure was the existing
+  `test/renderer-state.test.ts` assertion for a queued UI settings save after a
+  rejected port selection; this PR does not change that code. The exact test
+  passed when rerun separately (1/1). The two suites normally run after the
+  main Vitest phase were run manually: `test/mcp-shutdown.test.ts` passed 6/6;
+  `test/computer.test.ts` skipped 22/22 on this host. The full CI command
+  remains recorded as failing, not green.
 
 These tests establish two corrected persistence failure modes, not a full
 end-to-end proof against every provider outage, browser reconnect, worker crash,
