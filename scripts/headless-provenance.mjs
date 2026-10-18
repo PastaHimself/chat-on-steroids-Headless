@@ -5,13 +5,13 @@ import { execFileSync } from 'node:child_process';
 
 export const manifestPath = 'runtime/headless-build.json';
 export const sourceRoots = ['src', 'extension', 'runtime', 'deploy', 'scripts', 'discord/src', 'discord/tsconfig.json', 'electron.vite.config.ts', 'tsconfig.json', 'package.json', 'package-lock.json', 'discord/package.json', 'discord/package-lock.json'];
-export const payloadRoots = ['out', 'extension', 'runtime', 'deploy', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'node_modules', 'discord/dist', 'discord/node_modules', 'discord/package.json', 'discord/package-lock.json', 'scripts/headless-provenance.mjs', 'scripts/verify-headless-build.mjs', 'scripts/headless-native-probe.cjs'];
+export const payloadRoots = ['resources', 'out', 'extension', 'runtime', 'deploy', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'node_modules', 'discord/dist', 'discord/node_modules', 'discord/package.json', 'discord/package-lock.json', 'scripts/headless-provenance.mjs', 'scripts/verify-headless-build.mjs', 'scripts/headless-native-probe.cjs'];
 const ignored = name => name === manifestPath || name.split('/').includes('__pycache__');
 
 /** Hash bytes and executable intent; installation deliberately normalizes ownership/read modes. */
 export async function deployedRoots(root) {
   const roots = [...payloadRoots];
-  for (const name of ['resources', 'native']) {
+  for (const name of ['native']) {
     try { await fs.lstat(path.join(root, name)); roots.push(name); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   return roots;

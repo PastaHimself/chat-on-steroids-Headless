@@ -59,7 +59,7 @@ npm run headless:build
 npm run verify:headless-build
 ```
 
-Build on Linux amd64 so native terminal/parser dependencies match the VPS. Do not transfer a Windows/macOS dependency directory. The explicit preparation command provisions the pinned Electron binary through its checksum-verified installer even when npm lifecycle scripts are disabled. It then exercises the parser, image decoder, FFI and terminal prebuilds using Electron's embedded Node runtime. A network failure without a verified cached Electron archive stops preparation; retain the cache for offline rebuilding. Never substitute a download or bypass a failed native check. Root builds and root application execution are unsupported.
+Build on Linux amd64 so native terminal/parser dependencies match the VPS. Do not transfer a Windows/macOS dependency directory. The explicit preparation command provisions the pinned Electron binary through its checksum-verified installer even when npm lifecycle scripts are disabled, and stages the pinned checksum-verified ripgrep and tunnel distribution. It then exercises the parser, image decoder, FFI and terminal prebuilds using Electron's embedded Node runtime. A network failure without a verified cached Electron archive stops preparation; retain the cache for offline rebuilding. Never substitute a download or bypass a failed native check. Root builds and root application execution are unsupported.
 
 ## 2. Install the managed service files
 

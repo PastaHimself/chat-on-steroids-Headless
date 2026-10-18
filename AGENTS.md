@@ -4940,7 +4940,7 @@ is `com.chatonsteroids.app`. Native release targets are Windows x64/arm64 NSIS, 
 DMG+ZIP and Linux x64/arm64 AppImage+DEB. Windows is per-user-capable and `asInvoker`; replacing
 the package preserves userData. Synchronize package/main/extension versions deliberately.
 
-`headless:prepare` explicitly provisions checksum-verified Electron and probes the native runtime stack with that executable. `headless:build` clears both compiled trees and previous attestation, builds app and Discord, then seals commit/source/payload/dependencies in local `runtime/headless-build.json`. The managed installer verifies source and staged payload before stop, and rechecks saved durable floors after stop. Never use plain bundle output as Headless deployment evidence.
+`headless:prepare` explicitly provisions checksum-verified Electron, ripgrep and tunnel binaries and probes the native runtime stack with that executable. `headless:build` clears both compiled trees and previous attestation, builds app and Discord, then seals commit/source/payload/dependencies in local `runtime/headless-build.json`. The managed installer verifies source and staged payload before stop, and rechecks saved durable floors after stop. Never use plain bundle output as Headless deployment evidence.
 
 `electron-vite` builds main/preload/renderer into `out/`; extension files ship directly without
 a bundler. `electron-builder.yml` puts executable tunnel/rg, extension and required native

@@ -2,6 +2,8 @@
 (async () => {
   const fs = require('node:fs'), path = require('node:path');
   const root = path.resolve(__dirname, '..');
+  for (const file of ['resources/rg/rg', 'resources/tunnel/tunnel-client', 'resources/tunnel/cloudflared'])
+    fs.accessSync(path.join(root, file), fs.constants.R_OK | fs.constants.X_OK);
   const expected = require(path.join(root, 'node_modules/electron/package.json')).version;
   if (process.versions.electron !== expected) throw new Error('Electron executable/package version mismatch');
   const Parser = require('tree-sitter'), Bash = require('tree-sitter-bash');

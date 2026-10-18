@@ -14,4 +14,6 @@ const env = { ...process.env };
 // Only the package's bundled, pinned official checksums are accepted.
 for (const key of Object.keys(env)) if (/^(ELECTRON_|electron_|npm_config_(electron|platform|arch))/.test(key)) delete env[key];
 execFileSync(process.execPath, [path.join(root, 'node_modules/electron/install.js')], { cwd: root, env, timeout: 300_000, stdio: 'inherit' });
+for (const script of ['fetch-ripgrep.mjs', 'fetch-tunnel-client.mjs'])
+  execFileSync(process.execPath, [path.join(root, 'scripts', script)], { cwd: root, env, timeout: 300_000, stdio: 'inherit' });
 console.log(JSON.stringify(nativeProbe(root)));
