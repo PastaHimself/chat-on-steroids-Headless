@@ -298,7 +298,7 @@ the same backend owners and using their bounded shutdown. `COS_DATA_DIR` also su
 desktop bootstrap against the server's data. Headless is windowless Electron, not a Node-only or
 native-headless-browser claim. `deploy/systemd/cos-headless.target` owns continuous service
 availability; display/private Secret Service/Brave precede the backend. Stop the target for maintenance.
-Managed Headless startup awaits Control API publication; fatal bootstrap errors retain state and exit nonzero. Systemd ExecStartPost authenticates `/v1/health` and requires the exact main PID before startup completes. Code and managed unit directories are explicitly root-owned 0755 despite restrictive umasks; persistent state and environment files stay private.
+Managed Headless startup awaits Control API publication; fatal bootstrap errors retain state and exit nonzero. Systemd ExecStartPost authenticates `/v1/health` and requires the exact main PID before startup completes. Backend KillMode=mixed signals only Electron main during graceful shutdown; killing its GPU/network children at the same time can crash Chromium before state flush. The existing stop deadline still kills the whole cgroup if shutdown stalls. Code and managed unit directories are explicitly root-owned 0755 despite restrictive umasks; persistent state and environment files stay private.
 The dedicated profile is passed on every external browser URL handoff and an explicit executable
 cannot fall back to another browser family. See `docs/headless-vps.md` and `scripts/verify-headless.mjs`.
 `browser-selection.ts::selectedChatBrowser` resolves Headless to Brave for every runtime consumer,
