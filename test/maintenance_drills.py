@@ -171,6 +171,8 @@ class MaintenanceDrills(unittest.TestCase):
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
                 endpoint.bind(str(cache / 'control'))
         (homes[1] / 'state.json').write_text('bot checkpoint')
+        external = self.directory / 'jdk-policy'; external.write_text('outside target is never replaced')
+        os.symlink(str(external), homes[3] / 'jdk-policy-link')
         account = {'uid': os.getuid(), 'gid': os.getgid()}
         metadata = {'cos-backend': account, 'cos-discord': account, 'cos-control': {'gid': os.getgid()}}
         keyring = self.directory / 'test-keyring'; keyring.mkdir(mode=0o700)
@@ -196,6 +198,9 @@ class MaintenanceDrills(unittest.TestCase):
         self.assertEqual((cache / 'ordinary').read_text(), 'regular keyring cache file')
         self.assertFalse((cache / 'control').exists())
         self.assertEqual((homes[1] / 'state.json').read_text(), 'bot checkpoint')
+        self.assertTrue((homes[3] / 'jdk-policy-link').is_symlink())
+        self.assertEqual(os.readlink(homes[3] / 'jdk-policy-link'), str(external))
+        self.assertEqual(external.read_text(), 'outside target is never replaced')
         self.assertEqual(maintenance.Replacement(self.install, [code, *homes]).read()['phase'], 'committed')
 
     def test_legacy_restored_code_cannot_start_before_reconciliation(self):
@@ -205,6 +210,26 @@ class MaintenanceDrills(unittest.TestCase):
         with patch.object(maintenance, 'INSTALL', self.install), patch.object(maintenance, 'DATA', [backend]):
             with self.assertRaisesRegex(RuntimeError, 'Legacy restored code'): maintenance.boot_guard()
             self.assertEqual(maintenance.code_formats(self.install / 'current')['backendReceipts'], 1)
+
+    def test_external_link_metadata_cannot_create_links_in_code_or_replace_nonempty_data(self):
+        payload = self.directory / 'payload'; payload.mkdir()
+        home = self.directory / 'backend'
+        data = payload / str(home).lstrip('/'); data.mkdir(parents=True)
+        target = data / 'link'; target.write_bytes(b'')
+        name = target.relative_to(payload).as_posix()
+        row = {'target': '/etc/java-fixture', 'uid': os.getuid(), 'gid': os.getgid()}
+        manifest = {'version': 2, 'contents': maintenance.inventory(payload), 'externalLinks': {name: row}}
+        with patch.object(maintenance, 'DATA', [home]):
+            maintenance.external_link_rows(payload, manifest)
+            target.write_text('must not be replaced')
+            with self.assertRaisesRegex(RuntimeError, 'placeholder'):
+                maintenance.restore_external_links(payload, manifest)
+            self.assertEqual(target.read_text(), 'must not be replaced')
+            target.write_bytes(b'')
+            with patch.object(maintenance, 'DATA', [self.directory / 'other']):
+                with self.assertRaisesRegex(RuntimeError, 'not owned'):
+                    maintenance.restore_external_links(payload, manifest)
+        self.assertFalse(target.is_symlink())
 
     def test_inventory_refuses_symlinks_outside_backup(self):
         os.symlink('/etc/passwd', self.source / 'escape')

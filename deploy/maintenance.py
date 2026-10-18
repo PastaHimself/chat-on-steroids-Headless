@@ -45,14 +45,14 @@ def remove(file):
     else: file.unlink(missing_ok=True)
 
 
-def inventory(directory, flush=False):
+def inventory(directory, flush=False, allow_external=False):
     rows = {}
     for file in sorted(directory.rglob('*')):
         info = file.lstat(); name = file.relative_to(directory).as_posix()
         row = {'mode': stat.S_IMODE(info.st_mode), 'uid': info.st_uid, 'gid': info.st_gid}
         if file.is_symlink():
             target = os.readlink(file)
-            if os.path.isabs(target) or not file.resolve().is_relative_to(directory.resolve()):
+            if not allow_external and (os.path.isabs(target) or not file.resolve().is_relative_to(directory.resolve())):
                 raise RuntimeError('Backup or staged tree contains a link outside its root: ' + name)
             row.update(kind='link', target=target)
         elif file.is_dir(): row.update(kind='directory')
@@ -315,6 +315,61 @@ def account_metadata():
     return {**{name: {'uid': pwd.getpwnam(name).pw_uid, 'gid': grp.getgrnam(name).gr_gid} for name in ['cos-backend', 'cos-discord']}, 'cos-control': {'gid': grp.getgrnam('cos-control').gr_gid}}
 
 
+def encode_external_links(payload):
+    """Represent data links as inert files in the archive; never read their targets."""
+    links = {}
+    data_roots = [payload / str(root).lstrip('/') for root in DATA]
+    for file in sorted(payload.rglob('*')):
+        if not file.is_symlink(): continue
+        target = os.readlink(file)
+        if not os.path.isabs(target) and file.resolve().is_relative_to(payload.resolve()): continue
+        if not any(file.is_relative_to(root) for root in data_roots):
+            raise RuntimeError('Code contains a link outside the backup root')
+        info = file.lstat()
+        links[file.relative_to(payload).as_posix()] = dict(target=target, uid=info.st_uid, gid=info.st_gid)
+        # Only this private stopped-stack staging copy changes. Source data stays exact.
+        file.unlink(); file.write_bytes(b''); os.chmod(file, 0o600); os.chown(file, info.st_uid, info.st_gid)
+    return links
+
+
+def external_link_rows(payload, manifest):
+    links = manifest.get('externalLinks', {})
+    if not isinstance(links, dict) or len(links) > 100000 or (links and manifest.get('version') != 2):
+        raise RuntimeError('Invalid external link metadata')
+    rows = []
+    data_roots = [payload / str(root).lstrip('/') for root in DATA]
+    for name, row in links.items():
+        if not isinstance(name, str): raise RuntimeError('Invalid external link path')
+        relative = Path(name)
+        if relative.is_absolute() or '..' in relative.parts or relative.as_posix() != name:
+            raise RuntimeError('External link path escapes its data root')
+        file = payload / relative
+        if not any(file.is_relative_to(root) and file != root for root in data_roots):
+            raise RuntimeError('External link is not owned by backed-up data')
+        if not isinstance(row, dict) or set(row) != {'target', 'uid', 'gid'} or not isinstance(row['target'], str) or not row['target'] or len(row['target']) > 4096 or '\0' in row['target']:
+            raise RuntimeError('Invalid external link target')
+        if any(type(row[key]) is not int or row[key] < 0 for key in ['uid', 'gid']):
+            raise RuntimeError('Invalid external link ownership')
+        if any(parent.is_symlink() for parent in file.parents if parent != payload and parent.is_relative_to(payload)):
+            raise RuntimeError('External link has a linked ancestor')
+        info = file.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size != 0 or info.st_uid != row['uid'] or info.st_gid != row['gid']:
+            raise RuntimeError('External link placeholder differs from verified metadata')
+        expected = manifest['contents'].get(name)
+        if not expected or expected.get('kind') != 'file' or expected.get('sha256') != hashlib.sha256(b'').hexdigest():
+            raise RuntimeError('External link placeholder was not verified')
+        rows.append((file, row))
+    return rows
+
+
+def restore_external_links(payload, manifest):
+    # Validate the entire map first. No archive member can ever write through a link:
+    # these are reconstructed only after strict extraction and complete hash verification.
+    for file, row in external_link_rows(payload, manifest):
+        file.unlink(); os.symlink(row['target'], file)
+        os.chown(file, row['uid'], row['gid'], follow_symlinks=False)
+
+
 def backup(output):
     if output.exists(): raise RuntimeError('Backup destination already exists')
     if any(output.is_relative_to(source) for source in allowed_paths()): raise RuntimeError('Backup output must be outside the source directories')
@@ -330,9 +385,10 @@ def backup(output):
                 copy_owned_tree(file, target)
             else:
                 shutil.copy2(file, target); info = file.stat(); os.chown(target, info.st_uid, info.st_gid)
+        links = encode_external_links(payload)
         rows = inventory(payload)
         formats = code_formats(INSTALL / 'current')
-        atomic_json(stage / 'manifest.json', {'version': 1, 'accounts': account_metadata(), 'formats': formats, 'contents': rows})
+        atomic_json(stage / 'manifest.json', {'version': 2 if links else 1, 'accounts': account_metadata(), 'formats': formats, 'contents': rows, 'externalLinks': links})
         archive = stage / 'snapshot.tar'
         with tarfile.open(archive, 'w') as stream:
             stream.add(payload, arcname='payload', recursive=True); stream.add(stage / 'manifest.json', arcname='manifest.json')
@@ -367,8 +423,9 @@ def unpack_verified(archive, directory):
             if any(parent.as_posix() in links for parent in Path(member.name).parents): raise RuntimeError('Backup writes through a link')
         stream.extractall(directory, members=members, filter='fully_trusted')
     manifest = json.loads((directory / 'manifest.json').read_text())
-    if manifest.get('version') != 1 or inventory(directory / 'payload') != manifest['contents']:
+    if manifest.get('version') not in [1, 2] or inventory(directory / 'payload') != manifest['contents']:
         raise RuntimeError('Backup checksum or ownership verification failed')
+    external_link_rows(directory / 'payload', manifest)
     return manifest
 
 
@@ -381,6 +438,7 @@ def restore(input_file):
         manifest = unpack_verified(archive, stage)
         if manifest['accounts'] != account_metadata(): raise RuntimeError('Service account ownership differs; reconcile account IDs before restore')
         payload = stage / 'payload'
+        restore_external_links(payload, manifest)
         code = payload / str(INSTALL / 'current').lstrip('/')
         if code_formats(code) != manifest['formats']: raise RuntimeError('Backup code format mismatch')
         # A restore uses matching backed-up code and data, rather than a code-only rollback.
@@ -393,7 +451,7 @@ def restore(input_file):
             source = payload / str(destination).lstrip('/')
             if not source.exists(): raise RuntimeError('Backup is missing required installation state: ' + str(destination))
             pairs.append((source, destination))
-        inventory(payload, flush=True)
+        inventory(payload, flush=True, allow_external=True)
         previous = transaction.commit(pairs, INSTALL / ('before-restore-' + str(uuid.uuid4())))
         print('Verified backup restored with delivery, automation and worker revival held. Previous state: ' + str(previous))
         print('Inspect receipts locally, record reconciliation and release the hold while services are stopped.')

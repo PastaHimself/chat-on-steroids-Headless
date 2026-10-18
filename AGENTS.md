@@ -3855,7 +3855,7 @@ verifies complete code/units before stopping, retains previous contents and jour
 Its independent root recovery helper/unit precedes runtime units and rolls back an interrupted
 boot while requiring local review. Local GPG backup/restore includes matching code, data, profile,
 keyring, bot/config/project state, units and ownership; checksum verification precedes replacement.
-Data format floors refuse incompatible code-only rollback. Live gates: `docs/reliability-rollout.md`.
+Backup manifest v2 stores external DATA symlinks (for example unpacked JDK configuration links) as inert verified placeholders plus exact link metadata. Strict archive path/link-traversal checks remain; only after verification does the new helper reconstruct links inside the staged DATA roots, without reading or replacing external targets. Code symlinks retain strict containment. Older helpers refuse v2; retain the matching new maintenance helper for recovery. Data format floors refuse incompatible code-only rollback. Live gates: `docs/reliability-rollout.md`.
 Tests: `headless`, `remote-control`, `discord`, `control-api*`, `mcp-worktree-spawn`, lifecycle/shutdown.
 
 Dark is the default theme. Theme selection belongs in Appearance settings; the main header
