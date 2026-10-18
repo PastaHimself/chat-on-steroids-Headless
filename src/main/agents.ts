@@ -3621,7 +3621,7 @@ export function stageQueuedWorkerRevivals(ids: readonly string[], runId?: string
         message.offeredAt === null &&
         !unpublishedMessages.has(message)
     );
-    if (!hasUnseen || freeWorkerSlots(run.runId) <= 0 || globalFreeWorkerSlots() <= 0 || resourceWorkerSlots(globalOccupiedWorkerSlots()) <= 0) continue;
+    if (!hasUnseen || freeWorkerSlots(run.runId) <= 0 || globalFreeWorkerSlots() <= 0) continue;
     const sleptAt = agent.info.sleptAt;
     const assignment = beginRevival(agent);
     reserved.push({ agent, sleptAt, assignment });

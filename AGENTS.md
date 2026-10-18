@@ -3833,7 +3833,7 @@ fingerprint / outcome fence commit before hot removal. Bulky payloads expire aft
 fences never expire. Version 2 migrations preserve version 1 originals. Confirmed rejection needs
 proof that no owning mutation began; transport failure remains uncertain.
 
-`resource-admission.ts` supplies a Headless-only memory-headroom budget to the existing broker spawn/message/queued-revival boundaries. Reservations remain broker-owned; foreground messages and already running work continue under pressure. A one-second sample cache accounts for newly reserved slots; there is no eviction, retry queue, timer, model change or Java CPU limit. Resource diagnostics use eight bounded concurrent proc readers, kernel PSI and Headless event-loop delay.
+`resource-admission.ts` supplies a Headless-only memory-headroom budget to the existing broker new-spawn and sleeping-worker message admission boundaries. Already accepted unread messages keep their existing revival guarantee; pressure cannot strand them after their owning worker stops. Reservations remain broker-owned; foreground messages and already running work continue under pressure. A one-second sample cache accounts for newly reserved slots; there is no eviction, retry queue, timer, model change or Java CPU limit. Resource diagnostics use eight bounded concurrent proc readers, kernel PSI and Headless event-loop delay.
 
 `operational-health.ts` projects service, connection, companion, resource and recovery owners with
 per-component observation times/actions. Provider eligibility remains unknown. `/monitor`, local

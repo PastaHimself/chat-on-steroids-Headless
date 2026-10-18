@@ -238,6 +238,16 @@ describe('resource pressure at the broker admission boundary', () => {
     pressure.mockReturnValue(Infinity);
     expect(spawn({ workers: [{ task: 'bounded task' }], caller: prime }).created).toHaveLength(1);
   });
+  it('honors already accepted unread work when the stopped worker needs revival during pressure', () => {
+    startSwarm(1);const worker = startWorker('worker-1');
+    sendMessage(prime, 'worker-1', 'already accepted task');finishAgent(worker.caller, 'previous assignment done');
+    vi.spyOn(resourceAdmission, 'resourceWorkerSlots').mockReturnValue(0);
+    const staged = stageQueuedWorkerRevivals(['worker-1']);
+    expect(staged.waking).toEqual(['worker-1']);
+    expect(pendingCount('worker-1')).toBe(1);staged.rollback();
+    expect(pendingCount('worker-1')).toBe(1);
+    expect(swarmState().agents.find(row => row.id === 'worker-1')?.state).toBe('sleeping');
+  });
   it('keeps active-worker messages and refuses sleeping-worker wake atomically under pressure', () => {
     startSwarm(2);
     const first = startWorker('worker-1'); startWorker('worker-2');
