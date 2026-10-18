@@ -99,11 +99,13 @@ const {
   GOAL_SWITCHES_STATE,
   goalDrivingMode,
   goalObjectiveFor,
+  restoreGoalObjectives,
   goalDraftBusy,
   goalPendingReplyFor,
   acceptGoalReplyNow,
   setGoalReplyActiveNow,
   goalSwitchFor,
+  goalArmedFor,
   humanReply,
   resetGoalStateForTests,
   setGoalObjective
@@ -15108,6 +15110,42 @@ describe('the goal loop over the bridge', () => {
     expect((await request('GET', `/activity?conversationId=${chat}`)).body.goal.objective).toBe('');
   });
 
+  it('accepts an explicit new Goal objective after master Off while old objectives stay suspended', async () => {
+    await pair();
+    const chat = 'cafe0049-0000-4000-8000-000000000049';
+    const settings = defaultConfig();
+    await saveConfig({ ...settings, goal: { ...settings.goal, enabled: true, backend: 'templates' } });
+    await request('POST', '/events', { body: { conversationId: chat,
+      events: [{ kind: 'user_message', time: Date.now(), text: 'Start the implementation', messageId: 'm-new-goal-off' }] } });
+    const first = await request('POST', '/goal/objective', { body: { conversationId: chat, text: 'Old objective' } });
+    expect(first.status).toBe(200);
+    expect(goalArmedFor(chat)).toBe(true);
+    const oldObjective = await readDurable<import('../src/main/goal.js').GoalObjectivesSnapshot>(GOAL_OBJECTIVES_STATE);
+    await saveConfig({ ...settings, goal: { ...settings.goal, enabled: false, backend: 'templates' } });
+    restoreGoalObjectives(oldObjective);
+    expect(goalArmedFor(chat)).toBe(false);
+    const newGoal = await request('POST', '/goal/objective', { body: { conversationId: chat, text: 'New explicit objective' } });
+    expect(newGoal.status).toBe(200);
+    expect(goalObjectiveFor(chat)).toBe('New explicit objective');
+    expect(goalArmedFor(chat)).toBe(true);
+    expect(goalDrivingMode(chat)).toBe('goal');
+    expect(goalSwitchFor(chat)).toMatchObject({ own: false, enabled: false });
+    const saved = await readDurable<import('../src/main/goal.js').GoalObjectivesSnapshot>(GOAL_OBJECTIVES_STATE);
+    expect(saved?.objectives).toContainEqual(expect.objectContaining({
+      conversationId: chat, objective: 'New explicit objective',
+      masterOffGeneration: getConfig().goal.masterOffGeneration
+    }));
+    restoreGoalObjectives(saved);
+    expect(goalArmedFor(chat)).toBe(true);
+    const off = await request('POST', '/settings', { body: { conversationId: chat, goal: false } });
+    expect(off.status).toBe(200);
+    expect(goalArmedFor(chat)).toBe(false);
+    const blocked = await request('POST', '/goal/objective', { body: { conversationId: chat, text: 'New words after per-chat Off' } });
+    expect(blocked.status).toBe(200);
+    expect(goalObjectiveFor(chat)).toBe('New words after per-chat Off');
+    expect(goalArmedFor(chat)).toBe(false);
+  });
+
   /**
    * The other half of that rule, and the reason the composer can offer an Off at all.
    *
@@ -15853,6 +15891,38 @@ describe('the goal loop over the bridge', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('shows a durable manual-recovery blocker when a pending Goal reply expires after 12 hours', async () => {
+    await pair();
+    const chat = 'cafe0251-0000-4000-8000-000000000251';
+    await request('POST', '/events', { body: { conversationId: chat, events: [
+      { kind: 'user_message', time: Date.now(), text: 'Finish the work', messageId: 'expiry-user' },
+      { kind: 'turn_start', time: Date.now(), turnId: 'expiry-turn' },
+      { kind: 'turn_end', time: Date.now(), turnId: 'expiry-turn', outcome: 'completed' }
+    ] } });
+    const session = (await findSessionByConversation(chat, { requireUnique: true }))!;
+    const goal = await import('../src/main/goal.js');
+    await goal.setGoalSwitchNow(chat, 'goal', true);
+    const acceptedAt = Date.now() - 13 * 60 * 60_000;
+    goal.restoreGoalReplies({ version: 1, savedAt: acceptedAt, replies: [{
+      conversationId: chat, sessionId: session.id, replyId: 'expiry-final',
+      turnId: 'expiry-turn', eventSeq: 50, acceptedAt, state: 'pending'
+    }] });
+    expect(goal.goalPendingReplyFor(chat)).toBeNull();
+    expect((await sessionControlsFor(session.id)).recovery).toContainEqual(expect.objectContaining({
+      kind: 'goal-expired', next: 'goal', deadline: acceptedAt + 12 * 60 * 60_000
+    }));
+    const saved = goal.snapshotGoalReplies();
+    goal.restoreGoalReplies(saved);
+    expect((await sessionControlsFor(session.id)).recovery).toContainEqual(expect.objectContaining({ kind: 'goal-expired' }));
+    await goal.setGoalSwitchNow(chat, 'goal', false);
+    expect((await sessionControlsFor(session.id)).recovery).not.toContainEqual(expect.objectContaining({ kind: 'goal-expired' }));
+    await goal.setGoalSwitchNow(chat, 'goal', true);
+    expect((await sessionControlsFor(session.id)).recovery).toContainEqual(expect.objectContaining({ kind: 'goal-expired' }));
+    await goal.setGoalReplyActiveNow(chat, true);
+    expect(goal.goalPendingReplyFor(chat)).not.toBeNull();
+    expect((await sessionControlsFor(session.id)).recovery).not.toContainEqual(expect.objectContaining({ kind: 'goal-expired' }));
   });
 
   /**

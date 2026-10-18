@@ -13,7 +13,8 @@ export function renderRecoveryCountdowns(host: HTMLElement, countdowns: readonly
       const row = el('div', 'recovery-notice');
       const label = el('span', 'queue-label', () => {
         if (countdown.next) {
-          const reason = countdown.kind === 'pickup-stopped' ? t('Recovery stopped') : countdown.kind === 'pickup' ? t('Waiting for delivery') : countdown.kind === 'post-reload'
+          const reason = countdown.kind === 'goal-expired' ? t('Goal pickup expired') :
+            countdown.kind === 'pickup-stopped' ? t('Recovery stopped') : countdown.kind === 'pickup' ? t('Waiting for delivery') : countdown.kind === 'post-reload'
             ? countdown.generating ? t('Reloaded · turn still marked generating') : t('Reloaded') :
             countdown.kind === 'thinking-failed' ? t('Thinking failed') : t('Turn still marked generating · extra wait');
           const next = countdown.next === 'continue' ? t('Automatic Continue') : countdown.next === 'queue' ? t('Queued message') : countdown.next === 'goal' ? t('Goal') : t('Loop');
@@ -30,6 +31,8 @@ export function renderRecoveryCountdowns(host: HTMLElement, countdowns: readonly
       });
       ui(row, 'title', () => countdown.kind === 'provider-limit'
         ? t('Automatic recovery is paused during the history rate-limit wait. Reloading earlier can prolong the limit.')
+        : countdown.kind === 'goal-expired'
+        ? t('The 12-hour Goal pickup window expired. The saved reply cannot resume automatically. Open this chat and turn Goal on to restart it deliberately.')
         : countdown.kind === 'pickup-stopped'
         ? t('The browser did not collect the pending step after {0} automatic reload attempts. Its original queued input or Goal obligation remains saved. CoS will not reload this chat for this step again; open the chat to continue manually.', [String(countdown.attempts ?? 3)])
         : countdown.kind === 'native-busy' || countdown.generating
@@ -62,6 +65,8 @@ export function renderRecoveryCountdowns(host: HTMLElement, countdowns: readonly
     const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
     const text = countdown.kind === 'provider-limit'
       ? seconds ? t('Retry check in {0}', [time]) : t('Retry window ended')
+      : countdown.kind === 'goal-expired'
+      ? t('Manual resume required')
       : countdown.kind === 'pickup-stopped'
       ? t('Stopped after {0} attempts', [String(countdown.attempts ?? 3)])
       : countdown.kind === 'pickup'

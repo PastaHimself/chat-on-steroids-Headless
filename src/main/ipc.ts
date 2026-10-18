@@ -678,7 +678,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     // governs everything would govern only the chats that never disagreed with it — and a loop
     // somebody wanted stopped would go on running with nowhere obvious to switch it off.
     // Turning it *on* deliberately does not reach into a chat that has said no.
-    if (before.goal.enabled && !next.goal.enabled) clearAllGoalSwitches();
+    if (before.goal.enabled && !next.goal.enabled) clearAllGoalSwitches(next.goal.masterOffGeneration);
     // Explicit settings changes replace discovery's monotonic snapshot. Otherwise
     // disabled permissions/finish/session tools remain published and no schema change
     // reaches automatic plugin refresh. Cosmetic saves must not invalidate discovery.

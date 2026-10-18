@@ -106,6 +106,15 @@ it('shows the history throttle as a wait without claiming a header was provided 
   expect(host.textContent).toContain('Retry window ended');
 });
 
+it('identifies an expired Goal obligation as a manual blocker without promising another Send', () => {
+  renderRecoveryCountdowns(host, [{ kind: 'goal-expired', deadline: 1000, next: 'goal' }], 50_000);
+  expect(host.textContent).toContain('Goal pickup expired · next: Goal');
+  expect(host.textContent).toContain('Manual resume required');
+  expect(host.textContent).not.toContain('Reload');
+  expect(host.querySelector('.recovery-notice')?.getAttribute('title')).toContain('12-hour Goal pickup window expired');
+  expect(host.querySelector('[role="timer"]')?.textContent).not.toContain('0:00');
+});
+
 it('reveals Pro silence at five minutes using the UI clock and hides again when activity renews it', () => {
   const countdown = { kind: 'silence' as const, deadline: 600_000, visibleAt: 300_000 };
   expect(renderRecoveryCountdowns(host, [countdown], 299_999)).toBe(true);

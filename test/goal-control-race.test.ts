@@ -14,7 +14,7 @@ vi.mock('electron', () => ({
   }
 }));
 
-const { defaultConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
+const { defaultConfig, initConfigPath, saveConfig, loadConfig, getConfig } = await import('../src/main/config.js');
 const { initDurableStore, resetDurableForTests, flushDurable, readDurable, writeDurableNow } = await import('../src/main/durable.js');
 const { initSessionStore, resetSessionStoreForTests } = await import('../src/main/session/store.js');
 const goal = await import('../src/main/goal.js');
@@ -65,7 +65,9 @@ async function storedControls() {
   await flushDurable();
   const switches = await readDurable<GoalSwitchesSnapshot>(goal.GOAL_SWITCHES_STATE);
   const objectives = await readDurable<GoalObjectivesSnapshot>(goal.GOAL_OBJECTIVES_STATE);
-  return { switches: switches?.switches ?? [], objectives: objectives?.objectives ?? [] };
+  return { switches: switches?.switches ?? [], objectives: (objectives?.objectives ?? []).map(({ conversationId, objective }) => ({
+    conversationId, objective
+  })) };
 }
 
 it('withholds switch send authority and published snapshots until the actual rename succeeds', async () => {
@@ -116,10 +118,146 @@ it('does not erase a newer Goal reply when an older durable acceptance fails', a
   expect(persisted?.replies).toContainEqual(expect.objectContaining({ replyId: 'reply-two' }));
 });
 
+it('does not trim accepted pending Goal replies while bounding handled history', () => {
+  const acceptedAt = Date.now();
+  const replies = Array.from({ length: 201 }, (_, index) => ({
+    conversationId: `pending-capacity-${index}`, sessionId: 'session-one',
+    replyId: `final-${index}`, turnId: `turn-${index}`,
+    eventSeq: index + 1, acceptedAt: acceptedAt + index,
+    state: 'pending' as const
+  }));
+  goal.restoreGoalReplies({ version: 1, savedAt: acceptedAt, replies });
+  expect(goal.snapshotGoalReplies().replies.filter(row => row.state === 'pending')).toHaveLength(201);
+  expect(goal.goalPendingReplyFor('pending-capacity-0')?.replyId).toBe('final-0');
+});
+
+it('refuses a new Goal reply instead of evicting any of 200 outstanding obligations', async () => {
+  const conversationId = 'capacity-new-chat';
+  await goal.setGoalSwitchNow(conversationId, 'goal', true);
+  const acceptedAt = Date.now();
+  goal.restoreGoalReplies({ version: 1, savedAt: acceptedAt, replies: Array.from({ length: 200 }, (_, index) => ({
+    conversationId: `pending-capacity-${index}`, sessionId: 'session-one',
+    replyId: `final-${index}`, turnId: `turn-${index}`,
+    eventSeq: index + 1, acceptedAt, state: 'pending' as const
+  })) });
+  await expect(goal.acceptGoalReplyNow({ conversationId, sessionId: 'session-one',
+    replyId: 'new-final', turnId: 'new-turn', eventSeq: 201, blocked: false
+  })).rejects.toThrow('goal_pending_capacity');
+  expect(goal.snapshotGoalReplies().replies.filter(row => row.state === 'pending')).toHaveLength(200);
+  expect(goal.goalPendingReplyFor('pending-capacity-0')).not.toBeNull();
+  expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+});
+
+it('rejects an old final whose session lookup completes after a newer final', async () => {
+  const sessions = await import('../src/main/session/store.js');
+  const original = sessions.getSession;
+  const lookup = faultGate();
+  const spy = vi.spyOn(sessions, 'getSession').mockImplementationOnce(async id => {
+    await lookup.hold();
+    return original(id);
+  });
+  releaseWrites.push(lookup.release);
+  const older = observe(goal.acceptGoalReplyNow({ conversationId: SOURCE, sessionId: 'session-one',
+    replyId: 'older-final', turnId: 'turn-one', eventSeq: 1, blocked: false }));
+  await lookup.entered;
+  await goal.acceptGoalReplyNow({ conversationId: SOURCE, sessionId: 'session-one',
+    replyId: 'newer-final', turnId: 'turn-two', eventSeq: 2, blocked: false });
+  lookup.release();
+  expect((await older).error).toBeUndefined();
+  expect(goal.snapshotGoalReplies().replies.find(row => row.conversationId === SOURCE)?.replyId).toBe('newer-final');
+  spy.mockRestore();
+});
+
+it('preserves the prior listening deadline when a durable deferral is rejected', async () => {
+  const acceptedAt = Date.now();
+  goal.restoreGoalReplies({ version: 1, savedAt: acceptedAt, replies: [{
+    conversationId: SOURCE, sessionId: 'session-one', replyId: 'pending-final', turnId: 'turn-one',
+    eventSeq: 1, acceptedAt, state: 'pending', listenUntil: acceptedAt + 1000
+  }] });
+  const gate = delayedWrite(goal.GOAL_REPLIES_STATE, true);
+  const deferral = observe(goal.deferSilenceGoalReplyNow(SOURCE, 'turn-one', acceptedAt + 600_000));
+  await gate.entered;
+  gate.release();
+  expect((await deferral).error).toBeInstanceOf(Error);
+  expect(goal.goalPendingReplyFor(SOURCE)?.listenUntil).toBe(acceptedAt + 1000);
+});
+
+it('makes a committed master Off authoritative across a crash before per-chat switch cleanup', async () => {
+  const config = defaultConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true } });
+  await goal.setGoalSwitchNow(SOURCE, 'loop', true);
+  await goal.setGoalObjectiveNow(SOURCE, 'Finish the saved objective');
+  expect(goal.goalArmedFor(SOURCE)).toBe(true);
+  const prior = await readDurable<GoalSwitchesSnapshot>(goal.GOAL_SWITCHES_STATE);
+  // The settings file is durable before its separate app-wide override cleanup.
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: false } });
+  await loadConfig();
+  goal.restoreGoalSwitches(prior);
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(false);
+  expect(goal.goalArmedFor(SOURCE)).toBe(false);
+  expect(goal.goalObjectiveFor(SOURCE)).toBe('Finish the saved objective');
+  // A fresh explicit per-chat On after the master Off remains valid.
+  await goal.setGoalSwitchNow(SOURCE, 'goal', true);
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(true);
+  goal.restoreGoalSwitches(goal.snapshotGoalSwitches());
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(true);
+});
+
+it('rejects queued objective and combined Goal writes superseded by master Off', async () => {
+  const { createSession } = await import('../src/main/session/store.js');
+  const session = await createSession({ conversationId: SOURCE });
+  const config = defaultConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true } });
+  const gate = delayedWrite(goal.GOAL_SWITCHES_STATE);
+  const older = observe(goal.setGoalSwitchNow(TARGET, 'loop', true));
+  await gate.entered;
+  const objective = observe(goal.setGoalObjectiveNow(SOURCE, 'Superseded goal'));
+  const combined = observe(goal.saveCombinedGoalControlsNow(session.id, SOURCE,
+    { enabled: true, mode: 'goal', objective: 'Superseded combined goal', active: true }, async () => undefined));
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: false } });
+  gate.release();
+  expect((await older).error).toBeInstanceOf(Error);
+  expect((await objective).error).toBeInstanceOf(Error);
+  expect((await combined).error).toBeInstanceOf(Error);
+  expect(goal.goalObjectiveFor(SOURCE)).toBe('');
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(false);
+});
+
+it('master-Off cleanup preserves a new chat On accepted after the Off commit', async () => {
+  const config = defaultConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true } });
+  await goal.setGoalSwitchNow(TARGET, 'loop', true);
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: false } });
+  await goal.setGoalSwitchNow(SOURCE, 'goal', true);
+  goal.clearAllGoalSwitches(getConfig().goal.masterOffGeneration);
+  expect(goal.goalSwitchFor(TARGET).enabled).toBe(false);
+  expect(goal.goalSwitchFor(SOURCE)).toMatchObject({ own: true, enabled: true, mode: 'goal' });
+  await flushDurable();
+  const saved = await readDurable<GoalSwitchesSnapshot>(goal.GOAL_SWITCHES_STATE);
+  goal.restoreGoalSwitches(saved);
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(true);
+});
+
+it('does not let a queued chat On adopt a newer master-Off generation', async () => {
+  const config = defaultConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true } });
+  const gate = delayedWrite(goal.GOAL_SWITCHES_STATE);
+  const earlier = observe(goal.setGoalSwitchNow(TARGET, 'goal', true));
+  await gate.entered;
+  const late = observe(goal.setGoalSwitchNow(SOURCE, 'loop', true));
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: false } });
+  gate.release();
+  expect((await earlier).error).toBeInstanceOf(Error);
+  expect((await late).error).toBeInstanceOf(Error);
+  expect(goal.goalSwitchFor(SOURCE).enabled).toBe(false);
+  expect(goal.goalSwitchFor(TARGET).enabled).toBe(false);
+});
+
 it('does not consume the one native Stop claim when its durable write fails', async () => {
   const acceptedAt = Date.now();
   goal.restoreGoalSwitches({ version: 1, savedAt: acceptedAt, switches: [
-    { conversationId: SOURCE, enabled: true, mode: 'goal', at: acceptedAt }
+    { conversationId: SOURCE, enabled: true, mode: 'goal', at: acceptedAt,
+      masterOffGeneration: getConfig().goal.masterOffGeneration }
   ] });
   goal.restoreGoalReplies({ version: 1, savedAt: acceptedAt, replies: [
     { conversationId: SOURCE, sessionId: 'session-one', replyId: 'reply-stop', turnId: 'turn-one',
@@ -139,7 +277,8 @@ it('does not consume the one native Stop claim when its durable write fails', as
 it('retains the newest Goal obligation through 4 to 72 simulated hours and restart restores', async () => {
   const start = Date.now();
   goal.restoreGoalSwitches({ version: 1, savedAt: start, switches: [
-    { conversationId: SOURCE, enabled: true, mode: 'goal', at: start }
+    { conversationId: SOURCE, enabled: true, mode: 'goal', at: start,
+      masterOffGeneration: getConfig().goal.masterOffGeneration }
   ] });
   vi.useFakeTimers({ toFake: ['Date'] });
   try {
@@ -203,10 +342,13 @@ it('retires even a not-yet-started source save when synchronous resume movement 
 });
 
 it('master clear retires queued enables even when their overrides have never been published', async () => {
+  const config = defaultConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true } });
   const gate = delayedWrite(goal.GOAL_SWITCHES_STATE);
   const first = observe(goal.setGoalSwitchNow(SOURCE, 'goal', true));
   await gate.entered;
   const second = observe(goal.setGoalSwitchNow(TARGET, 'loop', true));
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: false } });
   goal.clearAllGoalSwitches();
   gate.release();
   expect((await first).error).toBeInstanceOf(Error);
@@ -439,7 +581,8 @@ it('rebases a valid switch save around an unrelated synchronous clear without lo
 it('does not evict an accepted Off during an uncommitted helper registration at capacity', async () => {
   await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true } });
   goal.restoreGoalSwitches({ version: 1, savedAt: 1, switches: Array.from({ length: 400 }, (_, index) => ({
-    conversationId: `accepted-off-${index}`, enabled: false, mode: 'goal', at: index + 1
+    conversationId: `accepted-off-${index}`, enabled: false, mode: 'goal', at: index + 1,
+    masterOffGeneration: getConfig().goal.masterOffGeneration
   })) });
   await writeDurableNow(goal.GOAL_SWITCHES_STATE, goal.snapshotGoalSwitches());
   const gate = delayedWrite(goal.GOAL_SWITCHES_STATE, true);
@@ -532,7 +675,8 @@ it('restores an interrupted combined transaction before traffic and preserves un
   const { stageGoalControlJournal, recoverGoalControlJournal } = await import('../src/main/goal-control-journal.js');
   const session = await createSession({ conversationId: SOURCE });
   const next = { conversationId: SOURCE, enabled: true, mode: 'loop', afterTurn: false, at: 1 };
-  await stageGoalControlJournal(session.id, SOURCE, [null, null, null], [next, { conversationId: SOURCE, objective: 'Restored intent' }, null]);
+  await stageGoalControlJournal(session.id, SOURCE, [null, null, null], [next, { conversationId: SOURCE, objective: 'Restored intent' }, null],
+    getConfig().goal.masterOffGeneration);
   await writeDurableNow(goal.GOAL_SWITCHES_STATE, { version: 1, switches: [next] });
   await writeDurableNow(goal.GOAL_OBJECTIVES_STATE, { version: 1, objectives: [{ conversationId: TARGET, objective: 'Unrelated accepted work' }] });
   await recoverGoalControlJournal();
@@ -542,11 +686,60 @@ it('restores an interrupted combined transaction before traffic and preserves un
   expect(await readDurable('goal-control-journal')).toMatchObject({ state: 'committed' });
 });
 
+it('does not roll forward a pending pre-Off Goal transaction after durable master Off', async () => {
+  const { createSession } = await import('../src/main/session/store.js');
+  const { stageGoalControlJournal, recoverGoalControlJournal } = await import('../src/main/goal-control-journal.js');
+  const session = await createSession({ conversationId: SOURCE });
+  const config = defaultConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true } });
+  const proposed = { conversationId: SOURCE, enabled: true, mode: 'goal', at: Date.now(),
+    masterOffGeneration: getConfig().goal.masterOffGeneration };
+  await stageGoalControlJournal(session.id, SOURCE, [null, null, null],
+    [proposed, { conversationId: SOURCE, objective: 'Unaccepted pre-Off intent' }, null], getConfig().goal.masterOffGeneration);
+  await writeDurableNow(goal.GOAL_SWITCHES_STATE, { version: 1, savedAt: Date.now(), switches: [proposed] });
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: false } });
+  await recoverGoalControlJournal();
+  const switches = await readDurable<GoalSwitchesSnapshot>(goal.GOAL_SWITCHES_STATE);
+  const objectives = await readDurable<GoalObjectivesSnapshot>(goal.GOAL_OBJECTIVES_STATE);
+  expect(switches?.switches).toEqual([]);
+  expect(objectives?.objectives).toEqual([]);
+  expect(await readDurable('goal-control-journal')).toMatchObject({ state: 'superseded' });
+});
+
+it('journals the original admission generation when master Off commits during a delayed combined save', async () => {
+  const { createSession } = await import('../src/main/session/store.js');
+  const session = await createSession({ conversationId: SOURCE });
+  const settings = defaultConfig();
+  await saveConfig({ ...settings, goal: { ...settings.goal, enabled: true } });
+  const admittedGeneration = getConfig().goal.masterOffGeneration;
+  const sourceRead = faultGate();
+  const heldSwitchWrite = delayedWrite(goal.GOAL_SWITCHES_STATE);
+  const read = vi.spyOn(await import('../src/main/session/store.js'), 'readRecentEvents').mockImplementationOnce(async () => {
+    await sourceRead.hold();
+    return [];
+  });
+  releaseWrites.push(sourceRead.release);
+  const older = observe(goal.saveCombinedGoalControlsNow(session.id, SOURCE,
+    { mode: 'goal', enabled: true, objective: 'Old intent', active: true }, async () => undefined));
+  await sourceRead.entered;
+  await saveConfig({ ...settings, goal: { ...settings.goal, enabled: false } });
+  expect(getConfig().goal.masterOffGeneration).not.toBe(admittedGeneration);
+  sourceRead.release();
+  await heldSwitchWrite.entered;
+  const journal = await readDurable<{ state: string; masterOffGeneration?: string }>('goal-control-journal');
+  expect(journal?.state).toBe('pending');
+  expect(journal?.masterOffGeneration).toBe(admittedGeneration);
+  heldSwitchWrite.release();
+  expect((await older).error).toBeInstanceOf(Error);
+  read.mockRestore();
+});
+
 it('refuses ambiguous recovery rather than overriding newer accepted Goal state', async () => {
   const { createSession } = await import('../src/main/session/store.js');
   const { stageGoalControlJournal, recoverGoalControlJournal } = await import('../src/main/goal-control-journal.js');
   const session = await createSession({ conversationId: SOURCE });
-  await stageGoalControlJournal(session.id, SOURCE, [null, null, null], [null, { conversationId: SOURCE, objective: 'Old pending intent' }, null]);
+  await stageGoalControlJournal(session.id, SOURCE, [null, null, null],
+    [null, { conversationId: SOURCE, objective: 'Old pending intent' }, null], getConfig().goal.masterOffGeneration);
   await writeDurableNow(goal.GOAL_OBJECTIVES_STATE, { version: 1, objectives: [{ conversationId: SOURCE, objective: 'Newer accepted intent' }] });
   await expect(recoverGoalControlJournal()).rejects.toThrow('newer change');
   expect(await readDurable(goal.GOAL_OBJECTIVES_STATE)).toMatchObject({ objectives: [{ conversationId: SOURCE, objective: 'Newer accepted intent' }] });

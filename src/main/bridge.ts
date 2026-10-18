@@ -91,6 +91,7 @@ import {
   goalArmedFor,
   goalObjectiveFor,
   goalPendingReplyFor,
+  goalExpiredReplyFor,
   goalReplySourceTurn,
   consumeGoalReplyForInputNow,
   goalSwitchFor,
@@ -7534,6 +7535,17 @@ async function sessionRecoveryCountdowns(sessionId: string, conversationId: stri
   // future, not-yet-handed recovery notices; its deadline still fences calls.
   const providerLimit = providerHistoryBackoff(conversationId);
   if (providerLimit) return [{ kind: 'provider-limit', deadline: providerLimit }];
+  const expiredGoal = goalArmedFor(conversationId) ? goalExpiredReplyFor(conversationId) : null;
+  if (expiredGoal?.sessionId === sessionId && runningToolCalls(conversationId) === 0) {
+    const [latestQuestion] = await readRecentEvents(sessionId, 1, { kinds: ['user_message', 'turn_start'] });
+    const position = latestQuestion?.kind === 'user_message'
+      ? latestQuestion.origin ?? latestQuestion.seq : latestQuestion?.seq ?? 0;
+    const source = await goalReplySourceTurn(sessionId, expiredGoal.turnId);
+    if (source && !(latestQuestion && ((expiredGoal.eventSeq > 0 && position > expiredGoal.eventSeq) ||
+        (latestQuestion.kind === 'turn_start' && latestQuestion.turnId !== source)))) {
+      return [{ kind: 'goal-expired', deadline: expiredGoal.expiredAt, next: goalModeFor(conversationId) }];
+    }
+  }
   if (recovery?.silenceBoundary && recoveryInputAllowed(sessionId, conversationId)) {
     const wait = recovery.silenceBoundary.listenUntil ?? 0;
     const pickup = pickupWatch.get(conversationId);

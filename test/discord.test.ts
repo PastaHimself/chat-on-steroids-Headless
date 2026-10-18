@@ -61,6 +61,7 @@ describe('Discord commands and authorization', () => {
     expect(sessionDescription(limited)).not.toContain('State: 🟢 working');
     expect(sessionStatusIndicator({ live: { activeTurnId: 'old-turn', job: { needsAttention: true } } }).text).toBe('Attention Needed');
     expect(sessionStatusIndicator({ live: { activeTurnId: 'open-turn', recovery: [{ kind: 'post-reload' }] } }).text).toBe('Recovering');
+    expect(sessionStatusIndicator({ live: { activeTurnId: null, recovery: [{ kind: 'goal-expired' }] } }).text).toBe('Recovery Stopped');
   });
   it.each([
     { state: 'sent', delivery: 'sent', phrase: 'Provider receipt confirmed' },

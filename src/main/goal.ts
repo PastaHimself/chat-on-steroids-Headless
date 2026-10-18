@@ -431,6 +431,8 @@ interface GoalReplyObligation {
   pickupAttempts?: number;
   pickupNextAt?: number;
   pickupStoppedAt?: number;
+  /** Why an otherwise exact, retained reply is no longer eligible for automatic pickup. */
+  expiredAt?: number;
   conversationId: string;
   sessionId: string;
   replyId: string;
@@ -465,11 +467,17 @@ function boundGoalReplies(now: number): void {
     // Expiry revokes automatic pickup authority; it does not erase the exact final assistant
     // identity. A later deliberate On may re-arm that tombstone, while leaving it handled here
     // prevents a stale page or watchdog from collecting it on its own.
-    if (reply.state === 'pending' && now - reply.acceptedAt >= GOAL_REPLY_TTL_MS) reply.state = 'handled';
+    if (reply.state === 'pending' && now - reply.acceptedAt >= GOAL_REPLY_TTL_MS) {
+      reply.state = 'handled';
+      reply.expiredAt = reply.acceptedAt + GOAL_REPLY_TTL_MS;
+    }
   }
   if (goalReplies.size <= MAX_GOAL_REPLIES) return;
-  const oldestFirst = [...goalReplies.values()].sort((a, b) => a.acceptedAt - b.acceptedAt);
-  for (const reply of oldestFirst.slice(0, goalReplies.size - MAX_GOAL_REPLIES)) {
+  // History is disposable; accepted pending obligations are not. Restoring an
+  // oversized legacy ledger must never silently discharge unfinished work.
+  const oldestFirst = [...goalReplies.values()].filter(reply => reply.state === 'handled')
+    .sort((a, b) => a.acceptedAt - b.acceptedAt);
+  for (const reply of oldestFirst.slice(0, Math.max(0, goalReplies.size - MAX_GOAL_REPLIES))) {
     goalReplies.delete(reply.conversationId);
   }
 }
@@ -524,6 +532,8 @@ export function restoreGoalReplies(snapshot: GoalRepliesSnapshot | null): void {
         ? { pickupStoppedAt: raw.pickupStoppedAt }
         : Number.isSafeInteger(raw.pickupAttempts) && raw.pickupAttempts! >= BROWSER_PICKUP_MAX_ATTEMPTS
           ? { pickupStoppedAt: raw.acceptedAt } : {}),
+      ...(Number.isSafeInteger(raw.expiredAt) && raw.expiredAt === raw.acceptedAt + GOAL_REPLY_TTL_MS &&
+        raw.state === 'handled' ? { expiredAt: raw.expiredAt } : {}),
       ...(raw.explicitActivation === true ? { explicitActivation: true } : {}),
       eventSeq: raw.eventSeq,
       acceptedAt: raw.acceptedAt,
@@ -580,6 +590,17 @@ export function goalPendingReplyFor(
       ...(reply.pickupNextAt ? { pickupNextAt: reply.pickupNextAt } : {}),
       ...(reply.pickupStoppedAt ? { pickupStoppedAt: reply.pickupStoppedAt } : {}) }
     : null;
+}
+
+/** Read-only reason for an expired source; never resurrects its Send authority. */
+export function goalExpiredReplyFor(conversationId: string, now = Date.now()):
+  { replyId: string; turnId: string; eventSeq: number; expiredAt: number; sessionId: string } | null {
+  const reply = goalReplies.get(conversationId);
+  if (!reply) return null;
+  const expiredAt = reply.state === 'pending' && now - reply.acceptedAt >= GOAL_REPLY_TTL_MS
+    ? reply.acceptedAt + GOAL_REPLY_TTL_MS : reply.state === 'handled' ? reply.expiredAt : undefined;
+  return expiredAt ? { replyId: reply.replyId, turnId: reply.turnId, eventSeq: reply.eventSeq,
+    sessionId: reply.sessionId, expiredAt } : null;
 }
 
 /**
@@ -695,6 +716,13 @@ export async function acceptGoalReplyNow(input: {
     (goalSwitchFor(input.conversationId).mode !== 'loop' ||
       await automaticLoopHasMcpWork(input.sessionId, input.conversationId, input.silenceSourceTurnId ?? input.turnId));
   if (input.current && !input.current()) return;
+  // Admission fails visibly once every bounded slot already holds live debt.
+  // A restored oversized legacy ledger is preserved, but cannot grow indefinitely.
+  if (active && current?.state !== 'pending' &&
+      [...goalReplies.values()].filter(reply => reply.state === 'pending' &&
+        Date.now() - reply.acceptedAt < GOAL_REPLY_TTL_MS).length >= MAX_GOAL_REPLIES) {
+    throw new Error('goal_pending_capacity');
+  }
   const accepted: GoalReplyObligation = {
     conversationId: input.conversationId,
     sessionId: input.sessionId,
@@ -775,11 +803,11 @@ export const GOAL_OBJECTIVES_STATE = 'goal-objectives';
 export interface GoalObjectivesSnapshot {
   version: 1;
   savedAt: number;
-  objectives: Array<{ conversationId: string; objective: string }>;
+  objectives: Array<{ conversationId: string; objective: string; masterOffGeneration?: string }>;
 }
 
 /** One staged Goal-control save. */
-type GoalControlWrite = { conversationId: string; invalidated: boolean; changed: boolean };
+type GoalControlWrite = { conversationId: string; invalidated: boolean; changed: boolean; masterOffGeneration?: string };
 const pendingGoalObjectives = new Set<GoalControlWrite>();
 const pendingGoalSwitches = new Set<GoalControlWrite>();
 const compoundGoalControls = new Set<string>();
@@ -791,7 +819,9 @@ export function goalControlsPending(conversationId: string): boolean { return co
 export function saveCombinedGoalControlsNow(requestedSessionId: string | null, conversationId: string, input: {
   mode: GoalMode; enabled: boolean; afterTurn?: boolean; objective?: string; active: boolean; preserveSwitch?: boolean; current?: (silenceSourceTurnId?: string) => boolean;
 }, assertCurrent: () => Promise<void>): Promise<void> {
-  const write: GoalControlWrite = { conversationId, invalidated: false, changed: false };
+  const admittedMasterOff = getConfig().goal.masterOffGeneration;
+  const write: GoalControlWrite = { conversationId, invalidated: false, changed: false,
+    masterOffGeneration: getConfig().goal.masterOffGeneration };
   const offOnly = !input.enabled && !input.active && input.objective === undefined && !input.preserveSwitch;
   if (goalControlRecoveryRequired) return Promise.reject(new Error("Goal controls need recovery before another save"));
   if (!input.enabled && !input.preserveSwitch) invalidateGoalControlWrites(pendingGoalSwitches, [conversationId]);
@@ -809,17 +839,24 @@ export function saveCombinedGoalControlsNow(requestedSessionId: string | null, c
       };
       await assertBoundOwner();
       await assertCurrent();
+      if (getConfig().goal.masterOffGeneration !== admittedMasterOff) throw new Error('Goal controls were superseded by master Off');
       if (write.invalidated || write.conversationId !== conversationId) throw new Error('Goal controls were superseded');
       for (let attempt = 0; attempt < 8; attempt++) {
         write.changed = false;
-        const beforeSwitch = goalSwitches.get(conversationId), beforeReply = goalReplies.get(conversationId);
+        const storedSwitch = goalSwitches.get(conversationId);
+        const beforeSwitch = storedSwitch?.role === 'decision' ||
+          storedSwitch?.masterOffGeneration === getConfig().goal.masterOffGeneration ? storedSwitch : undefined;
+        const beforeReply = goalReplies.get(conversationId);
         const replyRevision = JSON.stringify([...goalReplies.values()]);
         if (beforeSwitch?.role === 'decision' && !offOnly) throw new Error('goal_helper_controls');
         const switches = new Map(goalSwitches), objectives = new Map(goalObjectives), replies = new Map(goalReplies);
-        if (!input.preserveSwitch && beforeSwitch?.role !== 'decision') switches.set(conversationId, { enabled: input.enabled, mode: input.mode, afterTurn: input.afterTurn ?? beforeSwitch?.afterTurn ?? false, at: Date.now() });
+        if (!input.preserveSwitch && beforeSwitch?.role !== 'decision') switches.set(conversationId, {
+          enabled: input.enabled, mode: input.mode, afterTurn: input.afterTurn ?? beforeSwitch?.afterTurn ?? false,
+          at: Date.now(), masterOffGeneration: admittedMasterOff
+        });
         if (input.objective !== undefined) {
           objectives.delete(conversationId);
-          if (input.objective.trim()) objectives.set(conversationId, input.objective.trim());
+          if (input.objective.trim()) objectives.set(conversationId, objectiveRow(input.objective.trim(), admittedMasterOff));
         }
         const session = sessionId ? await getSession(sessionId) : null;
         if (sessionId && session?.conversationId !== conversationId) throw new Error("conversation_changed");
@@ -832,7 +869,8 @@ export function saveCombinedGoalControlsNow(requestedSessionId: string | null, c
           !(end?.kind === "turn_end" && end.reason === "thinking_failed" && end.time + 5 * 60_000 > Date.now());
         if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()])) continue;
         if (beforeReply) replies.set(conversationId, { ...beforeReply, state: active ? 'pending' : 'handled',
-          ...(active ? { acceptedAt: Math.max(Date.now(), beforeReply.acceptedAt + 1), explicitActivation: true } : {}) });
+          ...(active ? { acceptedAt: Math.max(Date.now(), beforeReply.acceptedAt + 1), explicitActivation: true,
+            expiredAt: undefined } : {}) });
         if (active && sessionId && end?.kind === "turn_end" && end.turnId &&
             (end.outcome === "stopped" || (end.outcome === "failed" && end.reason === "thinking_failed")) && (!beforeReply || beforeReply.eventSeq < end.seq)) {
           replies.set(conversationId, { conversationId, sessionId, replyId: `activation:${end.turnId}`.slice(0, 200),
@@ -841,21 +879,24 @@ export function saveCombinedGoalControlsNow(requestedSessionId: string | null, c
         boundGoalSwitches(switches);
         const ownerRows = (a: typeof switches, b: typeof objectives, c: typeof replies): Array<Record<string, unknown> | null> => [
           a.has(conversationId) ? { conversationId, ...a.get(conversationId)! } : null,
-          b.has(conversationId) ? { conversationId, objective: b.get(conversationId)! } : null,
+          b.has(conversationId) ? { conversationId, ...b.get(conversationId)! } : null,
           c.has(conversationId) ? { ...c.get(conversationId)! } : null
         ];
         staged = true;
-        await stageGoalControlJournal(sessionId, conversationId, ownerRows(goalSwitches, goalObjectives, goalReplies), ownerRows(switches, objectives, replies));
+        await stageGoalControlJournal(sessionId, conversationId, ownerRows(goalSwitches, goalObjectives, goalReplies),
+          ownerRows(switches, objectives, replies), admittedMasterOff);
         await writeDurableNow(GOAL_SWITCHES_STATE, goalSwitchesSnapshot(switches));
         await writeDurableNow(GOAL_OBJECTIVES_STATE, goalObjectivesSnapshot(objectives));
         await writeDurableNow(GOAL_REPLIES_STATE, { version: 1, savedAt: Date.now(), replies: [...replies.values()] });
         await assertCurrent();
         await assertBoundOwner();
+        if (getConfig().goal.masterOffGeneration !== admittedMasterOff) throw new Error('Goal controls were superseded by master Off');
         if (write.invalidated || write.conversationId !== conversationId) throw new Error('Goal controls were superseded');
         if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()]) || (active && !idle())) continue;
         await settleGoalControlJournal();
         await assertCurrent();
         await assertBoundOwner();
+        if (getConfig().goal.masterOffGeneration !== admittedMasterOff) throw new Error('Goal controls were superseded by master Off');
         if (write.invalidated || write.conversationId !== conversationId) throw new Error('Goal controls changed during commit');
         if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()]) || (active && !idle())) continue;
         publishGoalSwitches(switches);
@@ -914,21 +955,25 @@ function saveGoalControl<T>(
   conversationId: string,
   state: string,
   snapshot: () => unknown,
-  stage: (targetConversationId: string) => { snapshot: unknown; publish: () => T } | { result: T }
+  stage: (targetConversationId: string) => { snapshot: unknown; publish: () => T } | { result: T },
+  current: () => boolean = () => true
 ): Promise<T> {
-  const write: GoalControlWrite = { conversationId, invalidated: false, changed: false };
+  const write: GoalControlWrite = { conversationId, invalidated: false, changed: false,
+    masterOffGeneration: getConfig().goal.masterOffGeneration };
   pending.add(write);
   return serialGoalSwitch(async () => {
     if (goalControlRecoveryRequired) { pending.delete(write); throw new Error("Goal controls need recovery before another save"); }
     let attempted = false;
     try {
       for (let revision = 0; revision < 8; revision++) {
+        if (!current()) throw new Error('Goal controls were superseded by master Off');
         if (write.invalidated) throw new Error('Goal controls changed while saving; this request was superseded.');
         write.changed = false;
         const next = stage(write.conversationId);
         if ('result' in next) return next.result;
         attempted = true;
         await writeDurableNow(state, next.snapshot);
+        if (!current()) throw new Error('Goal controls were superseded by master Off');
         if (write.invalidated) throw new Error('Goal controls changed while saving; this request was superseded.');
         // Rebase when another synchronous projection or Compact & Resume changed the ledger.
         if (!write.changed) return next.publish();
@@ -967,13 +1012,17 @@ function saveGoalControl<T>(
  * crash, so an unattended chain of resumptions keeps pursuing one objective without making the
  * user type it again.
  */
-const goalObjectives = new Map<string, string>();
+type GoalObjectiveRow = { objective: string; masterOffGeneration?: string };
+const goalObjectives = new Map<string, GoalObjectiveRow>();
+function objectiveRow(objective: string, generation?: string): GoalObjectiveRow {
+  return { objective, ...(generation ? { masterOffGeneration: generation } : {}) };
+}
 
-function goalObjectivesSnapshot(objectives: ReadonlyMap<string, string>): GoalObjectivesSnapshot {
+function goalObjectivesSnapshot(objectives: ReadonlyMap<string, GoalObjectiveRow>): GoalObjectivesSnapshot {
   return {
     version: 1,
     savedAt: Date.now(),
-    objectives: [...objectives.entries()].map(([conversationId, objective]) => ({ conversationId, objective }))
+    objectives: [...objectives.entries()].map(([conversationId, row]) => ({ conversationId, ...row }))
   };
 }
 
@@ -996,13 +1045,15 @@ export function restoreGoalObjectives(snapshot: GoalObjectivesSnapshot | null): 
     if (typeof raw.objective !== 'string') continue;
     const objective = raw.objective.trim();
     if (!objective) continue;
-    goalObjectives.set(raw.conversationId, objective);
+    goalObjectives.set(raw.conversationId, objectiveRow(objective,
+      typeof raw.masterOffGeneration === 'string' && /^[0-9a-f-]{36}$/i.test(raw.masterOffGeneration)
+        ? raw.masterOffGeneration : undefined));
   }
 }
 
 /** This chat's specific goal, or '' when it has none. */
 export function goalObjectiveFor(conversationId: string): string {
-  return goalObjectives.get(conversationId) ?? '';
+  return goalObjectives.get(conversationId)?.objective ?? '';
 }
 
 /**
@@ -1015,7 +1066,7 @@ export function setGoalObjective(conversationId: string, text: string): string {
   invalidateGoalControlWrites(pendingGoalObjectives, [conversationId]);
   const goal = text.trim();
   goalObjectives.delete(conversationId);
-  if (goal) goalObjectives.set(conversationId, goal);
+  if (goal) goalObjectives.set(conversationId, objectiveRow(goal, getConfig().goal.masterOffGeneration));
   persistGoalObjectives();
   return goal;
 }
@@ -1031,20 +1082,21 @@ export function setGoalObjective(conversationId: string, text: string): string {
  */
 export async function setGoalObjectiveNow(conversationId: string, text: string): Promise<string> {
   const goal = text.trim();
+  const admittedMasterOff = getConfig().goal.masterOffGeneration;
   return saveGoalControl(pendingGoalObjectives, conversationId, GOAL_OBJECTIVES_STATE, snapshotGoalObjectives, (targetConversationId) => {
     const next = new Map(goalObjectives);
     next.delete(targetConversationId);
-    if (goal) next.set(targetConversationId, goal);
+    if (goal) next.set(targetConversationId, objectiveRow(goal, admittedMasterOff));
     return {
       snapshot: goalObjectivesSnapshot(next),
       publish: () => {
         goalObjectives.delete(targetConversationId);
-        if (goal) goalObjectives.set(targetConversationId, goal);
+        if (goal) goalObjectives.set(targetConversationId, objectiveRow(goal, admittedMasterOff));
         persistGoalObjectives();
         return goal;
       }
     };
-  });
+  }, () => getConfig().goal.masterOffGeneration === admittedMasterOff);
 }
 
 export function clearGoalObjective(conversationId: string): void {
@@ -1112,7 +1164,8 @@ export interface GoalSwitchesSnapshot {
  * old conversation is retired: turning Goal off where it pops up writes `enabled: false` for
  * that chat alone, and no later app-wide change can revive it.
  */
-type GoalSwitchRow = { enabled: boolean; mode: GoalMode; afterTurn?: boolean; at: number; role?: 'decision'; sourceSessionId?: string;
+type GoalSwitchRow = { enabled: boolean; mode: GoalMode; afterTurn?: boolean; at: number; masterOffGeneration?: string;
+  role?: 'decision'; sourceSessionId?: string;
   context?: { count: number; hash: string; instructions: string } };
 const goalSwitches = new Map<string, GoalSwitchRow>();
 let goalSwitchWrites: Promise<unknown> = Promise.resolve();
@@ -1171,6 +1224,8 @@ export function restoreGoalSwitches(snapshot: GoalSwitchesSnapshot | null): void
     const context = sourceSessionId && raw.context && Number.isSafeInteger(raw.context.count) && raw.context.count >= 0
       && /^[a-f0-9]{64}$/.test(raw.context.hash) && /^[a-f0-9]{64}$/.test(raw.context.instructions) ? raw.context : undefined;
     goalSwitches.set(raw.conversationId, { enabled: raw.role === 'decision' ? false : raw.enabled, mode: raw.mode, at,
+      ...(typeof raw.masterOffGeneration === 'string' && /^[0-9a-f-]{36}$/i.test(raw.masterOffGeneration)
+        ? { masterOffGeneration: raw.masterOffGeneration } : {}),
       ...(raw.afterTurn === true && raw.role !== 'decision' ? { afterTurn: true } : {}),
       ...(raw.role === 'decision' ? { role: 'decision' as const, sourceSessionId, context } : {}) });
   }
@@ -1184,8 +1239,10 @@ function persistGoalSwitches(): void {
 /** This chat's switch: its own override when it has one, otherwise the app-wide setting. */
 export function goalSwitchFor(conversationId: string): { enabled: boolean; mode: GoalMode; own: boolean; afterTurn: boolean } {
   const own = goalSwitches.get(conversationId);
-  if (own) return { enabled: own.role !== 'decision' && own.enabled, mode: own.mode, own: true, afterTurn: own.afterTurn === true };
   const goal = getConfig().goal;
+  if (own?.role === 'decision') return { enabled: false, mode: own.mode, own: true, afterTurn: false };
+  if (own && own.masterOffGeneration === goal.masterOffGeneration)
+    return { enabled: own.enabled, mode: own.mode, own: true, afterTurn: own.afterTurn === true };
   return { enabled: goal.enabled, mode: goal.mode, own: false, afterTurn: false };
 }
 
@@ -1238,7 +1295,10 @@ export function goalArmedFor(conversationId: string): boolean {
   if (recoveryHeld() || goalControlRecoveryRequired || goalControlsPending(conversationId)) return false;
   const held = goalSwitchFor(conversationId);
   if (held.own) return held.enabled;
-  return held.enabled || goalObjectiveFor(conversationId) !== '';
+  // Master Off also retires implicit activation from a saved objective. The
+  // objective stays visible for later deliberate On, but cannot rearm itself.
+  const objective = goalObjectives.get(conversationId);
+  return held.enabled || !!objective && objective.masterOffGeneration === getConfig().goal.masterOffGeneration;
 }
 
 /**
@@ -1254,6 +1314,7 @@ export async function setGoalSwitchNow(
   on: boolean,
   afterTurn?: boolean
 ): Promise<{ enabled: boolean; mode: GoalMode }> {
+  const admittedMasterOff = getConfig().goal.masterOffGeneration;
   if (!on && goalSwitchFor(conversationId).mode === which) {
     invalidateGoalControlWrites(pendingGoalSwitches, [conversationId]);
   }
@@ -1263,14 +1324,16 @@ export async function setGoalSwitchNow(
     GOAL_SWITCHES_STATE,
     snapshotGoalSwitches,
     (targetConversationId) => {
-      const before = goalSwitches.get(targetConversationId);
-      if (before?.role === 'decision') return { result: { enabled: false, mode: before.mode } };
+      const stored = goalSwitches.get(targetConversationId);
+      const before = stored?.masterOffGeneration === getConfig().goal.masterOffGeneration ? stored : undefined;
+      if (stored?.role === 'decision') return { result: { enabled: false, mode: stored.mode } };
       if (!before && [...goalSwitches.values()].filter(row => row.role === 'decision').length >= MAX_GOAL_SWITCHES) {
         throw new Error('goal_switch_capacity');
       }
       const next = applyGoalSwitch(goalSwitchFor(targetConversationId), which, on);
       const staged = new Map(goalSwitches);
       staged.set(targetConversationId, { enabled: next.enabled, mode: next.mode,
+        masterOffGeneration: getConfig().goal.masterOffGeneration,
         afterTurn: afterTurn ?? before?.afterTurn ?? false, at: Date.now() });
       boundGoalSwitches(staged);
       return {
@@ -1281,7 +1344,7 @@ export async function setGoalSwitchNow(
           return { enabled: next.enabled, mode: next.mode };
         }
       };
-    });
+    }, () => getConfig().goal.masterOffGeneration === admittedMasterOff);
 }
 
 /**
@@ -1292,10 +1355,19 @@ export async function setGoalSwitchNow(
  * conversation, and discarding all of them is only defensible as the answer to a deliberate
  * "stop everything".
  */
-export function clearAllGoalSwitches(): void {
-  invalidateGoalControlWrites(pendingGoalSwitches);
+export function clearAllGoalSwitches(generation?: string): void {
+  for (const pending of pendingGoalSwitches) {
+    if (generation && pending.masterOffGeneration === generation) continue;
+    pending.changed = true;
+    pending.invalidated = true;
+  }
   if (goalSwitches.size === 0) return;
-  for (const [id, row] of goalSwitches) if (row.role !== 'decision') goalSwitches.delete(id);
+  let cleared = false;
+  for (const [id, row] of goalSwitches) if (row.role !== 'decision' && (!generation || row.masterOffGeneration !== generation)) {
+    goalSwitches.delete(id);
+    cleared = true;
+  }
+  if (!cleared) return;
   persistGoalSwitches();
 }
 
@@ -1587,6 +1659,7 @@ export async function setGoalReplyActiveNow(conversationId: string, active: bool
   // Re-arming the same stable reply cannot refund its shared source-turn recovery budget.
   if (active) before.acceptedAt = Math.max(Date.now(), previous.acceptedAt + 1);
   if (active) before.explicitActivation = true;
+  if (active) delete before.expiredAt;
   const acceptedAt = before.acceptedAt;
   try {
     await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
@@ -1640,10 +1713,19 @@ export async function deferSilenceGoalReplyNow(conversationId: string, turnId: s
   if (listenUntil === undefined && (reply.listenUntil ?? 0) > Date.now()) return true;
   const deadline = listenUntil ?? Date.now() + 5 * 60_000;
   if ((reply.listenUntil ?? 0) >= deadline) return true;
+  const previousDeadline = reply.listenUntil;
   reply.listenUntil = deadline;
   notifyGoalChange();
   try { await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies()); }
-  catch (error) { persistGoalRepliesSoon(); throw error; }
+  catch (error) {
+    if (goalReplies.get(conversationId) === reply && reply.listenUntil === deadline) {
+      if (previousDeadline === undefined) delete reply.listenUntil;
+      else reply.listenUntil = previousDeadline;
+    }
+    persistGoalRepliesSoon();
+    notifyGoalChange();
+    throw error;
+  }
   return goalReplies.get(conversationId) === reply;
 }
 
