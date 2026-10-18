@@ -28,7 +28,8 @@ class MaintenanceDrills(unittest.TestCase):
     def installation_fixture(self):
         source = self.directory / 'build'; source.mkdir()
         for name in ['package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt',
-                     'out/main/index.js', 'discord/dist/index.js', 'node_modules/electron/dist/electron',
+                     'out/main/index.js', 'discord/dist/index.js', 'discord/node_modules/fixture.js', 'discord/package.json',
+                     'discord/package-lock.json', 'discord/THIRD-PARTY-NOTICES.txt', 'discord/licenses/fixture.txt', 'node_modules/electron/dist/electron',
                      'node_modules/electron/dist/chrome-sandbox', 'extension/manifest.json',
                      'scripts/headless-provenance.mjs', 'scripts/verify-headless-build.mjs', 'scripts/headless-native-probe.cjs',
                      'deploy/maintenance.py', 'deploy/start-backend.sh']:
@@ -48,6 +49,7 @@ class MaintenanceDrills(unittest.TestCase):
 
     def test_install_with_private_umask_publishes_traversable_root_owned_code_only(self):
         source = self.installation_fixture(); self.install.chmod(0o700)
+        private = source / 'discord/.env'; private.write_text('private login fixture'); private.chmod(0o600)
         units = self.directory / 'systemd'; units.mkdir()
         homes = [self.directory / name for name in ['backend', 'discord', 'configuration', 'projects']]
         for home in homes: home.mkdir(mode=0o700)
@@ -63,6 +65,9 @@ class MaintenanceDrills(unittest.TestCase):
                 maintenance.install(source)
         finally: os.umask(old_umask)
         code = self.install / 'current'
+        self.assertFalse((code / 'discord/.env').exists())
+        self.assertEqual(private.read_text(), 'private login fixture')
+        self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
         for file in [code, self.install, *[file for file in code.rglob('*') if file.is_dir()],
                      *[units / (name + '.d') for name in maintenance.UNITS]]:
             self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o755, str(file))

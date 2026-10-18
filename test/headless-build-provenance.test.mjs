@@ -60,7 +60,7 @@ test('deployment provenance refuses edited or untracked source while ignoring ge
   const { assertCommittedSource } = await import('../scripts/headless-provenance.mjs');
   const root = await fixture(t);await fs.mkdir(path.join(root, 'src'));
   await fs.writeFile(path.join(root, 'src/main.ts'), 'original');
-  await fs.writeFile(path.join(root, '.gitignore'), 'runtime/headless-build.json\n');
+  await fs.writeFile(path.join(root, '.gitignore'), 'runtime/headless-build.json\n.env\n');
   const git = args => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
   git(['init']);git(['add', '.']);git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'fixture']);
   assertCommittedSource(root);
@@ -71,4 +71,6 @@ test('deployment provenance refuses edited or untracked source while ignoring ge
   assert.throws(() => assertCommittedSource(root), /committed source/);
   await fs.rm(path.join(root, 'src/new.ts'));await fs.mkdir(path.join(root, 'runtime'));
   await fs.writeFile(path.join(root, 'runtime/headless-build.json'), '{}');assertCommittedSource(root);
+  await fs.writeFile(path.join(root, 'src/.env'), 'private fixture');
+  assert.throws(() => assertCommittedSource(root), /credential files/);
 });

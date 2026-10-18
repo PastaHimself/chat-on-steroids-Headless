@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 
 export const manifestPath = 'runtime/headless-build.json';
 export const sourceRoots = ['src', 'extension', 'runtime', 'deploy', 'scripts', 'discord/src', 'discord/tsconfig.json', 'electron.vite.config.ts', 'tsconfig.json', 'package.json', 'package-lock.json', 'discord/package.json', 'discord/package-lock.json'];
-export const payloadRoots = ['resources', 'out', 'extension', 'runtime', 'deploy', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'node_modules', 'discord/dist', 'discord/node_modules', 'discord/package.json', 'discord/package-lock.json', 'scripts/headless-provenance.mjs', 'scripts/verify-headless-build.mjs', 'scripts/headless-native-probe.cjs'];
+export const payloadRoots = ['resources', 'out', 'extension', 'runtime', 'deploy', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'node_modules', 'discord/dist', 'discord/node_modules', 'discord/package.json', 'discord/package-lock.json', 'discord/THIRD-PARTY-NOTICES.txt', 'discord/licenses', 'scripts/headless-provenance.mjs', 'scripts/verify-headless-build.mjs', 'scripts/headless-native-probe.cjs'];
 const ignored = name => name === manifestPath || name.split('/').includes('__pycache__');
 
 /** Hash bytes and executable intent; installation deliberately normalizes ownership/read modes. */
@@ -44,6 +44,9 @@ export async function verifyInventory(root, roots, expected) {
 export function assertCommittedSource(root) {
   const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', ...sourceRoots], { cwd: root, encoding: 'utf8' });
   if (status.trim()) throw new Error('Headless deployment builds require committed source. Commit the reviewed changes, then rebuild.');
+  const ignoredFiles = execFileSync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '--', ...sourceRoots], { cwd: root, encoding: 'utf8' }).trim().split('\n');
+  if (ignoredFiles.some(file => /(?:^|\/)\.env(?:\.|$)/.test(file) && !file.endsWith('.env.example') || /\.(?:pem|p12|pfx)$/.test(file)))
+    throw new Error('Private credential files must remain outside deployment source roots.');
 }
 export async function cleanBuildOutputs(root) {
   for (const relative of [manifestPath, 'out', 'discord/dist']) {

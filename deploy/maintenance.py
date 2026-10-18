@@ -193,7 +193,9 @@ def install(source):
     Replacement(INSTALL, allowed_paths()).recover()
     public_directory(INSTALL)
     verify_build(source)
-    required = ['package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'node_modules', 'out', 'extension', 'discord', 'deploy', 'runtime']
+    required = ['package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'node_modules', 'out', 'extension', 'deploy', 'runtime',
+                'discord/dist', 'discord/node_modules', 'discord/package.json', 'discord/package-lock.json',
+                'discord/THIRD-PARTY-NOTICES.txt', 'discord/licenses']
     for name in ['out/main/index.js', 'discord/dist/index.js', 'node_modules/electron/dist/electron', 'node_modules/electron/dist/chrome-sandbox', 'runtime/durable-formats.json']:
         if not (source / name).is_file(): raise RuntimeError('Incomplete update: ' + name)
     compatible(code_formats(source))
@@ -201,6 +203,7 @@ def install(source):
     try:
         for name in required + [name for name in ['resources', 'native'] if (source / name).exists()]:
             origin, target = source / name, code / name
+            target.parent.mkdir(parents=True, exist_ok=True)
             if origin.is_dir(): shutil.copytree(origin, target, symlinks=True)
             else: shutil.copy2(origin, target)
         scripts = code / 'scripts'; scripts.mkdir()
