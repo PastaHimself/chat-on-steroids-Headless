@@ -199,7 +199,7 @@ export class DiscordController {
         // Discover its local session through bounded session pages; never use conversation ID as session ID.
         let cursor: string | null = null; let target: any;
         for (let page = 0; page < 5 && !target; page++) {
-          const rows: any = await this.api.request(`/v1/sessions?limit=200${cursor ? `&cursor=${encode(cursor)}` : ''}`);
+          const rows: any = await this.api.request(`/v1/sessions?limit=50${cursor ? `&cursor=${encode(cursor)}` : ''}`);
           target = rows.sessions.find((row: any) => row.conversationId === worker.conversationId && row.origin?.kind === 'worker');
           cursor = rows.nextCursor; if (!cursor) break;
         }
@@ -672,9 +672,9 @@ export class DiscordController {
       if (!draft || draft.revision !== view.revision) throw new Error('Stale setup panel');
       if (action === 'setup-notifications') modal.addComponents(field('channel', 'Notification channel ID (blank disables)', draft.settings.notificationChannel ?? ''),
         field('frequency', 'Frequency in seconds (15–3600)', String(draft.settings.frequencySeconds)), field('progress', 'Progress updates: on / off', draft.settings.progress ? 'on' : 'off'),
-        field('final', 'Final recorded response notifications: on / off', draft.settings.finalResults ? 'on' : 'off'),
+        field('final', 'Final response notifications: on / off', draft.settings.finalResults ? 'on' : 'off'),
         field('health', 'Failure and recovery alerts: on / off', draft.settings.operationalAlerts ? 'on' : 'off'));
-      else if (action === 'setup-access') modal.addComponents(field('users', 'User IDs: read / send / configure / plan / workers',
+      else if (action === 'setup-access') modal.addComponents(field('users', 'User IDs: read/send/configure/plan/workers',
         Object.entries(draft.settings.users).map(([user, grants]) => `${user}:${grants.join(',')}`).join('\n'), true), field('channels', 'Allowed channel IDs, comma-separated', draft.settings.channels.join(',')));
       else if (action === 'setup-workers') modal.addComponents(field('family', 'Workers per family (1–8; initial default 2)', String(draft.backend.maxWorkers ?? 2)),
         field('global', 'Global cap (0–64; 0 disables the cap)', String(draft.backend.globalMaxWorkers ?? 2)));
