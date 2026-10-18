@@ -330,7 +330,7 @@ describe('control transport and notifications', () => {
     let page = 0;
     const api = { request: vi.fn(async (route: string) => {
       if (route.includes('/events?')) return page === 0 ? { nextFrom: 100, events: [
-        { kind: 'user_message', inputId, inputDelivery: 'sent', seq: 1, time: 101 },
+        { kind: 'user_message', inputId, inputDelivery: 'confirmed', seq: 1, time: 101 },
         { kind: 'turn_start', turnId: 'exact-turn', seq: 2, time: 102 },
         { kind: 'assistant_message', final: true, turnId: 'exact-turn', seq: 99, time: 103, message: { text: 'Recorded result' } }] } :
         { nextFrom: 101, events: [{ kind: 'turn_end', turnId: 'exact-turn', outcome: 'completed', seq: 100, time: 104 }] };

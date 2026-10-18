@@ -125,10 +125,9 @@ export class StateStore {
 
     for (const [id, monitor] of entries) {
       const isDone = monitor.notifiedFinal !== null || monitor.final !== undefined;
-      const age = now - monitor.createdAt;
       const idleTime = now - Math.max(monitor.lastUpdate, monitor.createdAt);
 
-      if ((isDone && idleTime > STALE_COMPLETED_MS) || age > MAX_AGE_MS) {
+      if ((isDone && idleTime > STALE_COMPLETED_MS) || idleTime > MAX_AGE_MS) {
         delete state.monitors[id];
       }
     }
