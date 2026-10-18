@@ -687,7 +687,6 @@ export async function acceptGoalReplyNow(input: {
       current.replyId === `turn:${input.turnId}`.slice(0, 200)
   );
   const before = current ? { ...current } : null;
-  const bounded = snapshotGoalReplies().replies;
   const active =
     !input.handledOnly && !input.blocked &&
     getConfig().sessions.record &&
@@ -696,7 +695,7 @@ export async function acceptGoalReplyNow(input: {
     (goalSwitchFor(input.conversationId).mode !== 'loop' ||
       await automaticLoopHasMcpWork(input.sessionId, input.conversationId, input.silenceSourceTurnId ?? input.turnId));
   if (input.current && !input.current()) return;
-  goalReplies.set(input.conversationId, {
+  const accepted: GoalReplyObligation = {
     conversationId: input.conversationId,
     sessionId: input.sessionId,
     replyId: input.replyId.slice(0, 200),
@@ -713,17 +712,17 @@ export async function acceptGoalReplyNow(input: {
     // policy or reopen a decision the page already acknowledged in the meantime.
     acceptedAt: provisionalUpgrade ? current!.acceptedAt : Date.now(),
     state: provisionalUpgrade ? current!.state : active ? 'pending' : 'handled'
-  });
+  };
+  goalReplies.set(input.conversationId, accepted);
   try {
     await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
   } catch (error) {
-    // The rejected write is one whole revision, so the rollback is too: the row this accept
-    // added and the expired rows it pruned go back together, leaving the ledger exactly as the
-    // decision found it.
-    goalReplies.clear();
-    for (const reply of bounded) goalReplies.set(reply.conversationId, reply);
-    if (before) goalReplies.set(input.conversationId, before);
-    else goalReplies.delete(input.conversationId);
+    // A newer reply can be accepted while this write waits for disk. Roll back only
+    // the exact row we published, never an unrelated or newer accepted obligation.
+    if (goalReplies.get(input.conversationId) === accepted) {
+      if (before) goalReplies.set(input.conversationId, before);
+      else goalReplies.delete(input.conversationId);
+    }
     persistGoalRepliesSoon();
     throw error;
   }
@@ -1654,7 +1653,15 @@ export async function claimGoalRecoveryStopNow(conversationId: string, replyId: 
   if (!reply || reply.replyId !== replyId || reply.acceptedAt !== acceptedAt || reply.state !== 'pending' || !goalArmedFor(conversationId) ||
       !reply.listenUntil || reply.listenUntil > Date.now() || reply.recoveryStopClaimed) return false;
   reply.recoveryStopClaimed = true;
-  await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
+  try {
+    await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
+  } catch (error) {
+    if (goalReplies.get(conversationId) === reply && reply.replyId === replyId && reply.acceptedAt === acceptedAt) {
+      delete reply.recoveryStopClaimed;
+    }
+    persistGoalRepliesSoon();
+    throw error;
+  }
   return goalReplies.get(conversationId) === reply && reply.state === 'pending' && goalArmedFor(conversationId);
 }
 

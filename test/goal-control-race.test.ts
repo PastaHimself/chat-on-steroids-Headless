@@ -95,6 +95,68 @@ it('withholds objective-based activation until its actual rename succeeds', asyn
   expect((await storedControls()).objectives).toEqual([{ conversationId: SOURCE, objective: 'Finish the accepted task' }]);
 });
 
+it('does not erase a newer Goal reply when an older durable acceptance fails', async () => {
+  const gate = delayedWrite(goal.GOAL_REPLIES_STATE, true);
+  const older = observe(goal.acceptGoalReplyNow({
+    conversationId: SOURCE, sessionId: 'session-one', replyId: 'reply-one',
+    turnId: 'turn-one', eventSeq: 1, blocked: false, handledOnly: true
+  }));
+  await gate.entered;
+  const newer = observe(goal.acceptGoalReplyNow({
+    conversationId: SOURCE, sessionId: 'session-one', replyId: 'reply-two',
+    turnId: 'turn-two', eventSeq: 2, blocked: false, handledOnly: true
+  }));
+  expect(goal.snapshotGoalReplies().replies).toContainEqual(expect.objectContaining({ replyId: 'reply-two' }));
+  gate.release();
+  expect((await older).error).toBeInstanceOf(Error);
+  expect((await newer).error).toBeUndefined();
+  expect(goal.snapshotGoalReplies().replies).toContainEqual(expect.objectContaining({ replyId: 'reply-two' }));
+  await flushDurable();
+  const persisted = await readDurable<import('../src/main/goal.js').GoalRepliesSnapshot>(goal.GOAL_REPLIES_STATE);
+  expect(persisted?.replies).toContainEqual(expect.objectContaining({ replyId: 'reply-two' }));
+});
+
+it('does not consume the one native Stop claim when its durable write fails', async () => {
+  const acceptedAt = Date.now();
+  goal.restoreGoalSwitches({ version: 1, savedAt: acceptedAt, switches: [
+    { conversationId: SOURCE, enabled: true, mode: 'goal', at: acceptedAt }
+  ] });
+  goal.restoreGoalReplies({ version: 1, savedAt: acceptedAt, replies: [
+    { conversationId: SOURCE, sessionId: 'session-one', replyId: 'reply-stop', turnId: 'turn-one',
+      eventSeq: 1, acceptedAt, state: 'pending', listenUntil: acceptedAt - 1 }
+  ] });
+  const gate = delayedWrite(goal.GOAL_REPLIES_STATE, true);
+  const claim = observe(goal.claimGoalRecoveryStopNow(SOURCE, 'reply-stop', acceptedAt));
+  await gate.entered;
+  gate.release();
+  expect((await claim).error).toBeInstanceOf(Error);
+  const pending = goal.snapshotGoalReplies().replies.find(reply => reply.replyId === 'reply-stop');
+  expect(pending?.state).toBe('pending');
+  expect(pending?.recoveryStopClaimed).toBeUndefined();
+  expect(await goal.claimGoalRecoveryStopNow(SOURCE, 'reply-stop', acceptedAt)).toBe(true);
+});
+
+it('retains the newest Goal obligation through 4 to 72 simulated hours and restart restores', async () => {
+  const start = Date.now();
+  goal.restoreGoalSwitches({ version: 1, savedAt: start, switches: [
+    { conversationId: SOURCE, enabled: true, mode: 'goal', at: start }
+  ] });
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    for (const [index, hours] of [4, 8, 12, 24, 48, 72].entries()) {
+      vi.setSystemTime(start + hours * 60 * 60_000);
+      await goal.acceptGoalReplyNow({ conversationId: SOURCE, sessionId: 'session-one',
+        replyId: `reply-${hours}`, turnId: `turn-${hours}`, eventSeq: index + 1, blocked: false });
+      expect(goal.goalPendingReplyFor(SOURCE)?.replyId).toBe(`reply-${hours}`);
+      goal.restoreGoalReplies(goal.snapshotGoalReplies());
+      expect(goal.pendingGoalReplies().filter(row => row.conversationId === SOURCE)).toHaveLength(1);
+      expect(goal.goalPendingReplyFor(SOURCE)?.replyId).toBe(`reply-${hours}`);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it.each([false, true])('never restores a cleared switch after a delayed save (rename rejected=%s)', async reject => {
   await goal.setGoalSwitchNow(SOURCE, 'goal', true);
   const gate = delayedWrite(goal.GOAL_SWITCHES_STATE, reject);

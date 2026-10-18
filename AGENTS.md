@@ -3786,6 +3786,10 @@ while preserving pending source debt; master Off explicitly retires that debt. H
 never counts as a source decision. Settled transport/settings failures retain their retry fence
 and do not trigger source reloads while awaiting intervention. Normal and restored committed
 resumes share one projection: move objective/switch, retire A's debt, and let B earn its own.
+When persisting a newly accepted reply fails, its rollback may restore only the exact reply
+object still owned by that failed attempt. A newer reply accepted during the write must survive,
+including after restart. The single-use native recovery Stop claim is returned to the pending
+reply if its durable reservation fails, so a failed write cannot exhaust the claim in memory.
 Current persistence/publication exceptions are in §21.
 
 ## 18. Desktop workspace, plugins, connection and native control
