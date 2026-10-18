@@ -28,7 +28,10 @@ test('source inventory detects additions as well as edits; external linked depen
   const root = await fixture(t), entries = await inventory(root, ['out']);
   await fs.writeFile(path.join(root, 'out/new.js'), 'new source');
   await assert.rejects(verifyInventory(root, ['out'], entries), /out\/new.js/);
-  await fs.symlink('/etc/passwd', path.join(root, 'out/linked'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-build-outside-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  const externalFile = path.join(outside, 'private.txt');await fs.writeFile(externalFile, 'outside fixture');
+  await fs.symlink(externalFile, path.join(root, 'out/linked'));
   await assert.rejects(inventory(root, ['out']), /outside/);
 });
 test('clean build invalidates prior attestation and both output trees before any compiler runs', async t => {
