@@ -197,6 +197,7 @@ async function execute(action: RemoteAction, raw: unknown, effect: () => void = 
       effect(); const row = await sendDesktopInput({ id: body.id, sessionId: null, projectId: body.projectId,
         text: body.prompt ?? 'Start a new conversation. Await my next instruction.', authoredSource: 'text',
         mode: 'auto', dueAt: Date.now(), model: body.model ?? null, reasoningEffort: body.reasoningEffort ?? null });
+      await transact(async state => { const op = state.operations.find(op => op.id === body.id); if (op) op.sessionId = row.sessionId ?? undefined; await save(state); });
       return { inputId: row.id, sessionId: row.sessionId, accepted: true, state: row.state, delivery: deliveryProof(row),
         projectWait: projectInput(row, (await inputProjectWaits([row])).get(row.id)).projectWait };
     }
@@ -300,6 +301,9 @@ async function execute(action: RemoteAction, raw: unknown, effect: () => void = 
         effect(); plan.state = 'approved'; plan.inputId = body.id; plan.revision++; await save(state);
         const row = await sendDesktopInput({ id: body.id, sessionId: plan.sessionId, text: plan.stages[0]!, objective: plan.prompt,
           authoredSource: 'objective', stages: plan.stages.slice(1), mode: 'finish', dueAt: Date.now(), model: null, reasoningEffort: null });
+        const op = state.operations.find(op => op.id === body.id);
+        if (op) op.sessionId = plan.sessionId;
+        await save(state);
         return { ...publicPlan(plan), delivery: deliveryProof(row) };
       });
     }
