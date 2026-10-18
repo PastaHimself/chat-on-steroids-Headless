@@ -19,6 +19,11 @@ An additional read-only diff comparison against the active optimization branch
 implementation files; only `AGENTS.md` overlaps in documentation. Integrators
 should reconcile its respective new sections during a future merge. Neither
 worktree was rewritten or rebased.
+While this branch was under review, the fork's `main` advanced by three commits
+through the merged installation/Discord PR #28. Current `main`
+(`877e99fb`) was merged **into this isolated reliability branch**; the two
+overlapping Discord files auto-merged without conflict and both implementations
+remain present. The optimization agent's branch/PR was not merged or modified.
 
 ## Reproduced failures and corrections
 
@@ -112,6 +117,8 @@ an additional receipt ledger or an automatic retry loop.
   worktree dependencies. A production source build succeeded.
 - Deployment verification's 11 local tests passed. It does not exercise a live
   production reboot, privileged VPS restore or real multi-day runtime.
+  The same 11 tests passed again after integrating the newer fork `main`,
+  including its installation and Discord changes.
 - An initial `verify:headless` attempt was blocked by the host's missing Xvfb.
   Xvfb was subsequently obtained and extracted **without installing
   a system package** into a separate folder. The rebuilt Electron headless
@@ -131,6 +138,14 @@ an additional receipt ledger or an automatic retry loop.
   had one `renderer-state.test.ts` settings-save timing failure (8,751 pass),
   which passed alone; the complete suite subsequently passed on the recovered
   implementation and again on the final source revision.
+- **Post-main merge verification also passed** on the integrated branch at
+  `3ec497d5`: `npm run verify:ci` finished with 333 passed files,
+  14 skipped files, 8,766 passed tests and 140 skipped tests; the chained
+  shutdown suite passed 6/6 with 22 host-dependent computer tests skipped.
+  `npm run build` exited zero, followed by `verify:headless` with private
+  Xvfb and Brave, which exited zero and independently passed backend shutdown,
+  browser-profile handoff and restart. These were isolated tests, not
+  live-provider or production-environment validation.
 
 These tests establish specific corrected persistence and admission failures,
 not a full end-to-end proof against every provider outage, browser reconnect,
