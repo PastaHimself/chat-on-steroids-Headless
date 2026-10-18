@@ -8,6 +8,7 @@ source /etc/os-release
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 [[ -f "$repo/out/main/index.js" && -f "$repo/discord/dist/index.js" && -x "$repo/node_modules/electron/dist/electron" ]] || { echo 'Build and verify both packages as your login user before installing.' >&2; exit 1; }
 [[ -x /usr/local/bin/node && "$(/usr/local/bin/node -p 'process.versions.node.split(".")[0]')" = 24 ]] || { echo 'Install verified Node.js 24 at /usr/local/bin/node first.' >&2; exit 1; }
+/usr/local/bin/node "$repo/scripts/verify-headless-build.mjs" --root "$repo"
 # Preflight existing managed destinations before replacing a running installation.
 destination=/opt/chat-on-steroids/current
 [[ ! -L "$destination" && ! -L /etc/chat-on-steroids ]] || { echo 'Installation destinations must not be symlinks.' >&2; exit 1; }

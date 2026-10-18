@@ -9,7 +9,7 @@ Wants=network-online.target cos-browser.service
 After=network-online.target cos-display.service cos-session.service cos-browser.service
 
 [Service]
-Type=simple
+Type=exec
 User=cos-backend
 Group=cos-backend
 SupplementaryGroups=cos-control
@@ -22,6 +22,8 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/cos-session/bus
 WorkingDirectory=/opt/chat-on-steroids/current
 ExecStartPre=/opt/chat-on-steroids/current/deploy/check-display.sh
 ExecStart=/opt/chat-on-steroids/current/deploy/start-backend.sh
+ExecStartPost=/usr/local/bin/node /opt/chat-on-steroids/current/deploy/wait-backend.mjs ${MAINPID}
+TimeoutStartSec=120
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=95

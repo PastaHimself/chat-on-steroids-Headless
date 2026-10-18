@@ -20,7 +20,10 @@ export class ControlClient {
         if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Invalid control credential format');
         return { port: endpoint.port, token };
       } catch (err) {
-        lastError = err;
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'EACCES' || code === 'EPERM') throw new Error('Backend control files are not readable; inspect cos-control group ownership.');
+        if (code !== 'ENOENT') throw new Error('Backend control endpoint is invalid; inspect backend initialization.');
+        lastError = new Error('Backend is not initialized; its control endpoint is unavailable.');
         if (attempt < retries) {
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }

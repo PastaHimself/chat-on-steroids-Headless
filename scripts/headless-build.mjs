@@ -1,0 +1,20 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { sourceRoots, deployedRoots, assertCommittedSource, inventory, verifyInventory, cleanBuildOutputs, checkCompiledFormats, nativeProbe, manifestPath, verifyBuild } from './headless-provenance.mjs';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+if (process.platform !== 'linux' || process.getuid?.() === 0) throw new Error('Build Headless as an unprivileged Linux login user');
+assertCommittedSource(root);
+await cleanBuildOutputs(root);
+nativeProbe(root);
+const source = await inventory(root, sourceRoots);
+execFileSync(process.execPath, [path.join(root, 'node_modules/electron-vite/bin/electron-vite.js'), 'build'], { cwd: root, stdio: 'inherit' });
+execFileSync(process.execPath, [path.join(root, 'discord/node_modules/typescript/bin/tsc'), '-p', 'discord/tsconfig.json'], { cwd: root, stdio: 'inherit' });
+await verifyInventory(root, sourceRoots, source);
+const payloadRoots = await deployedRoots(root);
+const manifest = { version: 1, commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), platform: process.platform, arch: process.arch,
+  builtAt: new Date().toISOString(), formats: await checkCompiledFormats(root), source, payloadRoots, payload: await inventory(root, payloadRoots) };
+await fs.writeFile(path.join(root, manifestPath), JSON.stringify(manifest) + '\n', { mode: 0o644, flag: 'wx' });
+await verifyBuild(root);
+console.log(`Verified complete Headless build at ${manifest.commit}`);

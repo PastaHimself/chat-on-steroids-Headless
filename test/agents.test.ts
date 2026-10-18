@@ -16,6 +16,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Caller } from '../src/main/agents.js';
 import type { ToolContext } from '../src/main/mcp/kernel.js';
 import * as chatModels from '../src/main/chat-models.js';
+import * as resourceAdmission from '../src/main/resource-admission.js';
 
 vi.mock('electron', () => ({
   safeStorage: {
@@ -226,6 +227,29 @@ function startWorker(id: string, conversationId = `c-${id}`): { caller: Caller }
 function fillContext(conversationId: string): void {
   noteAgentContextTokens(conversationId, WORKER_CONTEXT_CEILING_TOKENS);
 }
+
+describe('resource pressure at the broker admission boundary', () => {
+  afterEach(() => vi.restoreAllMocks());
+  it('rejects a new family before creating workers, then admits the same request after recovery', () => {
+    const pressure = vi.spyOn(resourceAdmission, 'resourceWorkerSlots').mockReturnValue(0);
+    expect(() => spawn({ workers: [{ task: 'bounded task' }], caller: prime })).toThrow('RESOURCE_PRESSURE');
+    expect(swarmRunning()).toBe(false);
+    expect(swarmStateForCaller(prime).agents).toEqual([]);
+    pressure.mockReturnValue(Infinity);
+    expect(spawn({ workers: [{ task: 'bounded task' }], caller: prime }).created).toHaveLength(1);
+  });
+  it('keeps active-worker messages and refuses sleeping-worker wake atomically under pressure', () => {
+    startSwarm(2);
+    const first = startWorker('worker-1'); startWorker('worker-2');
+    finishAgent(first.caller, 'settled first assignment');
+    vi.spyOn(resourceAdmission, 'resourceWorkerSlots').mockReturnValue(0);
+    expect(() => stageMessages(prime, [{ to: 'worker-1', text: 'next task' }, { to: 'worker-2', text: 'correction' }])).toThrow('RESOURCE_PRESSURE');
+    expect(pendingCount('worker-1')).toBe(0);expect(pendingCount('worker-2')).toBe(0);
+    expect(swarmState().agents.find(row => row.id === 'worker-1')?.state).toBe('sleeping');
+    stageMessages(prime, [{ to: 'worker-2', text: 'foreground correction' }]).commit();
+    expect(pendingCount('worker-2')).toBe(1);
+  });
+});
 
 describe('exact worker prime provenance', () => {
   it('keeps the same exact prime through active, sleeping and dormant worker states', () => {

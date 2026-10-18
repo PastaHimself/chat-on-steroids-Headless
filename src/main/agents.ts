@@ -1,4 +1,5 @@
 import { recoveryHeld } from './recovery-hold.js';
+import { resourceWorkerSlots } from './resource-admission.js';
 /**
  * Independent prime-owned worker families. Each active incarnation has its own maxWorkers
  * admission limit. Conversation identity resolves an owner; local names such as worker-1
@@ -2161,6 +2162,12 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
     );
   }
 
+  if (resourceWorkerSlots(globalOccupiedWorkerSlots()) < planned.length) {
+    if (resumedDormant) parkRun(run, 'new worker admission deferred by memory pressure');
+    else if (createdFreshRun) runs.delete(run.runId);
+    throw new AgentError('RESOURCE_PRESSURE: insufficient memory headroom for new workers. Nothing was started. Let active work finish and retry; model and reasoning settings are unchanged.');
+  }
+
   const ids: string[] = [];
   // Historical rows are intentionally never reused or deleted merely because the worker is
   // asleep/terminal. The old fixed 64-id scan therefore became a lifetime cap on one prime,
@@ -2639,6 +2646,9 @@ function stageMessagesActive(
     planned.push({ to, message: newMessage(from.info.id, to.info.id, trimmed) });
   }
 
+  if (reserved.size > resourceWorkerSlots(globalOccupiedWorkerSlots())) {
+    throw new AgentError('RESOURCE_PRESSURE: insufficient memory headroom to wake workers. Nothing was sent. Let active work finish and retry.');
+  }
   for (const { to, message } of planned) {
     unpublishedMessages.add(message);
     enqueue(to, message);
@@ -3611,7 +3621,7 @@ export function stageQueuedWorkerRevivals(ids: readonly string[], runId?: string
         message.offeredAt === null &&
         !unpublishedMessages.has(message)
     );
-    if (!hasUnseen || freeWorkerSlots(run.runId) <= 0 || globalFreeWorkerSlots() <= 0) continue;
+    if (!hasUnseen || freeWorkerSlots(run.runId) <= 0 || globalFreeWorkerSlots() <= 0 || resourceWorkerSlots(globalOccupiedWorkerSlots()) <= 0) continue;
     const sleptAt = agent.info.sleptAt;
     const assignment = beginRevival(agent);
     reserved.push({ agent, sleptAt, assignment });

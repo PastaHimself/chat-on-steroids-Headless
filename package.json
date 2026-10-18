@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "npm run verify:ci",
-    "verify:ci": "npm run rg && npm run verify:privacy && npm run verify:notices && npm run typecheck && npm run discord:typecheck && node -e \"require('electron')\" && vitest run --exclude test/mcp-shutdown.test.ts --exclude test/computer.test.ts && vitest run --maxWorkers=1 test/computer.test.ts test/mcp-shutdown.test.ts",
+    "verify:ci": "npm run rg && npm run verify:privacy && npm run verify:notices && npm run typecheck && npm run discord:typecheck && node -e \"require('electron')\" && node --test test/headless-build-provenance.test.mjs test/backend-readiness.test.mjs && vitest run --exclude test/mcp-shutdown.test.ts --exclude test/computer.test.ts && vitest run --maxWorkers=1 test/computer.test.ts test/mcp-shutdown.test.ts",
     "discord:install": "npm ci --prefix discord --ignore-scripts",
     "discord:typecheck": "npm run typecheck --prefix discord",
     "discord:build": "npm run build --prefix discord",
@@ -51,7 +51,10 @@
     "dist:dir:linux:x64": "node scripts/package.mjs --platform linux --arch x64 --dir",
     "dist:dir:linux:arm64": "node scripts/package.mjs --platform linux --arch arm64 --dir",
     "dist:dir:linux": "node scripts/package.mjs --platform linux --arch x64,arm64 --dir",
-    "test:kill": "node scripts/kill-stray-vitest.mjs"
+    "test:kill": "node scripts/kill-stray-vitest.mjs",
+    "headless:prepare": "node scripts/headless-prepare.mjs",
+    "headless:build": "node scripts/headless-build.mjs",
+    "verify:headless-build": "node scripts/verify-headless-build.mjs"
   },
   "dependencies": {
     "@anthropic-ai/mcpb": "^2.1.2",

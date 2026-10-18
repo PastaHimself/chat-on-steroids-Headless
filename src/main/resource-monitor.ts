@@ -2,6 +2,7 @@ import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 
 const execute = promisify(execFile);
 const managedServices = ['cos-display', 'cos-session', 'cos-browser', 'cos-backend', 'cos-discord'];
@@ -47,6 +48,16 @@ export function parseMeminfo(text: string): Record<string, number> {
   }));
 }
 
+export function parsePressure(text: string) {
+  return Object.fromEntries(text.trim().split('\n').map(line => {
+    const [kind, ...fields] = line.split(/\s+/);
+    return [kind!, Object.fromEntries(fields.map(field => { const [key, value] = field.split('='); return [key!, Number(value)]; }))];
+  }));
+}
+const delayHistogram = process.env.COS_RUNTIME_MODE === 'headless' ? monitorEventLoopDelay({ resolution: 20 }) : null;
+delayHistogram?.enable();
+let previousUtilization = performance.eventLoopUtilization();
+
 let cached: { directory: string; until: number; value: Promise<Awaited<ReturnType<typeof collectResources>>> } | null = null;
 /** Single-flight diagnostics with a five-second observation lifetime. Never execution authority. */
 export function resourceSnapshot(directory: string) {
@@ -63,18 +74,23 @@ async function collectResources(directory: string) {
   const processes: Array<{ pid: number; kind: 'browser' | 'terminal'; rssBytes: number; parent: number }> = [];
   if (process.platform === 'linux') {
     const names = (await fs.readdir('/proc')).filter(name => /^\d+$/.test(name));
-    // Sequential bounded reads avoid opening hundreds of descriptors at once.
-    for (const name of names) {
-      if (processes.length >= 256) break;
-      try {
-        const status = await fs.readFile(`/proc/${name}/status`, 'utf8');
-        if (Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]) !== process.getuid?.()) continue;
-        const comm = /^Name:\s+(.*)$/m.exec(status)?.[1] ?? '';
-        const kind = /brave|chrome|chromium/.test(comm) ? 'browser' : /^(bash|zsh|sh|fish)$/.test(comm) ? 'terminal' : null;
-        if (kind) processes.push({ pid: Number(name), kind, rssBytes: Number(/^VmRSS:\s+(\d+)/m.exec(status)?.[1] ?? 0) * 1024,
-          parent: Number(/^PPid:\s+(\d+)/m.exec(status)?.[1] ?? 0) });
-      } catch { /* A process may exit between directory and status reads. */ }
-    }
+    let next = 0;
+    // A small fixed pool bounds descriptors while independent proc reads overlap.
+    await Promise.all(Array.from({ length: Math.min(8, names.length) }, async () => {
+      while (next < names.length && processes.length < 256) {
+        const name = names[next++];
+        try {
+          const status = await fs.readFile(`/proc/${name}/status`, 'utf8');
+          if (Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]) !== process.getuid?.()) continue;
+          const comm = /^Name:\s+(.*)$/m.exec(status)?.[1] ?? '';
+          const kind = /brave|chrome|chromium/.test(comm) ? 'browser' : /^(bash|zsh|sh|fish)$/.test(comm) ? 'terminal' : null;
+          if (kind && processes.length < 256) processes.push({ pid: Number(name), kind,
+            rssBytes: Number(/^VmRSS:\s+(\d+)/m.exec(status)?.[1] ?? 0) * 1024,
+            parent: Number(/^PPid:\s+(\d+)/m.exec(status)?.[1] ?? 0) });
+        } catch { /* A process can exit between enumeration and read. */ }
+      }
+    }));
+    processes.sort((a, b) => a.pid - b.pid);
   }
   let swaps: Array<{ kind: 'zram' | 'disk'; bytes: number; usedBytes: number; priority: number }> = [];
   if (process.platform === 'linux') {
@@ -88,7 +104,12 @@ async function collectResources(directory: string) {
   const swapActivity = process.platform === 'linux' ? await fs.readFile('/proc/vmstat', 'utf8').then(text => ({
     inPages: Number(/^pswpin (\d+)$/m.exec(text)?.[1] ?? 0), outPages: Number(/^pswpout (\d+)$/m.exec(text)?.[1] ?? 0)
   })).catch(() => null) : null;
-  return { observedAt: Date.now(), platform: process.platform, cpuCount: os.cpus().length, cpuUsage: process.cpuUsage(), loadAverage: os.loadavg(), swapActivity,
+  const pressureStall = process.platform === 'linux' ? Object.fromEntries(await Promise.all(['cpu', 'memory', 'io'].map(async kind => [kind,
+    await fs.readFile(`/proc/pressure/${kind}`, 'utf8').then(parsePressure).catch(() => null)]))) : null;
+  const utilization = performance.eventLoopUtilization(previousUtilization); previousUtilization = performance.eventLoopUtilization();
+  const eventLoopDelay = delayHistogram ? { p50Ms: delayHistogram.percentile(50) / 1e6, p95Ms: delayHistogram.percentile(95) / 1e6, maxMs: delayHistogram.max / 1e6 } : null;
+  delayHistogram?.reset();
+  return { observedAt: Date.now(), platform: process.platform, cpuCount: os.availableParallelism(), eventLoop: { utilization: utilization.utilization, delay: eventLoopDelay }, pressureStall, cpuUsage: process.cpuUsage(), loadAverage: os.loadavg(), swapActivity,
     memory: { totalBytes: mem.MemTotal ?? os.totalmem(), availableBytes: mem.MemAvailable ?? os.freemem(),
       swapTotalBytes: mem.SwapTotal ?? 0, swapFreeBytes: mem.SwapFree ?? 0, app: process.memoryUsage() },
     pressure: (mem.MemAvailable ?? os.freemem()) / (mem.MemTotal ?? os.totalmem()) < 0.1 ? 'high' : 'normal',

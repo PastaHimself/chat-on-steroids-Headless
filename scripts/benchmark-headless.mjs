@@ -3,8 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 const args = Object.fromEntries(process.argv.slice(2).map(value => { const [key, ...rest] = value.replace(/^--/, '').split('='); return [key, rest.join('=')]; }));
-if (!['idle', 'task-0', 'task-1', 'task-2', 'soak'].includes(args.label) || !args.output || !path.isAbsolute(args.output))
-  throw new Error('Use --label=idle|task-0|task-1|task-2|soak --output=/private/report.jsonl [--seconds=600] [--interval=30]');
+if (!['idle', 'task-0', 'task-1', 'task-2', 'soak', 'single', 'long-session', 'multi-worker', 'browser-heavy', 'mcp-heavy', 'compact-resume', 'mixed-java', 'recovery'].includes(args.label) || !args.output || !path.isAbsolute(args.output))
+  throw new Error('Use --label=idle|single|long-session|multi-worker|browser-heavy|mcp-heavy|compact-resume|mixed-java|recovery|soak (legacy task-0/1/2 accepted) --output=/private/report.jsonl [--seconds=600] [--interval=30]');
 const directory = process.env.COS_CONTROL_DIRECTORY;
 if (!directory || !path.isAbsolute(directory)) throw new Error('COS_CONTROL_DIRECTORY must be absolute');
 const seconds = Number(args.seconds ?? 600), interval = Number(args.interval ?? 30);
@@ -35,10 +35,21 @@ try {
       ]);
       const commandLatencyMs = Math.round(performance.now() - clock);
       const counters = await cpu().catch(() => null);
+      const browserMemory = await Promise.all(resources.processes.filter(row => row.kind === 'browser').map(async row => {
+        try {
+          const [smaps, cmdline] = await Promise.all([fs.readFile(`/proc/${row.pid}/smaps_rollup`, 'utf8'), fs.readFile(`/proc/${row.pid}/cmdline`, 'utf8')]);
+          return { bytes: Number(/^Pss:\s+(\d+)/m.exec(smaps)?.[1] ?? 0) * 1024, renderer: cmdline.includes('--type=renderer') };
+        } catch { return null; }
+      }));
+      const pssComplete = browserMemory.every(row => row !== null);
+
       sample = { version: 1, label: args.label, observedAt: sampleStart, resourceObservedAt: resources.observedAt,
         commandLatencyMs, health: { serviceAvailable: health.serviceAvailable, taskReadiness: health.taskReadiness,
           states: health.components.map(row => ({ id: row.id, state: row.state })) },
         memory: resources.memory, browserRssBytes: resources.processes.filter(row => row.kind === 'browser').reduce((sum, row) => sum + row.rssBytes, 0),
+        browserPssBytes: pssComplete ? browserMemory.reduce((sum, row) => sum + row.bytes, 0) : null,
+        browserRendererPssBytes: pssComplete ? browserMemory.filter(row => row.renderer).reduce((sum, row) => sum + row.bytes, 0) : null,
+        browserProcessCount: browserMemory.length, eventLoop: resources.eventLoop ?? null, pressureStall: resources.pressureStall ?? null,
         backendCpu: resources.cpuUsage, cpuBusyFraction: previous?.cpu && counters && counters.total > previous.cpu.total
           ? 1 - (counters.idle - previous.cpu.idle) / (counters.total - previous.cpu.total) : null,
         swapActivity: resources.swapActivity, swapDeltaPages: previous?.swap && resources.swapActivity

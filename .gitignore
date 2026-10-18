@@ -52,3 +52,7 @@ proof-*.txt
 
 # Written by scripts/write-extension-stamp.mjs at packaging time; see that script.
 /extension/build-stamp.txt
+
+# A verified Headless build seals local dependency and output bytes.
+/runtime/headless-build.json
+**/__pycache__/

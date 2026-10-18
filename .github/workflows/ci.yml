@@ -223,21 +223,20 @@ jobs:
             discord/package-lock.json
       - name: Install dependencies and virtual display
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm run discord:install
-          # Electron downloads its runtime on first resolution, not during npm ci.
-          node -e "require('electron')"
+          npm run headless:prepare
           sudo apt-get update
           sudo apt-get install -y xvfb xauth x11-utils
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - name: Build both applications
         run: |
-          npm run build
-          npm run discord:build
+          npm run headless:build
+          npm run verify:headless-build
           node scripts/generate-discord-reference.mjs --check
       - name: Verify server boundaries and real windowless lifecycle
         run: |
-          npm test -- --maxWorkers=2 test/headless.test.ts test/remote-control.test.ts test/discord.test.ts test/control-api.test.ts test/receipt-archive.test.ts test/health-alerts.test.ts test/recovery-hold.test.ts test/goal-control-race.test.ts
+          npm test -- --maxWorkers=2 test/headless.test.ts test/resource-admission.test.ts test/resource-monitor.test.ts test/discord-reliability.test.ts test/remote-control.test.ts test/discord.test.ts test/control-api.test.ts test/receipt-archive.test.ts test/health-alerts.test.ts test/recovery-hold.test.ts test/goal-control-race.test.ts
           npm run verify:deployment
           npm run verify:headless

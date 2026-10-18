@@ -78,6 +78,15 @@ describe('Discord bot state store & API client reliability', () => {
     expect(Object.keys(store.snapshot().monitors).length).toBeLessThanOrEqual(15);
   });
 
+  it('refuses invalid endpoints immediately instead of sleeping through startup retries', async () => {
+    await fs.writeFile(path.join(tempDir, 'endpoint.json'), JSON.stringify({ protocol: 99, port: 12345 }));
+    await fs.writeFile(path.join(tempDir, 'token'), 'A'.repeat(43));
+    const transport = vi.fn(); const client = new ControlClient(tempDir, transport);
+    const timer = vi.spyOn(globalThis, 'setTimeout');
+    await expect(client.request('/v1/health')).rejects.toThrow('endpoint is invalid');
+    expect(timer).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled(); timer.mockRestore();
+  });
+
   it('retries reading endpoint and token credentials during backend restart window', async () => {
     const mockFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     const client = new ControlClient(tempDir, mockFetch as unknown as typeof fetch);
