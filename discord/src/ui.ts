@@ -21,7 +21,7 @@ export function panel(
   const description = safeText(text, secrets);
   const embed = new EmbedBuilder()
     .setTitle(safeText(title, secrets).slice(0, 256))
-    .setDescription(description.slice(0, 3900) || 'No recorded data.')
+    .setDescription((description.length > 3900 ? '...\n' + description.slice(-3896) : description) || 'No recorded data.')
     .setFooter({ text: description.length > 3900 ? 'Display shortened; use history pages for more.' : 'Recorded state • refresh to inspect changes' });
 
   if (options?.color !== undefined) {
@@ -89,7 +89,7 @@ export function sessionStatusIndicator(detail: any): { emoji: string; text: stri
   if (live?.job?.needsAttention) {
     return { emoji: '🟡', text: 'Attention Needed', color: EmbedColor.Warning };
   }
-  if (live?.recovery?.some((row: any) => row.kind === 'pickup-stopped')) {
+  if (live?.recovery?.some((row: any) => row.kind === 'pickup-stopped' || row.kind === 'goal-expired' || row.kind === 'goal-delivery-uncertain')) {
     return { emoji: '🟡', text: 'Recovery Stopped', color: EmbedColor.Warning };
   }
   if (live?.recovery?.some((row: any) => ['post-reload', 'assistant-error', 'tab-recovery', 'pickup'].includes(row.kind))) {

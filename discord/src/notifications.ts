@@ -85,10 +85,8 @@ export class Notifications {
     // Only an admitted monitored input's observed user message grants its exact reply identity.
     const question = page.events.findLast((event: any) => event.kind === 'user_message' && event.inputId === monitor.inputId);
     const questionSeq = question?.seq ?? monitor.questionSeq;
-    const deliveryConfirmed = monitor.deliveryConfirmed || input?.delivery === 'sent' || question?.inputDelivery === 'sent';
-    if (question?.turnId) turn = question.turnId;
-    const turnStart = page.events.find((event: any) => event.kind === 'turn_start' && event.time >= monitor.createdAt &&
-      questionSeq !== undefined && event.seq > questionSeq);
+    const deliveryConfirmed = monitor.deliveryConfirmed || input?.delivery === 'sent' || input?.delivery === 'confirmed' || question?.inputDelivery === 'sent' || question?.inputDelivery === 'confirmed';
+    const turnStart = page.events.find((event: any) => event.kind === 'turn_start' && event.time >= monitor.createdAt);
     if (!turn && turnStart) turn = turnStart.turnId;
     const finalEvent = page.events.findLast((event: any) => event.kind === 'assistant_message' && event.final === true && event.turnId === turn && event.time >= monitor.createdAt);
     const candidate = finalEvent ? { seq: finalEvent.seq, time: finalEvent.time, turnId: finalEvent.turnId, text: finalEvent.message?.text?.slice(0, 4000) ?? '' } : monitor.final;

@@ -33,7 +33,7 @@ export class ControlClient {
   }
 
   async request<T = any>(route: string, body?: unknown, timeoutMs = 25_000): Promise<T> {
-    if (!/^\/v1\/[a-zA-Z0-9/?=&%_.,-]+$/.test(route) || route.includes('//')) throw new Error('Invalid control route');
+    if (!/^\/v1\/[a-zA-Z0-9/?=&%_.,~()'-]+$/.test(route) || route.includes('//')) throw new Error('Invalid control route');
     // Re-read per request: the backend rotates credentials/port after each restart.
     let credentials = await this.readCredentials();
     rememberSecret(credentials.token);

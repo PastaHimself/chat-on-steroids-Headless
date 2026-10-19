@@ -12,6 +12,9 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createServer, type ServerResponse } from 'node:http';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { recordLoopMcpProof } from './goal-mcp-proof.js';
 import * as prompts from '../src/shared/goal.js';
 
@@ -687,6 +690,311 @@ describe('the reply', () => {
     });
     return session.id;
   };
+
+  it('does not let an older final replace a newer accepted final after a delayed provider-key read', async () => {
+    const conversationId = 'credential-race-newest', sessionId = await seed(conversationId);
+    const secrets = await import('../src/main/secrets.js');
+    const realRead = secrets.getSecret;
+    let entered!: () => void, release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const read = vi.spyOn(secrets, 'getSecret').mockImplementationOnce(async key => {
+      entered(); await held; return realRead(key);
+    });
+    const older = goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'old-final',
+      turnId: 'old-turn', eventSeq: 1, blocked: false });
+    try {
+      await started;
+      await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'new-final',
+        turnId: 'new-turn', eventSeq: 2, blocked: false });
+      expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('new-final');
+      release(); await older;
+      expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('new-final');
+    } finally { release(); await older; read.mockRestore(); }
+  });
+
+  it('does not revive a completed final after per-chat Goal Off during provider-key read', async () => {
+    const conversationId = 'credential-race-off', sessionId = await seed(conversationId);
+    const secrets = await import('../src/main/secrets.js');
+    const realRead = secrets.getSecret;
+    let entered!: () => void, release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const read = vi.spyOn(secrets, 'getSecret').mockImplementationOnce(async key => {
+      entered(); await held; return realRead(key);
+    });
+    const acceptance = goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'pre-off-final',
+      turnId: 'pre-off-turn', eventSeq: 1, blocked: false });
+    try {
+      await started;
+      await goal.setGoalSwitchNow(conversationId, 'goal', false);
+      release(); await acceptance;
+      expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+    } finally { release(); await acceptance; read.mockRestore(); }
+  });
+
+  it('does not let a retired provider decision settle a deliberately reactivated source', async () => {
+    const conversationId = 'late-stop-after-rotation', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'saved-final',
+      turnId: 'saved-turn', eventSeq: 5, blocked: false });
+    const store = await import('../src/main/session/store.js');
+    const realRead = store.getSession;
+    let providerDone = false, reads = 0, entered!: () => void, release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const read = vi.spyOn(store, 'getSession').mockImplementation(async (...args) => {
+      const session = await realRead(...args);
+      if (providerDone && ++reads === 2) { entered(); await held; }
+      return session;
+    });
+    globalThis.fetch = vi.fn(async () => { providerDone = true; return decision('stop'); });
+    goal.startGoalDraft({ conversationId, sessionId, turnId: 'saved-turn' });
+    try {
+      await started;
+      expect(goal.retireGoalDrafts()).toBe(1);
+      expect(await goal.setGoalReplyActiveNow(conversationId, true)).toBe(true);
+      expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('saved-final');
+      release();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('saved-final');
+    } finally { release(); read.mockRestore(); }
+  });
+
+  it('retries an unoffered retired provider draft without replaying a ready draft with unknown delivery', async () => {
+    const conversationId = 'retired-before-offer', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'final-before-key-change',
+      turnId: 'final-turn', eventSeq: 2, blocked: false });
+    const reserved = goal.startGoalDraft({ conversationId, sessionId, turnId: 'final-turn', deferStart: true });
+    expect(reserved.stage).toBe('sending');
+    expect(goal.retireGoalDrafts()).toBe(1);
+    const retried = goal.startGoalDraft({ conversationId, sessionId, turnId: 'final-turn', deferStart: true });
+    expect(retried.token).not.toBe(reserved.token);
+    expect(retried.stage).toBe('sending');
+    expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('final-before-key-change');
+
+    // A ready decision might already have been sent by the page when its ACK was lost.
+    globalThis.fetch = vi.fn(async () => decision('continue', 'Complete the remaining work'));
+    expect(goal.beginGoalDraft(conversationId, retried.token)).toBe(true);
+    expect((await settled(conversationId)).stage).toBe('ready');
+    expect(goal.retireGoalDrafts()).toBe(1);
+    const ambiguous = goal.startGoalDraft({ conversationId, sessionId, turnId: 'final-turn', deferStart: true });
+    expect(ambiguous.token).toBe(retried.token);
+    expect(goal.goalViewFor(conversationId)).toBeNull();
+  });
+
+  it('retains an uncertain native Send fence across backend restart until deliberate reactivation', async () => {
+    const conversationId = 'lost-goal-send-receipt', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'final-send',
+      turnId: 'turn-send', eventSeq: 4, blocked: false });
+    globalThis.fetch = vi.fn(async () => decision('continue', 'Finish the unfinished task'));
+    const first = goal.startGoalDraft({ conversationId, sessionId, turnId: 'turn-send' });
+    expect((await settled(conversationId)).stage).toBe('ready');
+    const saved = goal.snapshotGoalReplies();
+    expect(saved.replies.find(row => row.conversationId === conversationId)?.deliveryUncertainAt).toEqual(expect.any(Number));
+    goal.resetGoalStateForTests();
+    goal.restoreGoalReplies(saved);
+    expect(goal.pendingGoalReplies().some(row => row.conversationId === conversationId)).toBe(false);
+    expect(goal.goalDeliveryUncertainFor(conversationId)?.turnId).toBe('turn-send');
+    expect(await goal.recordGoalPickupAttemptNow(conversationId, 'final-send', Date.now())).toBeNull();
+    expect(() => goal.startGoalDraft({ conversationId, sessionId, turnId: 'turn-send' }))
+      .toThrow('goal_delivery_uncertain');
+    expect(goal.ackGoalDraft(conversationId, first.token)).toBe(false);
+    await goal.setGoalReplyActiveNow(conversationId, true);
+    expect(goal.goalDeliveryUncertainFor(conversationId)).toBeNull();
+  });
+
+  it('does not lose the uncertain-delivery fence when a provisional final gains its stable assistant ID', async () => {
+    const conversationId = 'uncertain-provisional-upgrade', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'turn:provisional-turn',
+      turnId: 'provisional-turn', eventSeq: 0, blocked: false });
+    globalThis.fetch = vi.fn(async () => decision('continue', 'Already possibly sent'));
+    goal.startGoalDraft({ conversationId, sessionId, turnId: 'provisional-turn' });
+    expect((await settled(conversationId)).stage).toBe('ready');
+    const earlier = goal.goalDeliveryUncertainFor(conversationId);
+    expect(earlier?.turnId).toBe('provisional-turn');
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'stable-assistant-message',
+      turnId: 'provisional-turn', eventSeq: 7, blocked: false });
+    expect(goal.goalDeliveryUncertainFor(conversationId)?.at).toBe(earlier?.at);
+    const saved = goal.snapshotGoalReplies();
+    goal.resetGoalStateForTests();
+    goal.restoreGoalReplies(saved);
+    expect(goal.goalDeliveryUncertainFor(conversationId)?.replyId).toBe('stable-assistant-message');
+    expect(goal.pendingGoalReplies().some(row => row.conversationId === conversationId)).toBe(false);
+  });
+
+  it('never exposes a ready Goal draft when the durable uncertain-delivery fence fails', async () => {
+    const conversationId = 'goal-offer-write-failure', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'final-offer',
+      turnId: 'turn-offer', eventSeq: 2, blocked: false });
+    const rename = fs.rename.bind(fs);
+    let rejected = false;
+    const fault = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (!rejected && path.basename(String(to)) === 'goal-replies.json') {
+        rejected = true;
+        throw new Error('Rejected offer persistence');
+      }
+      return rename(from, to);
+    });
+    globalThis.fetch = vi.fn(async () => decision('continue', 'Do not send without durability'));
+    try {
+      goal.startGoalDraft({ conversationId, sessionId, turnId: 'turn-offer' });
+      const failed = await settled(conversationId);
+      expect(rejected).toBe(true);
+      expect(failed.stage).toBe('failed');
+      expect(failed.reply).toBe('');
+      expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('final-offer');
+      expect(goal.goalDeliveryUncertainFor(conversationId)).toBeNull();
+    } finally { fault.mockRestore(); }
+  });
+
+  it('releases a stale provider draft when a newer final wins during the offer write', async () => {
+    const conversationId = 'goal-offer-stale-owner', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'older-final',
+      turnId: 'older-turn', eventSeq: 3, blocked: false });
+    const rename = fs.rename.bind(fs);
+    let entered!: () => void, release!: () => void, heldOnce = false;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const gate = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (!heldOnce && path.basename(String(to)) === 'goal-replies.json') {
+        heldOnce = true;
+        entered(); await held;
+      }
+      return rename(from, to);
+    });
+    globalThis.fetch = vi.fn(async () => decision('continue', 'Old source should not send'));
+    try {
+      goal.startGoalDraft({ conversationId, sessionId, turnId: 'older-turn' });
+      await started;
+      const newer = goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'newer-final',
+        turnId: 'newer-turn', eventSeq: 4, blocked: false });
+      release(); await newer;
+      await vi.waitFor(() => expect(goal.goalDraftBusy(conversationId)).toBe(false),
+        { timeout: 5_000, interval: 10 });
+      expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('newer-final');
+      expect(goal.goalViewFor(conversationId)).toBeNull();
+    } finally { release(); gate.mockRestore(); }
+  });
+
+  it('clears uncertain delivery after the exact browser proves a ready draft was deferred before Send', async () => {
+    const conversationId = 'goal-proven-pre-send-deferral', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'pre-send-final',
+      turnId: 'pre-send-turn', eventSeq: 3, blocked: false });
+    globalThis.fetch = vi.fn(async () => decision('continue', 'Keep working after native activity'));
+    const prepared = goal.startGoalDraft({ conversationId, sessionId, turnId: 'pre-send-turn', clientId: 'browser-owner' });
+    expect((await settled(conversationId)).stage).toBe('ready');
+    expect(goal.goalDeliveryUncertainFor(conversationId)).not.toBeNull();
+    expect(await goal.deferSilenceGoalReplyNow(conversationId, 'pre-send-turn', Date.now() + 30_000,
+      { token: prepared.token, clientId: 'browser-owner' })).toBe(true);
+    expect(goal.goalDeliveryUncertainFor(conversationId)).toBeNull();
+    const saved = goal.snapshotGoalReplies();
+    goal.resetGoalStateForTests();
+    goal.restoreGoalReplies(saved);
+    expect(goal.goalDeliveryUncertainFor(conversationId)).toBeNull();
+    expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('pre-send-final');
+  });
+
+  it('does not clear an uncertain Send fence if pre-Send deferral cannot be persisted', async () => {
+    const conversationId = 'goal-deferral-write-rejected', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'uncertain-deferral-final',
+      turnId: 'uncertain-deferral-turn', eventSeq: 4, blocked: false });
+    globalThis.fetch = vi.fn(async () => decision('continue', 'Do not assume the deferral committed'));
+    const prepared = goal.startGoalDraft({ conversationId, sessionId, turnId: 'uncertain-deferral-turn', clientId: 'browser-owner' });
+    expect((await settled(conversationId)).stage).toBe('ready');
+    const previous = goal.goalDeliveryUncertainFor(conversationId);
+    const rename = fs.rename.bind(fs);
+    let rejected = false;
+    const fault = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (!rejected && path.basename(String(to)) === 'goal-replies.json') {
+        rejected = true; throw new Error('Rejected deferral');
+      }
+      return rename(from, to);
+    });
+    try {
+      await expect(goal.deferSilenceGoalReplyNow(conversationId, 'uncertain-deferral-turn', Date.now() + 30_000,
+        { token: prepared.token, clientId: 'browser-owner' })).rejects.toThrow('Rejected deferral');
+      expect(goal.goalDeliveryUncertainFor(conversationId)?.at).toBe(previous?.at);
+      expect(goal.pendingGoalReplies().some(row => row.conversationId === conversationId)).toBe(false);
+    } finally { fault.mockRestore(); }
+  });
+
+  it('does not restore an old uncertain marker over newer deliberate Goal activation after a failed deferral write', async () => {
+    const conversationId = 'goal-deferral-newer-activation', sessionId = await seed(conversationId);
+    await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'activation-final',
+      turnId: 'activation-turn', eventSeq: 9, blocked: false });
+    globalThis.fetch = vi.fn(async () => decision('continue', 'Original possible Send'));
+    const draft = goal.startGoalDraft({ conversationId, sessionId, turnId: 'activation-turn', clientId: 'browser-owner' });
+    expect((await settled(conversationId)).stage).toBe('ready');
+    const oldAcceptedAt = goal.goalPendingReplyFor(conversationId)!.acceptedAt;
+    const rename = fs.rename.bind(fs);
+    let entered!: () => void, release!: () => void, heldOnce = false;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const fault = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (!heldOnce && path.basename(String(to)) === 'goal-replies.json') {
+        heldOnce = true; entered(); await held;
+        throw new Error('Old deferral rejected');
+      }
+      return rename(from, to);
+    });
+    try {
+      const deferral = goal.deferSilenceGoalReplyNow(conversationId, 'activation-turn', Date.now() + 30_000,
+        { token: draft.token, clientId: 'browser-owner' }).then(() => null, e => e);
+      await started;
+      const activation = goal.setGoalReplyActiveNow(conversationId, true);
+      for (let i = 0; i < 40 && goal.goalPendingReplyFor(conversationId)?.acceptedAt === oldAcceptedAt; i++)
+        await new Promise(resolve => setTimeout(resolve, 5));
+      expect(goal.goalPendingReplyFor(conversationId)!.acceptedAt).toBeGreaterThan(oldAcceptedAt);
+      release();
+      expect(await deferral).toBeInstanceOf(Error);
+      expect(await activation).toBe(true);
+      expect(goal.goalDeliveryUncertainFor(conversationId)).toBeNull();
+      expect(goal.goalPendingReplyFor(conversationId)?.explicitActivation).toBe(true);
+    } finally { release(); fault.mockRestore(); }
+  });
+
+  it('recovers from a credential change during an actual loopback provider request without offering stale text', async () => {
+    const conversationId = 'credential-rotation-http', sessionId = await seed(conversationId);
+    const seenAuth: string[] = [];
+    let firstResponse: ServerResponse | null = null, entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const server = createServer((request, response) => {
+      seenAuth.push(String(request.headers.authorization ?? ''));
+      if (seenAuth.length === 1) { firstResponse = response; entered(); return; }
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+        action: 'continue', reply: 'Use the new provider credential'
+      }) } }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected an isolated TCP port');
+      const config = (await import('../src/main/config.js')).getConfig();
+      await saveConfig({ ...config, goal: { ...config.goal, backend: 'api',
+        provider: { kind: 'custom', baseUrl: `http://127.0.0.1:${address.port}/v1` } } });
+      await setSecret('customProviderApiKey', 'synthetic-old');
+      globalThis.fetch = realFetch;
+      await goal.acceptGoalReplyNow({ conversationId, sessionId, replyId: 'provider-final',
+        turnId: 'provider-turn', eventSeq: 2, blocked: false });
+      const first = goal.startGoalDraft({ conversationId, sessionId, turnId: 'provider-turn' });
+      await started;
+      await setSecret('customProviderApiKey', 'synthetic-new');
+      expect(goal.retireGoalDrafts()).toBe(1);
+      expect(goal.goalViewFor(conversationId)).toBeNull();
+      expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('provider-final');
+      const retry = goal.startGoalDraft({ conversationId, sessionId, turnId: 'provider-turn' });
+      expect(retry.token).not.toBe(first.token);
+      const result = await settled(conversationId);
+      expect(result.stage).toBe('ready');
+      expect(result.reply).toContain('new provider cred');
+      expect(seenAuth).toEqual(['Bearer synthetic-old', 'Bearer synthetic-new']);
+    } finally {
+      (firstResponse as ServerResponse | null)?.end();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
 
   it.each(['goal', 'loop'] as const)('blocks %s decisions for a deleted provider while retaining local intent', async mode => {
     const id = `deleted-provider-${mode}`, sessionId = await seed(id);
@@ -1984,8 +2292,11 @@ describe('a chat driven towards a specific goal', () => {
     expect(goal.goalPendingReplyFor(conversationId)).toEqual(off ? null : original);
     if (!off) {
       const next = goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'source-turn' });
-      expect(next.token).not.toBe(first.token);
-      expect((await settled(conversationId)).stage).toBe('ready');
+      // The previous ready response could have crossed native Send before its ACK
+      // went missing. Replacing its token after a settings change would duplicate it.
+      expect(next.token).toBe(first.token);
+      expect(next.reply).toBe('');
+      expect(goal.goalViewFor(conversationId)).toBeNull();
     }
   });
 

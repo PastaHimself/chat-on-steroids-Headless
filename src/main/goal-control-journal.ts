@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { readDurableStrict, writeDurableNow } from './durable.js';
+import { getConfig } from './config.js';
 import { getSession, findSessionByConversation } from './session/store.js';
 
 const row = z.record(z.string(), z.unknown()).nullable();
 const journalSchema = z.object({ version: z.literal(2), state: z.enum(['pending', 'committed', 'superseded']),
   conversationId: z.string().min(1).max(256), sessionId: z.string().min(1).max(64).nullable(),
+  masterOffGeneration: z.string().uuid().optional(),
   before: z.array(row).length(3), after: z.array(row).length(3) }).strict();
 type Journal = z.infer<typeof journalSchema>;
 let admittedJournal: Journal | null = null;
@@ -19,8 +21,10 @@ const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(
 const identity = (value: unknown) => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 
 export async function stageGoalControlJournal(sessionId: string | null, conversationId: string,
-  before: Array<Record<string, unknown> | null>, after: Array<Record<string, unknown> | null>): Promise<void> {
-  admittedJournal = journalSchema.parse({ version: 2, state: 'pending', sessionId, conversationId, before, after });
+  before: Array<Record<string, unknown> | null>, after: Array<Record<string, unknown> | null>,
+  masterOffGeneration: string | undefined): Promise<void> {
+  admittedJournal = journalSchema.parse({ version: 2, state: 'pending', sessionId, conversationId,
+    masterOffGeneration, before, after });
   await writeDurableNow('goal-control-journal', admittedJournal);
 }
 export async function settleGoalControlJournal(): Promise<void> {
@@ -50,6 +54,9 @@ export async function recoverGoalControlJournal(): Promise<void> {
   if (!raw) return;
   const journal: Journal = journalSchema.parse(raw); admittedJournal = journal;
   if (journal.state !== 'pending') return;
+  // An app-wide Stop was durably accepted after this transaction started. Replaying
+  // its old On/objective would undo that newer instruction across the three ledgers.
+  const revokedByMasterOff = journal.masterOffGeneration !== getConfig().goal.masterOffGeneration;
   const session = journal.sessionId ? await getSession(journal.sessionId) : await findSessionByConversation(journal.conversationId, { requireUnique: true });
   const offOnly = journal.after[0]?.enabled === false && identity(journal.before[1]) === identity(journal.after[1]) &&
     (journal.after[2] === null || journal.after[2]?.state === 'handled') &&
@@ -71,9 +78,11 @@ export async function recoverGoalControlJournal(): Promise<void> {
       throw new Error('Goal control recovery found a newer change; reconcile before startup');
     snapshots.push({ ...snapshot, savedAt: Date.now(), [ledger.field]: [
       ...values.filter(value => value?.conversationId !== journal.conversationId),
-      ...(journal.after[index] ? [journal.after[index]] : [])
+      ...((revokedByMasterOff ? journal.before[index] : journal.after[index])
+        ? [revokedByMasterOff ? journal.before[index] : journal.after[index]] : [])
     ] });
   }
   for (let index = 0; index < ledgers.length; index++) await writeDurableNow(ledgers[index]!.name, snapshots[index]);
-  await settleGoalControlJournal();
+  if (revokedByMasterOff) await supersedeGoalControlJournal();
+  else await settleGoalControlJournal();
 }

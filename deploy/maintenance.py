@@ -199,7 +199,7 @@ def install(source):
     for name in ['out/main/index.js', 'discord/dist/index.js', 'node_modules/electron/dist/electron', 'node_modules/electron/dist/chrome-sandbox', 'runtime/durable-formats.json']:
         if not (source / name).is_file(): raise RuntimeError('Incomplete update: ' + name)
     compatible(code_formats(source))
-    stage = Path(tempfile.mkdtemp(prefix='stage-', dir=INSTALL)); code = stage / 'current'; code.mkdir(mode=0o755)
+    stage = Path(tempfile.mkdtemp(prefix='stage-', dir=INSTALL)); code = stage / 'current'; code.mkdir(mode=0o755); os.chmod(code, 0o755)
     try:
         for name in required + [name for name in ['resources', 'native'] if (source / name).exists()]:
             origin, target = source / name, code / name
