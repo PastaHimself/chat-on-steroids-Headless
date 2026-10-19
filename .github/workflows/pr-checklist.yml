@@ -14,7 +14,7 @@ concurrency:
 jobs:
   checklist:
     name: PR checklist
-    # Dependabot's grouped updates have no issue or fail-first test; the OS test matrix covers them.
+    # Dependabot's grouped updates have no issue or fail-first test; Headless CI covers them.
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Check the description and files
         run: node scripts/pr-check.mjs
@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
       - name: Select the OS for the changed tests
         id: platform
         run: node scripts/pr-fail-first.mjs --runner >> "$GITHUB_OUTPUT"
@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install dependencies

@@ -4931,7 +4931,7 @@ with other suites' native windows or input; its assertions remain unchanged. `vi
 forces Node, bounded hooks/tests, `CLF_BRIDGE_PORTS=0`
 and test-only `CLF_EVIDENCE_MS=1500`; never let tests contact the installed production bridge.
 Opt-in live plugin/macOS probes are separate evidence, not implied by the ordinary suite.
-The fail-first workflow selects Windows for changed `test/windows-*` and `test/computer*`
+The Node 24 fail-first workflow selects Windows for changed `test/windows-*` and `test/computer*`
 suites through `scripts/pr-fail-first.mjs`; other changes keep the Linux runner. The selected
 job still runs changed tests against base code: platform-skipped native tests are not proof.
 
@@ -5029,12 +5029,24 @@ off. Windows NSIS/Linux AppImage can apply automatically; macOS/DEB present the 
 path, development does not stage. Explicit install may relaunch; ordinary quit does not force
 relaunch. Failed checks never replace a verified staged candidate with unverified bytes.
 
-CI verifies supported OS families; native `release.yml` builds/smokes all six targets, then
-assembles installers, the Chromium extension ZIP, native-sources archive and `SHA256SUMS.txt`. `publish.yml`
-is dispatched **at the reviewed version tag**, calls that reusable build in the same run,
-requires `docs/release-notes/vX.Y.Z.md`, rechecks versions/privacy/hashes and refuses an existing
-release. A tag alone does not build/publish. An unpublished candidate can be built separately,
-but do not mix artifacts from another ref/run into a release.
+Headless Actions targets Ubuntu 24.04 amd64 / Node 24. `.github/actions/setup-headless`
+installs both lockfiles, verified native binaries, Xvfb and Brave; builds and probes run
+unprivileged with the sandbox enabled. CI runs the full Linux suite and isolated native tests,
+then the sealed backend/Discord build, deployment drills and required Electron/Xvfb/Brave smoke.
+Published plugin probes run separately. Local desktop packaging scripts remain available.
+
+`release.yml` builds that same Headless candidate and corresponding native sources.
+`package-headless.mjs` archives committed files plus sealed payload roots, excludes `.git`
+and upstream snapshot ZIPs, and writes the exact two-archive `SHA256SUMS.txt`.
+`verify-headless-release.mjs` safely extracts it, verifies source/payload inventories,
+compiled formats, native runtime and expected commit/tag before upload and publication.
+The bundle overlays a clean checkout at its recorded commit before the existing installer
+checks source provenance; it never includes live state or starts services.
+`publish.yml` is dispatched at the reviewed version tag, builds within the same run,
+requires matching version metadata/notes/privacy and refuses an existing release.
+Canary retains staged replacement, digest checks and stale-main fencing for the same asset set.
+Stable publication directly invokes the downloaded-asset verifier with its immutable commit.
+See `docs/headless-actions.md`; account-free smoke is not authenticated provider/Discord evidence.
 
 What's New (#1172) shows a version's highlights once after a real update. `ui.lastSeenVersion`
 is the version this install last started as. Only the main process records it: on a fresh install

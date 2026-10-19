@@ -11,14 +11,12 @@ describe('release asset verification on repository forks', () => {
     expect(publishedAudit).toMatch(/release:\s*\n\s+types: \[published\]/);
     expect(publishedAudit).toMatch(/jobs:\s*\n\s+verify:\s*\n/);
     expect(publishedAudit).not.toMatch(/if:\s*github\.repository\s*==\s*['"]totec448-spec\/chat-on-steroids['"]/);
-    expect(publishedAudit).toContain('scripts/verify-release-assets.mjs');
+    expect(publishedAudit).toContain('scripts/verify-headless-release.mjs');
   });
 
   it('does not demand full stable-release assets when the rolling canary prerelease is published', () => {
-    // The canary workflow intentionally drops the native-sources archive and packages
-    // only common platforms, while verify-release-assets requires the full release set.
     const canary = readFileSync(new URL('../.github/workflows/canary.yml', import.meta.url), 'utf8');
-    expect(canary).toContain('grep -vF');
+    expect(canary).toContain('scripts/verify-headless-release.mjs');
     expect(canary).toContain('prerelease=true');
     expect(publishedAudit).toContain("if: (github.event_name != 'release' || github.event.release.prerelease == false) && inputs.tag != 'canary'");
     expect(publishedAudit).toContain('workflow_call:');

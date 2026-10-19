@@ -1,19 +1,20 @@
-Live checks for **VERSION**, on the packaged build installed like a user would, not a dev run. Tick each box with a short note of what you saw; an unchecked box means "not tested yet", not "broken".
+Live checks for **VERSION**, on an isolated Ubuntu 24.04 amd64 VPS with Node 24.
+An unchecked item means not tested. Automated checks use fresh profiles and no accounts.
 
 ### Before tagging
 
-- [ ] **Extension, fresh user:** in a browser profile without the extension's token, the extension pairs with the app by itself, and an installed older build updates itself to this one.
-- [ ] **Connector:** a message in ChatGPT that calls a CoS tool (for example `exec_command`) runs and is attributed to the right chat.
-- [ ] **Goal and Loop:** a small Goal from the app finishes and stops by itself; a Loop sends its next message.
-- [ ] **Compact & resume:** the new chat opens in the same browser, continues, and shows no note from the old chat.
-- [ ] **Sub-agents:** one worker starts, runs a command and reports back.
-- [ ] **Every shipped list item:** install and remove every recommended skill, every catalog plugin and every pet, not only one example.
-- [ ] **UI sweep:** every page and panel in every language, with no console errors and no `{0}` or `undefined` in the text; `npm run verify:ui` passes.
-- [ ] **Changed controls:** each control this release changes, tried with real data (for example the model menu with an Instant, a Thinking and a Pro model). Does it make sense, not only work?
-- [ ] **Release notes:** `docs/release-notes/VERSION.md` is written for users and thanks every contributor.
-- [ ] **What's New:** `src/renderer/whats-new.ts` has this version's entry (the Highlights, shortened, translated into every app language), and it shows once after updating from the previous release.
+- [ ] **CI:** Headless CI, Linux live plugin checks and CodeQL pass for the reviewed commit.
+- [ ] **Candidate:** the Headless release candidate passes its full suite, deployment drills and real Electron/Xvfb/Brave lifecycle smoke.
+- [ ] **Bundle:** source, backend, Discord, dependencies, extension and build manifest survive archive extraction and match the recorded commit; native sources and SHA256SUMS.txt are present.
+- [ ] **Installation:** overlay the bundle on a clean checkout of its recorded commit; verify the build, install and verify systemd units using docs/headless-vps.md.
+- [ ] **Secrets and login:** protected environment files and the encrypted keyring persist; pair the companion and sign in through the private browser.
+- [ ] **Discord:** test unauthorized access, /new, /ask, /goal, /plan, status and final notifications in an explicitly authorized test channel.
+- [ ] **Continuation:** verify worker settlement, Compact & Resume and pending Goal/Plan work across controlled backend/browser/bot restarts without duplicate effects.
+- [ ] **Maintenance:** encrypted backup/restore, incompatible-format refusal and interrupted-update recovery pass on a disposable installation.
+- [ ] **Release notes:** docs/release-notes/VERSION.md describes the Headless changes and actual validation; app/extension/main/lockfile versions agree.
 
 ### After publishing
 
-- [ ] **Published files:** the "Verify published release" run is green (checksums, extension build stamp and version).
-- [ ] **Intel macOS:** if "Package macOS x64" failed on timing, rerun only that job.
+- [ ] **Published files:** Verify published Headless release is green for VERSION and the original publishing commit.
+- [ ] **Download:** verify the downloaded bundle and native-source checksums, then repeat installation on a disposable VPS.
+- [ ] **Long runs:** record the live acceptance evidence required by docs/headless-long-run-rollout.md; account-free CI smoke does not prove provider authentication or Discord delivery.

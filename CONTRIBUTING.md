@@ -1,6 +1,6 @@
 # Contributing
 
-Chat On Steroids is a Windows/macOS/Linux beta maintained by one person. Bug reports, focused fixes and concrete improvements are welcome.
+Chat On Steroids Headless targets an Ubuntu 24.04 amd64 VPS with Discord control. Bug reports, focused fixes and concrete improvements are welcome.
 
 ## Before a pull request
 
@@ -14,16 +14,18 @@ Contributions and examples should follow the [responsible-use notice](README.md#
 
 ## Development setup
 
-Development requires Node 22+ and is supported on Windows, macOS and Linux. Desktop/computer-use has platform-native Windows and macOS helpers behind one protocol; Core, extension, sessions, agents and tunnel behavior must stay portable. macOS helper changes require Xcode/Swift and a packaged arm64 or x64 smoke check.
+Headless development and CI require Node 24 on Ubuntu 24.04 amd64. The inherited desktop development commands remain available on Windows, macOS and Linux. Desktop/computer-use has platform-native Windows and macOS helpers behind one protocol; Core, extension, sessions, agents and tunnel behavior must stay portable. macOS helper changes require Xcode/Swift and a packaged arm64 or x64 smoke check.
 
 ```sh
-npm ci
+npm ci --ignore-scripts
+npm run discord:install
+npm run headless:prepare
 npm run verify     # the same gate CI runs
 npm run dev        # Electron development build
 ```
 
 On Linux with Nix installed, the repository also has a flake-based development shell. It uses
-Node 22 to match CI, derives the Electron major from `package.json`, and imports npm dependencies
+Node 22 for inherited desktop development; use Node 24 for Headless. It derives the Electron major from `package.json`, and imports npm dependencies
 from the integrity hashes already stored in `package-lock.json`, so there is no second npm
 dependency hash to bump.
 
@@ -48,7 +50,7 @@ A behavior change should include a deterministic regression test where practical
 
 ## Packaging
 
-Release packages are platform/architecture-specific:
+Headless Actions builds a sealed Linux x64 bundle containing the backend, Discord and dependencies. See [Actions and bundles](docs/headless-actions.md). The inherited desktop packaging commands remain available locally:
 
 ```sh
 npm run dist:x64
@@ -59,9 +61,11 @@ npm run dist:linux:x64
 npm run dist:linux:arm64
 ```
 
-Release CI builds and smoke-tests every platform/architecture on a native runner. Packaging downloads/stages pinned external assets and verifies their checksums, so the first packaging run needs network access. Do not claim a cross-OS package is validated merely because electron-builder can sometimes emit it from another host.
+Headless release CI builds and smoke-tests Ubuntu 24.04 amd64 with Node 24, Electron, Xvfb and Brave. Packaging downloads/stages pinned external assets and verifies their checksums, so the first packaging run needs network access. Do not claim a cross-OS package is validated merely because electron-builder can sometimes emit it from another host.
 
 ## Canary builds
+
+Canaries contain the Headless bundle and corresponding native sources, with the same checksum and provenance checks as stable releases. They do not update a running VPS.
 
 The `canary` prerelease is a test build of `main`, rebuilt automatically after every change to `main` that can affect the app (documentation and test-only changes are skipped). A newer build replaces the previous one. It has no release notes and no support. Issues and pull requests are accepted only for problems that also happen on the latest stable release.
 

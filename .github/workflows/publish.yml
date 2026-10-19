@@ -1,4 +1,4 @@
-name: Publish release
+name: Publish Headless release
 
 # Dispatch this at the tag you want released:
 #   gh workflow run publish.yml --ref v2.0.2
@@ -19,14 +19,14 @@ concurrency:
 jobs:
   preflight:
     name: Preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.ref_name }}
 
     steps:
-      # Fail cheap before allocating the six native packaging runners. The final publish step
+      # Fail cheap before allocating the Headless build runner. The final publish step
       # repeats the release-exists check to close the race while the candidate is building.
       - name: Refuse to publish from anything but a tag
         run: |
@@ -101,7 +101,7 @@ jobs:
   publish:
     name: Publish
     needs: candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
@@ -139,37 +139,26 @@ jobs:
       - name: Download the candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: chat-on-steroids-candidate-${{ github.run_id }}
+          name: headless-candidate-${{ github.run_id }}
           path: publish
 
       # The checksums were computed on the packaging runner. Re-checking them here proves
       # the bytes about to be attached are the bytes that were smoke-tested.
-      - name: Re-verify the checksums
-        working-directory: publish
-        run: |
-          set -euo pipefail
-          cat SHA256SUMS.txt
-          sha256sum -c SHA256SUMS.txt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Verify candidate identity, payload and checksums
+        run: node scripts/verify-headless-release.mjs publish "$GITHUB_SHA" "$TAG"
 
       - name: Publish the release
         run: |
           set -euo pipefail
           # Repeat after the native candidate build so a new upstream release published while
-          # the six runners were working cannot leave this release stale.
+          # the Headless runner was working cannot leave this release stale.
           npm run verify:tunnel-current
           node scripts/check-release-absent.mjs
           gh release create "$TAG" \
-            publish/Chat-On-Steroids-Setup-x64.exe \
-            publish/Chat-On-Steroids-Setup-arm64.exe \
-            publish/Chat-On-Steroids-macOS-x64.dmg \
-            publish/Chat-On-Steroids-macOS-x64.zip \
-            publish/Chat-On-Steroids-macOS-arm64.dmg \
-            publish/Chat-On-Steroids-macOS-arm64.zip \
-            publish/Chat-On-Steroids-Linux-x64.AppImage \
-            publish/Chat-On-Steroids-Linux-x64.deb \
-            publish/Chat-On-Steroids-Linux-arm64.AppImage \
-            publish/Chat-On-Steroids-Linux-arm64.deb \
-            publish/Chat-On-Steroids-Extension.zip \
+            publish/Chat-On-Steroids-Headless-Linux-x64.tar.gz \
             publish/Chat-On-Steroids-Native-Sources.tar.gz \
             publish/SHA256SUMS.txt \
             --title "$(sed -n 's/^## //p' "docs/release-notes/$TAG.md" | head -n 1)" \
@@ -182,6 +171,7 @@ jobs:
     uses: ./.github/workflows/verify-release.yml
     with:
       tag: ${{ github.ref_name }}
+      commit: ${{ github.sha }}
     permissions:
       contents: read
       issues: write

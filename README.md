@@ -6,7 +6,7 @@ This repository is built for a private, self-hosted VPS installation. The manage
 
 Browser sign-in, keyring provisioning and provider approvals require an interactive bootstrap through a private connection. After setup, Discord provides the everyday controls.
 
-[Install on a VPS](docs/headless-vps.md) · [Discord commands](docs/discord-commands.md) · [Recovery guide](docs/reliability-rollout.md) · [Validation status](docs/headless-validation.md)
+[Install on a VPS](docs/headless-vps.md) · [Discord commands](docs/discord-commands.md) · [Recovery guide](docs/reliability-rollout.md) · [Validation status](docs/headless-validation.md) · [Actions and release bundles](docs/headless-actions.md)
 
 ## What this edition provides
 

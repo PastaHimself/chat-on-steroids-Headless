@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   open:
-    if: github.repository == 'totec448-spec/chat-on-steroids'
+    if: github.repository == 'PastaHimself/chat-on-steroids-Headless'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

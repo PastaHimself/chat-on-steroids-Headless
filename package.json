@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "npm run verify:ci",
-    "verify:ci": "npm run rg && npm run verify:privacy && npm run verify:notices && npm run typecheck && npm run discord:typecheck && node -e \"require('electron')\" && node --test test/headless-build-provenance.test.mjs test/backend-readiness.test.mjs && vitest run --exclude test/mcp-shutdown.test.ts --exclude test/computer.test.ts && vitest run --maxWorkers=1 test/computer.test.ts test/mcp-shutdown.test.ts",
+    "verify:ci": "npm run rg && npm run verify:privacy && npm run verify:notices && npm run typecheck && npm run discord:typecheck && node -e \"require('electron')\" && node --test test/headless-build-provenance.test.mjs test/headless-release.test.mjs test/backend-readiness.test.mjs && vitest run --exclude test/mcp-shutdown.test.ts --exclude test/computer.test.ts && vitest run --maxWorkers=1 test/computer.test.ts test/mcp-shutdown.test.ts",
     "discord:install": "npm ci --prefix discord --ignore-scripts",
     "discord:typecheck": "npm run typecheck --prefix discord",
     "discord:build": "npm run build --prefix discord",
