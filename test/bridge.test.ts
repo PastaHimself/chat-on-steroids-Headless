@@ -15925,6 +15925,32 @@ describe('the goal loop over the bridge', () => {
     expect((await sessionControlsFor(session.id)).recovery).not.toContainEqual(expect.objectContaining({ kind: 'goal-expired' }));
   });
 
+  it('reports lost Goal Send receipt as a durable blocker rather than starting another pickup', async () => {
+    await pair();
+    const chat = 'cafe0252-0000-4000-8000-000000000252';
+    await request('POST', '/events', { body: { conversationId: chat, events: [
+      { kind: 'user_message', time: Date.now(), text: 'Finish the objective', messageId: 'uncertain-user' },
+      { kind: 'turn_start', time: Date.now(), turnId: 'uncertain-turn' },
+      { kind: 'turn_end', time: Date.now(), turnId: 'uncertain-turn', outcome: 'completed' }
+    ] } });
+    const session = (await findSessionByConversation(chat, { requireUnique: true }))!;
+    const goal = await import('../src/main/goal.js');
+    await goal.setGoalSwitchNow(chat, 'goal', true);
+    const at = Date.now();
+    goal.restoreGoalReplies({ version: 1, savedAt: at, replies: [{
+      conversationId: chat, sessionId: session.id, replyId: 'uncertain-final',
+      turnId: 'uncertain-turn', eventSeq: 50, acceptedAt: at, deliveryUncertainAt: at, state: 'pending'
+    }] });
+    expect(goal.pendingGoalReplies().find(row => row.conversationId === chat)).toBeUndefined();
+    expect((await sessionControlsFor(session.id)).recovery).toContainEqual(expect.objectContaining({
+      kind: 'goal-delivery-uncertain', next: 'goal', deadline: at
+    }));
+    goal.restoreGoalReplies(goal.snapshotGoalReplies());
+    expect((await sessionControlsFor(session.id)).recovery).toContainEqual(expect.objectContaining({ kind: 'goal-delivery-uncertain' }));
+    await goal.setGoalReplyActiveNow(chat, true);
+    expect((await sessionControlsFor(session.id)).recovery).not.toContainEqual(expect.objectContaining({ kind: 'goal-delivery-uncertain' }));
+  });
+
   /**
    * Collected is collected, and only collecting counts.
    *

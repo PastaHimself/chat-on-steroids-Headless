@@ -115,6 +115,14 @@ it('identifies an expired Goal obligation as a manual blocker without promising 
   expect(host.querySelector('[role="timer"]')?.textContent).not.toContain('0:00');
 });
 
+it('renders uncertain Goal delivery as a manual reconciliation hold, not a retry countdown', () => {
+  renderRecoveryCountdowns(host, [{ kind: 'goal-delivery-uncertain', deadline: 1000, next: 'goal' }], 50_000);
+  expect(host.textContent).toContain('Goal delivery uncertain · next: Goal');
+  expect(host.textContent).toContain('Manual reconciliation required');
+  expect(host.textContent).not.toContain('Reload');
+  expect(host.querySelector('.recovery-notice')?.getAttribute('title')).toContain('may have been sent');
+});
+
 it('reveals Pro silence at five minutes using the UI clock and hides again when activity renews it', () => {
   const countdown = { kind: 'silence' as const, deadline: 600_000, visibleAt: 300_000 };
   expect(renderRecoveryCountdowns(host, [countdown], 299_999)).toBe(true);

@@ -89,7 +89,7 @@ export function sessionStatusIndicator(detail: any): { emoji: string; text: stri
   if (live?.job?.needsAttention) {
     return { emoji: '🟡', text: 'Attention Needed', color: EmbedColor.Warning };
   }
-  if (live?.recovery?.some((row: any) => row.kind === 'pickup-stopped' || row.kind === 'goal-expired')) {
+  if (live?.recovery?.some((row: any) => row.kind === 'pickup-stopped' || row.kind === 'goal-expired' || row.kind === 'goal-delivery-uncertain')) {
     return { emoji: '🟡', text: 'Recovery Stopped', color: EmbedColor.Warning };
   }
   if (live?.recovery?.some((row: any) => ['post-reload', 'assistant-error', 'tab-recovery', 'pickup'].includes(row.kind))) {

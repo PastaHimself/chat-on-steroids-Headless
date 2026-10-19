@@ -3786,6 +3786,20 @@ while preserving pending source debt; master Off explicitly retires that debt. H
 never counts as a source decision. Settled transport/settings failures retain their retry fence
 and do not trigger source reloads while awaiting intervention. Normal and restored committed
 resumes share one projection: move objective/switch, retire A's debt, and let B earn its own.
+Before a ready Goal continuation is exposed to the browser, its source reply ledger must
+durably record possible native Send (`deliveryUncertainAt`). A rejected write must never
+publish that draft as ready. Lost ACK or backend restart cannot turn the same uncertain
+source into a second automatic Send; the pending owner remains retained but excluded
+from automatic pickup until exact receipt reconciliation or deliberate user reactivation.
+Upgrading provisional `turn:<id>` ownership to a stable assistant ID preserves this fence.
+Browser and Discord recovery projections must show the uncertainty as a manual blocker,
+not successful completion or a new reload authorization.
+An exact browser-owned `nativeBusy` deferral proven before Send can clear its
+uncertain marker only with a durable write; rejection restores the hold. A
+different final that wins while the offer write is in flight retires the stale
+draft instead of leaving a phantom busy helper. Expired sources still obey the
+twelve-hour manual-resume rule, and uncertain sources cannot reserve pickup
+reloads or a native recovery Stop.
 An active Goal reply older than 12 hours becomes a handled tombstone with a durable expiration
 reason; session recovery and Discord display a manual-resume blocker for the same verified
 source. No automatic Send occurs after expiry. The 200-row cap applies to new pending

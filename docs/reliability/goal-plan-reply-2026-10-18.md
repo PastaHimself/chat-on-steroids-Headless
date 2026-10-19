@@ -162,3 +162,83 @@ resume automatically. The revised status projection now explicitly reports
 that blocker and the requirement to resume manually. Live signed-in browser
 recovery and simultaneous provider-secret rotation with an in-flight Send
 remain unverified.
+
+## Follow-up: credential interruption and uncertain native delivery (2026-10-19)
+
+Recovered two uncommitted files from the interrupted previous turn instead of
+resetting them. Their added Goal tests exercise delayed provider-key reads,
+newer final ownership, explicit Off, obsolete helper decisions, unoffered
+attempts, and credential rotation during a real loopback HTTP provider request
+using synthetic credentials. These do **not** authenticate to a live account.
+
+New fault tracing found a distinct backend-restart gap: an in-memory ready Goal
+draft could have crossed ChatGPT's native Send boundary before its ACK was lost,
+but after a backend restart the pending Goal reply ledger had no record of that
+uncertain effect. The same source could therefore be offered again. A new
+failed-first test verified that the ledger lacked the fence. `run()` now writes
+`deliveryUncertainAt` into the existing `goal-replies` ledger **before**
+publishing a ready decision. The Goal pickup queue excludes that uncertain
+source; a restored attempt cannot silently redraft the same turn. The browser
+and Discord project a manual-reconciliation hold, with deliberate user
+reactivation clearing it. Rejected durability leaves the provider response
+unoffered and its source pending. The new field is optional for backwards
+compatible restore. No extra ledger or retry worker was introduced.
+
+A second failed-first test reproduced the provisional `turn:<id>` → stable
+assistant-message ID upgrade dropping this new fence. The upgrade now retains
+the original `deliveryUncertainAt` while adopting the stable identity. Browser
+and Discord recovery tests check that uncertain delivery is never shown as a
+normal retry countdown or completion. Translation keys were added to existing
+locale catalogs. The exact post-change full CI and isolated browser evidence
+is recorded below; older passes remain historical evidence only.
+
+Two further failed-first neighboring cases caught a stale provider attempt
+remaining forever `answering` after a newer final won during the durable offer
+write, and an exact browser `nativeBusy` pre-Send deferral retaining an
+unnecessary uncertain-Send blocker. The stale draft is now retired if it no
+longer owns the reply. A verified pre-Send deferral clears that marker in the
+same durable update as its listening deadline. A rejected deferral write
+restores the uncertainty fence and cannot grant automatic retry. Expired
+sources continue to project their twelve-hour blocker.
+
+One further failed-first race showed a rejected pre-Send deferral could restore
+an earlier uncertain marker after a newer explicit activation had already
+revised the *same* in-memory reply object. Deferral rollback now also checks
+the original acceptance identity. A new negative test covers this overlap.
+After correcting the recovery refusal order (renewed native work must report
+`chat_still_working` before the new uncertain-delivery code), the nine adjacent
+integration suites passed **1,365/1,365 tests**, including the complete Goal,
+Goal-control, bridge, Plan input, continuation, handoff, renderer and Discord
+test files. The first Oct19 full CI run had **3 failures, 8,774 passes and 140
+skips**: two native-work refusal-priority regressions and one newly added
+stale-draft test with an insufficient 100ms assertion window under full-suite
+load. Both regressions were fixed, their four focused cases passed, and the
+adjacent suite passed. **This first full CI was not green**; a fresh complete
+run on the corrected revision is required for a green claim.
+
+No live signed-in provider, external Send, privileged production service,
+independent optimization worktree, or real multi-day soak was exercised.
+
+### Final post-change verification, October 19
+
+- `npm run verify:ci` on the settled branch exited **0**: **333 passed test
+  files, 14 skipped; 8,780 passed tests, 140 skipped, zero failures**. The
+  chained `mcp-shutdown` suite also passed 6/6; `computer.test.ts` skipped
+  its 22 host-dependent tests. The command included privacy, notices, root
+  and Discord typecheck gates.
+- The complete adjacent Goal/bridge/Plan/continuation/recovery/Discord suites
+  passed **1,365/1,365**, and the formerly intermittent input-delivery suite
+  passed separately **336/336**. A previous full run failed one unrelated
+  Off-mode silence-repair test (`repair?.reason` was undefined); that case
+  passed in all three modes in isolation and the next full run passed.
+  These failures and their reruns are recorded rather than erased.
+- `npm run build` exited **0**; `npm run verify:deployment` passed **11/11**
+  disposable local checks. `npm run verify:headless` exited **0** using the
+  isolated Xvfb binary and a private Brave profile: authenticated loopback,
+  renderer-free Electron startup, SIGTERM drain, secret-file removal, profile
+  continuity, browser process-group shutdown and restart. No real account or
+  service was used.
+- `node scripts/verify-public-history.mjs` passed; `git diff --check` was
+  clean before publication. This evidence validates deterministic restart and
+  injected fault boundaries, not real multi-day uptime or a live signed-in
+  provider's non-idempotent Send behavior.

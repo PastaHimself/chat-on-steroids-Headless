@@ -13,7 +13,8 @@ export function renderRecoveryCountdowns(host: HTMLElement, countdowns: readonly
       const row = el('div', 'recovery-notice');
       const label = el('span', 'queue-label', () => {
         if (countdown.next) {
-          const reason = countdown.kind === 'goal-expired' ? t('Goal pickup expired') :
+          const reason = countdown.kind === 'goal-delivery-uncertain' ? t('Goal delivery uncertain') :
+            countdown.kind === 'goal-expired' ? t('Goal pickup expired') :
             countdown.kind === 'pickup-stopped' ? t('Recovery stopped') : countdown.kind === 'pickup' ? t('Waiting for delivery') : countdown.kind === 'post-reload'
             ? countdown.generating ? t('Reloaded · turn still marked generating') : t('Reloaded') :
             countdown.kind === 'thinking-failed' ? t('Thinking failed') : t('Turn still marked generating · extra wait');
@@ -31,6 +32,8 @@ export function renderRecoveryCountdowns(host: HTMLElement, countdowns: readonly
       });
       ui(row, 'title', () => countdown.kind === 'provider-limit'
         ? t('Automatic recovery is paused during the history rate-limit wait. Reloading earlier can prolong the limit.')
+        : countdown.kind === 'goal-delivery-uncertain'
+        ? t('The Goal reply may have been sent before its acknowledgment was lost. Inspect the conversation; if it was not sent, reactivate Goal manually. CoS will not send it twice automatically.')
         : countdown.kind === 'goal-expired'
         ? t('The 12-hour Goal pickup window expired. The saved reply cannot resume automatically. Open this chat and turn Goal on to restart it deliberately.')
         : countdown.kind === 'pickup-stopped'
@@ -65,6 +68,8 @@ export function renderRecoveryCountdowns(host: HTMLElement, countdowns: readonly
     const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
     const text = countdown.kind === 'provider-limit'
       ? seconds ? t('Retry check in {0}', [time]) : t('Retry window ended')
+      : countdown.kind === 'goal-delivery-uncertain'
+      ? t('Manual reconciliation required')
       : countdown.kind === 'goal-expired'
       ? t('Manual resume required')
       : countdown.kind === 'pickup-stopped'

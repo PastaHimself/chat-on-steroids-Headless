@@ -393,6 +393,8 @@ interface GoalDraft extends Omit<GoalDraftView, 'retryable'> {
   settledAt: number;
   /** Set once the page has been told to type this, so it can never be typed twice. */
   acknowledged: boolean;
+  /** A settings revocation cannot be accepted later as a native Send receipt. */
+  revokedBySettings?: true;
   work: Promise<void> | null;
   abort: AbortController | null;
 }
@@ -433,6 +435,8 @@ interface GoalReplyObligation {
   pickupStoppedAt?: number;
   /** Why an otherwise exact, retained reply is no longer eligible for automatic pickup. */
   expiredAt?: number;
+  /** A ready draft may have crossed native Send without its ACK; never repeat it after restart. */
+  deliveryUncertainAt?: number;
   conversationId: string;
   sessionId: string;
   replyId: string;
@@ -534,6 +538,8 @@ export function restoreGoalReplies(snapshot: GoalRepliesSnapshot | null): void {
           ? { pickupStoppedAt: raw.acceptedAt } : {}),
       ...(Number.isSafeInteger(raw.expiredAt) && raw.expiredAt === raw.acceptedAt + GOAL_REPLY_TTL_MS &&
         raw.state === 'handled' ? { expiredAt: raw.expiredAt } : {}),
+      ...(typeof raw.deliveryUncertainAt === 'number' && Number.isSafeInteger(raw.deliveryUncertainAt) && raw.deliveryUncertainAt > 0 &&
+        raw.state === 'pending' ? { deliveryUncertainAt: raw.deliveryUncertainAt } : {}),
       ...(raw.explicitActivation === true ? { explicitActivation: true } : {}),
       eventSeq: raw.eventSeq,
       acceptedAt: raw.acceptedAt,
@@ -592,6 +598,16 @@ export function goalPendingReplyFor(
     : null;
 }
 
+/** An uncertain browser-side Send is a manual reconciliation hold, not retry authority. */
+export function goalDeliveryUncertainFor(conversationId: string):
+  { sessionId: string; turnId: string; replyId: string; eventSeq: number; at: number } | null {
+  const reply = goalReplies.get(conversationId);
+  return reply?.state === 'pending' && reply.deliveryUncertainAt && Date.now() - reply.acceptedAt < GOAL_REPLY_TTL_MS
+    ? { sessionId: reply.sessionId, turnId: reply.turnId, replyId: reply.replyId,
+      eventSeq: reply.eventSeq, at: reply.deliveryUncertainAt }
+    : null;
+}
+
 /** Read-only reason for an expired source; never resurrects its Send authority. */
 export function goalExpiredReplyFor(conversationId: string, now = Date.now()):
   { replyId: string; turnId: string; eventSeq: number; expiredAt: number; sessionId: string } | null {
@@ -616,7 +632,7 @@ export function pendingGoalReplies(
 ): Array<{ conversationId: string; sessionId: string; replyId: string; acceptedAt: number; pickupAttempts: number; pickupNextAt?: number; pickupStoppedAt?: number }> {
   const owed: Array<{ conversationId: string; sessionId: string; replyId: string; acceptedAt: number; pickupAttempts: number; pickupNextAt?: number; pickupStoppedAt?: number }> = [];
   for (const reply of goalReplies.values()) {
-    if (reply.state !== 'pending' || now - reply.acceptedAt >= GOAL_REPLY_TTL_MS) continue;
+    if (reply.state !== 'pending' || reply.deliveryUncertainAt || now - reply.acceptedAt >= GOAL_REPLY_TTL_MS) continue;
     owed.push({
       conversationId: reply.conversationId,
       sessionId: reply.sessionId,
@@ -635,7 +651,7 @@ export async function recordGoalPickupAttemptNow(conversationId: string, replyId
   attempts: number; nextAt?: number; stoppedAt?: number
 } | null> {
   const reply = goalReplies.get(conversationId);
-  if (!reply || reply.state !== 'pending' || reply.replyId !== replyId || reply.pickupStoppedAt ||
+  if (!reply || reply.state !== 'pending' || reply.deliveryUncertainAt || reply.replyId !== replyId || reply.pickupStoppedAt ||
       (reply.pickupAttempts ?? 0) >= BROWSER_PICKUP_MAX_ATTEMPTS) return null;
   const previous = { ...reply };
   reply.pickupAttempts = (reply.pickupAttempts ?? 0) + 1;
@@ -708,6 +724,12 @@ export async function acceptGoalReplyNow(input: {
       current.replyId === `turn:${input.turnId}`.slice(0, 200)
   );
   const before = current ? { ...current } : null;
+  // Key/MCP eligibility can await external state. A newer final, a deliberate Off,
+  // or a corrected objective accepted during that wait must own the conversation.
+  const admittedSwitch = goalSwitches.get(input.conversationId);
+  const admittedObjective = goalObjectives.get(input.conversationId);
+  const admittedMasterOff = getConfig().goal.masterOffGeneration;
+  const admittedMode = goalSwitchFor(input.conversationId).mode;
   const active =
     !input.handledOnly && !input.blocked &&
     getConfig().sessions.record &&
@@ -716,6 +738,14 @@ export async function acceptGoalReplyNow(input: {
     (goalSwitchFor(input.conversationId).mode !== 'loop' ||
       await automaticLoopHasMcpWork(input.sessionId, input.conversationId, input.silenceSourceTurnId ?? input.turnId));
   if (input.current && !input.current()) return;
+  if (goalReplies.get(input.conversationId) !== current ||
+      (current && (current.replyId !== before?.replyId || current.acceptedAt !== before.acceptedAt ||
+        current.state !== before.state)) ||
+      goalSwitches.get(input.conversationId) !== admittedSwitch ||
+      goalObjectives.get(input.conversationId) !== admittedObjective ||
+      getConfig().goal.masterOffGeneration !== admittedMasterOff ||
+      goalSwitchFor(input.conversationId).mode !== admittedMode ||
+      (active && (!getConfig().sessions.record || !goalArmedFor(input.conversationId)))) return;
   // Admission fails visibly once every bounded slot already holds live debt.
   // A restored oversized legacy ledger is preserved, but cannot grow indefinitely.
   if (active && current?.state !== 'pending' &&
@@ -734,6 +764,7 @@ export async function acceptGoalReplyNow(input: {
     ...(provisionalUpgrade && current?.pickupAttempts !== undefined ? { pickupAttempts: current.pickupAttempts } : {}),
     ...(provisionalUpgrade && current?.pickupNextAt ? { pickupNextAt: current.pickupNextAt } : {}),
     ...(provisionalUpgrade && current?.pickupStoppedAt ? { pickupStoppedAt: current.pickupStoppedAt } : {}),
+    ...(provisionalUpgrade && current?.deliveryUncertainAt ? { deliveryUncertainAt: current.deliveryUncertainAt } : {}),
     eventSeq: input.eventSeq,
     // `/goal/draft` may have had to persist the local turn before Fiber exposed ChatGPT's
     // stable assistant id. The later id strengthens that same row; it must not re-evaluate
@@ -870,7 +901,7 @@ export function saveCombinedGoalControlsNow(requestedSessionId: string | null, c
         if (write.changed || replyRevision !== JSON.stringify([...goalReplies.values()])) continue;
         if (beforeReply) replies.set(conversationId, { ...beforeReply, state: active ? 'pending' : 'handled',
           ...(active ? { acceptedAt: Math.max(Date.now(), beforeReply.acceptedAt + 1), explicitActivation: true,
-            expiredAt: undefined } : {}) });
+            expiredAt: undefined, deliveryUncertainAt: undefined } : {}) });
         if (active && sessionId && end?.kind === "turn_end" && end.turnId &&
             (end.outcome === "stopped" || (end.outcome === "failed" && end.reason === "thinking_failed")) && (!beforeReply || beforeReply.eventSeq < end.seq)) {
           replies.set(conversationId, { conversationId, sessionId, replyId: `activation:${end.turnId}`.slice(0, 200),
@@ -1512,7 +1543,7 @@ export async function retryGoalBrowserHelper(sourceSessionId: string, inputId: s
  */
 export function ackGoalDraft(conversationId: string, token: string, clientId?: string): boolean {
   const draft = drafts.get(conversationId);
-  if (!draft || draft.token !== token) return false;
+  if (!draft || draft.token !== token || draft.revokedBySettings) return false;
   if (clientId !== undefined && draft.clientId !== clientId) return false;
   draft.acknowledged = true;
   // An acknowledgement can also mean "this draft will never be sent" (Goal Mode was switched
@@ -1549,18 +1580,23 @@ export async function ackGoalDraftNow(
  */
 export function retireGoalDrafts(retireReplies = false): number {
   let retired = 0;
-  for (const draft of drafts.values()) {
-    if (draft.acknowledged) continue;
-    draft.acknowledged = true;
-    draft.abort?.abort();
-    if (draft.settledAt === 0) draft.settledAt = Date.now();
-    draft.text = '';
-    draft.reply = '';
-    retired += 1;
+  for (const [conversationId, draft] of drafts) {
+    if (!draft.acknowledged) {
+      draft.acknowledged = true;
+      draft.revokedBySettings = true;
+      draft.abort?.abort();
+      if (draft.settledAt === 0) draft.settledAt = Date.now();
+      draft.text = '';
+      draft.reply = '';
+      retired += 1;
+    }
+    // Ready text may have crossed ChatGPT's native Send boundary before an ACK
+    // was lost. A settings change cannot prove otherwise, so retain its spent
+    // turn token. Only an unoffered request can be safely drafted again.
+    if (draft.stage !== 'ready') drafts.delete(conversationId);
   }
   // A settings/key replacement revokes prepared text, not the source obligation.
-  // Removing the attempt permits that same source to use the corrected settings.
-  drafts.clear();
+  // Unoffered attempts can use the corrected settings without repeating Send.
   if (retireReplies) {
     for (const reply of goalReplies.values()) reply.state = 'handled';
     if (goalReplies.size > 0) persistGoalRepliesSoon();
@@ -1660,6 +1696,7 @@ export async function setGoalReplyActiveNow(conversationId: string, active: bool
   if (active) before.acceptedAt = Math.max(Date.now(), previous.acceptedAt + 1);
   if (active) before.explicitActivation = true;
   if (active) delete before.expiredAt;
+  if (active) delete before.deliveryUncertainAt;
   const acceptedAt = before.acceptedAt;
   try {
     await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
@@ -1699,6 +1736,9 @@ export async function deferSilenceGoalReplyNow(conversationId: string, turnId: s
   prepared?: { token: string; clientId: string }): Promise<boolean> {
   const reply = goalReplies.get(conversationId);
   if (!reply || reply.state !== 'pending' || reply.turnId !== turnId) return false;
+  const previousDeadline = reply.listenUntil;
+  const previousUncertain = reply.deliveryUncertainAt;
+  const previousAcceptedAt = reply.acceptedAt;
   if (prepared) {
     const draft = drafts.get(conversationId);
     if (!draft || draft.token !== prepared.token || draft.clientId !== prepared.clientId ||
@@ -1708,19 +1748,27 @@ export async function deferSilenceGoalReplyNow(conversationId: string, turnId: s
     draft.acknowledged = true;
     draft.abort?.abort();
     drafts.delete(conversationId);
+    // This exact browser owner proved it deferred before native Send. An
+    // uncertain offer is now known unsent and may be reconsidered after work.
+    delete reply.deliveryUncertainAt;
     notifyGoalChange();
   }
-  if (listenUntil === undefined && (reply.listenUntil ?? 0) > Date.now()) return true;
-  const deadline = listenUntil ?? Date.now() + 5 * 60_000;
-  if ((reply.listenUntil ?? 0) >= deadline) return true;
-  const previousDeadline = reply.listenUntil;
-  reply.listenUntil = deadline;
+  const deadline = listenUntil ?? ((reply.listenUntil ?? 0) > Date.now()
+    ? reply.listenUntil! : Date.now() + 5 * 60_000);
+  if ((reply.listenUntil ?? 0) < deadline) reply.listenUntil = deadline;
+  if (reply.listenUntil === previousDeadline && reply.deliveryUncertainAt === previousUncertain) return true;
+  const expectedDeadline = reply.listenUntil;
+  const expectedUncertain = reply.deliveryUncertainAt;
   notifyGoalChange();
   try { await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies()); }
   catch (error) {
-    if (goalReplies.get(conversationId) === reply && reply.listenUntil === deadline) {
+    if (goalReplies.get(conversationId) === reply && reply.acceptedAt === previousAcceptedAt &&
+        reply.state === 'pending' && reply.listenUntil === expectedDeadline &&
+        reply.deliveryUncertainAt === expectedUncertain) {
       if (previousDeadline === undefined) delete reply.listenUntil;
       else reply.listenUntil = previousDeadline;
+      if (previousUncertain === undefined) delete reply.deliveryUncertainAt;
+      else reply.deliveryUncertainAt = previousUncertain;
     }
     persistGoalRepliesSoon();
     notifyGoalChange();
@@ -1732,7 +1780,8 @@ export async function deferSilenceGoalReplyNow(conversationId: string, turnId: s
 /** The existing reply ledger owns the one busy wait and the irreversible Stop claim. */
 export async function claimGoalRecoveryStopNow(conversationId: string, replyId: string, acceptedAt: number): Promise<boolean> {
   const reply = goalReplies.get(conversationId);
-  if (!reply || reply.replyId !== replyId || reply.acceptedAt !== acceptedAt || reply.state !== 'pending' || !goalArmedFor(conversationId) ||
+  if (!reply || reply.replyId !== replyId || reply.acceptedAt !== acceptedAt || reply.state !== 'pending' ||
+      reply.deliveryUncertainAt || !goalArmedFor(conversationId) ||
       !reply.listenUntil || reply.listenUntil > Date.now() || reply.recoveryStopClaimed) return false;
   reply.recoveryStopClaimed = true;
   try {
@@ -1805,6 +1854,7 @@ export function startGoalDraft(input: StartGoalDraftInput): GoalDraftView {
   const spentFailure =
     existing?.stage === 'failed' && existing.acknowledged && !SETTLED_FAILURE.test(existing.error ?? '');
   if (existing && existing.turnId === input.turnId && !spentFailure) return view(existing);
+  if (goalDeliveryUncertainFor(input.conversationId)) throw new Error('goal_delivery_uncertain');
   // A different turn supersedes whatever the last one left behind, including an unfinished
   // request: the answer it was writing was about a conversation that has since moved on.
   if (existing) {
@@ -1876,6 +1926,26 @@ function settle(draft: GoalDraft, stage: GoalStage, error: string | null = null)
   notifyGoalChange();
   // A failed helper has not answered the source. Keep its debt; the failed draft
   // retains the transport's retry/ambiguity fence until a deliberate retry or change.
+}
+
+/** Persist possible native delivery before exposing ready text to the browser. */
+async function fenceGoalDraftOfferNow(draft: GoalDraft): Promise<boolean> {
+  if (draft.acknowledged || drafts.get(draft.conversationId) !== draft) return false;
+  const previous = goalReplies.get(draft.conversationId);
+  // Internal/legacy standalone drafts have no accepted final. Bridge drafts always do.
+  if (!previous) return true;
+  if (previous.turnId !== draft.turnId || previous.state !== 'pending' || previous.deliveryUncertainAt) return false;
+  const fenced = { ...previous, deliveryUncertainAt: Date.now() };
+  goalReplies.set(draft.conversationId, fenced);
+  try {
+    await writeDurableNow(GOAL_REPLIES_STATE, snapshotGoalReplies());
+  } catch (error) {
+    if (goalReplies.get(draft.conversationId) === fenced) goalReplies.set(draft.conversationId, previous);
+    persistGoalRepliesSoon();
+    throw error;
+  }
+  return !draft.acknowledged && drafts.get(draft.conversationId) === draft &&
+    goalReplies.get(draft.conversationId) === fenced;
 }
 
 /**
@@ -2230,6 +2300,15 @@ async function run(draft: GoalDraft): Promise<void> {
     // mistakes a person leaves behind go in. After the NO_REPLY test above, never before it.
     draft.reply = draft.backend === 'templates' ? humanReply(decision.reply.slice(0, -GOAL_MARKER_INSTRUCTION.length)) + GOAL_MARKER_INSTRUCTION : humanReply(decision.reply);
     logInfo(`goal: drafted ${decision.reply.length} characters for ${draft.conversationId} with ${draft.model}`);
+    if (!(await fenceGoalDraftOfferNow(draft))) {
+      // A newer final may have taken ownership during the durable write. Do not
+      // leave its superseded provider attempt "answering" and block pickup forever.
+      if (drafts.get(draft.conversationId) === draft && !draft.acknowledged) {
+        drafts.delete(draft.conversationId);
+        notifyGoalChange();
+      }
+      return;
+    }
     settle(draft, 'ready');
   } catch (err) {
     const detail = (err as Error).message;
