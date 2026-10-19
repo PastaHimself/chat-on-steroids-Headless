@@ -2,6 +2,18 @@
 export const MAX_GOAL_SYSTEM_PROMPT_CHARS = 20_000;
 /** Presentation of an existing continuation gate; never grants send authority. */
 export type GoalWait = { reason: 'tools' | 'workers' | 'quiet' | 'silence' | 'listening' | 'native-busy' | 'settling' | 'closed'; until?: number };
+/** Read-only diagnostics from the reply, recorder, decision and pickup owners. No retry authority. */
+export interface GoalStatus {
+  pending: boolean;
+  sourceTurnId: string | null;
+  acceptedAt: number | null;
+  finalConfirmed: boolean | null;
+  stage: string | null;
+  owner: 'tools' | 'workers' | 'activity' | 'recorder' | 'browser' | 'goal';
+  nextCheckAt: number | null;
+  needsAttention: boolean;
+  error: string | null;
+}
 /** Default API model, also used when switching back from a custom model namespace. */
 export const DEFAULT_GOAL_MODEL = 'z-ai/glm-5.3';
 

@@ -1901,6 +1901,7 @@ export type SessionControlsView = {
   stopPending?: boolean;
   goalDraft?: Pick<import('./goal.js').GoalDraftView, 'stage' | 'model' | 'text' | 'error'> | null;
   goalWait?: import('../shared/goal.js').GoalWait | null;
+  goalStatus?: import('../shared/goal.js').GoalStatus | null;
   finishGoalDraft?: Pick<import('./goal.js').GoalDraftView, 'stage' | 'model' | 'text' | 'error'> | null;
   blocked: 'worker' | 'blocked' | '';
   job: ResumeJobView | null;
@@ -1937,6 +1938,28 @@ export async function sessionControlsFor(sessionId: string): Promise<SessionCont
   const plan = await readSessionPlan(sessionId);
   const finishWaiting = await sessionFinishWaiting(sessionId, activeTurnId, id);
   const recovery = unavailable ? [] : await sessionRecoveryCountdowns(sessionId, id);
+  const goalWait = !unavailable && !blocked && !draft && goalActiveFor(id)
+    ? await goalWaitFor(id, sessionId, Date.now(), session.browserRecoveryDismissedAt !== undefined) : null;
+  const pending = goalPendingReplyFor(id);
+  const finalConfirmed = pending && !pending.silenceSourceTurnId && !pending.explicitActivation
+    ? !!await readCompletedFinal(sessionId, id, pending.turnId) : null;
+  // A status read cannot retain a superseded source while another turn or control commits.
+  const currentPending = goalPendingReplyFor(id);
+  const sameReply = currentPending?.replyId === pending?.replyId && currentPending?.acceptedAt === pending?.acceptedAt;
+  const nextCheck = goalWait?.until ?? pickupWatch.get(id)?.dueAt ?? pending?.pickupNextAt;
+  const goalStatus: import('../shared/goal.js').GoalStatus | null = sameReply && (goalArmedFor(id) || pending || draft) ? {
+    pending: !!pending, sourceTurnId: pending?.silenceSourceTurnId ?? pending?.turnId ?? draft?.turnId ?? null,
+    acceptedAt: pending?.acceptedAt ?? null, finalConfirmed, stage: draft?.stage ?? null,
+    owner: goalWait?.reason === 'tools' ? 'tools' : goalWait?.reason === 'workers' ? 'workers'
+      : goalWait && ['quiet', 'silence', 'listening', 'native-busy'].includes(goalWait.reason) ? 'activity'
+      : pending && finalConfirmed === false ? 'recorder' : draft && draft.stage !== 'ready' ? 'goal' : 'browser',
+    nextCheckAt: nextCheck && nextCheck > Date.now() ? nextCheck : null,
+    needsAttention: !!unavailable || !!blocked || session.recordingIncompleteAt !== undefined || goalWait?.reason === 'closed' ||
+      (draft?.stage === 'failed' && !draft.retryable) || recovery.some(row =>
+        ['pickup-stopped', 'goal-expired', 'goal-delivery-uncertain'].includes(row.kind)),
+    error: draft?.error ?? null
+  } : null;
+  if ((await getSession(sessionId))?.conversationId !== id) throw new Error('conversation_changed');
   return { sessionId, plan, conversationId: id, activeTurnId, finishHeld,
     recovery,
     queueAtFinish: !blocked && inputPolicy.queueAtFinish, canInject: !blocked && inputPolicy.canInject,
@@ -1944,8 +1967,7 @@ export async function sessionControlsFor(sessionId: string): Promise<SessionCont
     finishGoalDraft: getSessionFinishDraft(sessionId, activeTurnId),
     finishWaiting,
     goalDraft: draft ? { stage: draft.stage, model: draft.model, text: draft.text.slice(-8000), error: draft.error } : null,
-    goalWait: !unavailable && !blocked && !draft && goalActiveFor(id)
-      ? await goalWaitFor(id, sessionId, Date.now(), session.browserRecoveryDismissedAt !== undefined) : null,
+    goalWait, goalStatus,
     stopPending: commands.some(c => c.spec.type === 'stop' && c.spec.sessionId === sessionId && c.spec.turnId === activeTurnId),
     objective: goalObjectiveFor(id),
     ...(session.recordingIncompleteAt !== undefined ? { recordingIncompleteAt: session.recordingIncompleteAt } : {}),

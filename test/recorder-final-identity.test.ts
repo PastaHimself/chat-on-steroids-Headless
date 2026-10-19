@@ -378,6 +378,58 @@ it('preserves final acceptance across metadata, late call recording and restart,
   } finally { clock.mockRestore(); }
 });
 
+it.each([false, true])('keeps an exact completed native final eligible after late same-response interim backfill (restart=%s)', async restart => {
+  const conversationId = `completed-native-backfill-${restart}`, turnId = 'completed-response';
+  const nativeId = '11111111-2222-4333-8444-555555555555';
+  const now = Date.now();
+  const opened = await recordChatObservations(conversationId, [
+    { kind: 'user_message', time: now, messageId: 'question', text: 'Complete six stages.' },
+    { kind: 'turn_start', time: now + 1, turnId },
+    { kind: 'assistant_message', time: now + 10, turnId, messageId: nativeId, providerMessageId: nativeId,
+      text: 'One stage is complete. Five stages remain.', state: 'final', final: true, goalEligible: true, activeNow: true },
+    { kind: 'turn_end', time: now + 20, turnId, providerMessageId: nativeId, outcome: 'completed' }
+  ]);
+  // A later Fiber scan first exposes older progress paragraphs with fresh local cursors.
+  // It still knows their exact response. No new question, generation or tool ran.
+  const backfill = await recordChatObservations(conversationId, [1, 2, 3].map(n => ({
+    kind: 'assistant_message' as const, time: now + 30, authoredAt: now + n, turnId,
+    messageId: `late-progress-${n}`, providerMessageId: `22222222-2222-4333-8444-55555555555${n}`,
+    text: `Inspecting stage ${n}.`, state: 'streaming' as const, activeNow: true
+  })));
+  expect(backfill.activity.working).toBe(false);
+  const id = opened.sessionId!;
+  if (restart) { await flushSessions(); resetRecorderForTests(); resetSessionStoreForTests(); }
+  expect(await readCompletedFinal(id, conversationId, turnId)).toMatchObject({ messageId: nativeId, turnId });
+  expect(await sessionInputPolicy(id)).toMatchObject({ settled: true, browserAllowed: true });
+  // A new question always supersedes the final, even if its old response is backfilled again.
+  await recordChatObservations(conversationId, [{ kind: 'user_message', time: now + 40,
+    messageId: 'new-question', text: 'A new task.', authoredNow: true }]);
+  expect(await readCompletedFinal(id, conversationId, turnId)).toBeNull();
+});
+
+it.each(['missing-end', 'different-end-message', 'different-turn', 'unowned', 'unproven-message', 'new-tool'] as const)(
+  'does not excuse post-final work without exact completed-response proof: %s', async proof => {
+  const conversationId = `completion-backfill-veto-${proof}`, turnId = 'source';
+  const nativeId = '11111111-2222-4333-8444-555555555555';
+  const now = Date.now();
+  const opened = await recordChatObservations(conversationId, [
+    { kind: 'user_message', time: now, messageId: 'question', text: 'Work' },
+    { kind: 'turn_start', time: now + 1, turnId },
+    { kind: 'assistant_message', time: now + 2, turnId, messageId: nativeId, providerMessageId: nativeId,
+      text: 'A final answer.', state: 'final', final: true },
+    ...(proof === 'missing-end' ? [] : [{ kind: 'turn_end' as const, time: now + 3, turnId,
+      providerMessageId: proof === 'different-end-message' ? 'different-final' : nativeId, outcome: 'completed' as const }])
+  ]);
+  await upsertMessageEvent(opened.sessionId!, { kind: 'assistant_message', source: 'extension', time: now + 4,
+    ...(proof === 'unowned' ? {} : { turnId: proof === 'different-turn' ? 'another-response' : turnId }),
+    ...(proof === 'unproven-message' ? {} : { providerMessageId: '22222222-2222-4333-8444-555555555555' }),
+    messageId: 'post-final-progress', state: 'streaming', final: false,
+    message: { text: 'More work', chars: 9, truncated: false } });
+  if (proof === 'new-tool') await appendEvent(opened.sessionId!, { kind: 'page_tool', source: 'extension',
+    time: now + 5, turnId, messageId: 'fresh-tool', label: 'Fresh native tool' });
+  expect(await readCompletedFinal(opened.sessionId!, conversationId, turnId)).toBeNull();
+});
+
 it.each(['question', 'rebind'] as const)('rejects a final snapshot when %s changes during its disk read', async change => {
   const conversationId = `completion-race-${change}`;
   const opened = await recordChatObservations(conversationId, [

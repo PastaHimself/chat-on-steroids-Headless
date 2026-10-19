@@ -5,7 +5,7 @@ import { ApiError, ControlClient } from './api.js';
 import { authorized, safeText, rememberSecret, type Bootstrap } from './config.js';
 import { definitions, helpDescription } from './commands.js';
 import { StateStore, snowflake, type Permission, type View } from './state.js';
-import { panel, buttons, select, sessionDescription, historyDescription, taskPlanDescription, resourceDescription, sessionStatusIndicator, inputDeliveryDescription, EmbedColor } from './ui.js';
+import { panel, buttons, select, sessionDescription, goalDescription, historyDescription, taskPlanDescription, resourceDescription, sessionStatusIndicator, inputDeliveryDescription, EmbedColor } from './ui.js';
 
 const sessionPath = (id: string) => {
   if (!/^[0-9a-z-]{8,64}$/.test(id)) throw new Error('Invalid local session ID');
@@ -143,7 +143,12 @@ export class DiscordController {
       }
       case 'goal': case 'loop': {
         const id = this.session(interaction), action = string('action');
-        if (action === 'status') return panel(`${name} state`, await this.api.request(`${sessionPath(id)}/controls`), [], [], { color: EmbedColor.Info });
+        if (action === 'status') {
+          const controls = await this.api.request(`${sessionPath(id)}/controls`);
+          const objective = controls.objective ? `\nSaved objective: ${controls.objective.slice(0, 1000)}${controls.objective.length > 1000 ? '… (shortened)' : ''}` : '';
+          return panel(`${name} state`, `Session: ${id}\n${goalDescription(controls)}${objective}`, [], [],
+            { color: controls.goalStatus?.needsAttention ? EmbedColor.Warning : EmbedColor.Info });
+        }
         if (name === 'goal' && string('objective')) {
           if (action !== 'on') throw new Error('Use action:on with an objective, or leave objective empty to switch modes without changing it.');
           return panel('Goal objective saved', await act('objective', { sessionId: id, objective: string('objective'), mode: 'goal' }), [], [], { color: EmbedColor.Success });
