@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
  * Check the real macOS/Windows UI job scope filters, not a duplicated matcher.
  * Backend-driven UI changes must not silently pass without Electron checks.
  */
-const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+const workflow = readFileSync(new URL('../.github/workflows/desktop-ci.yml', import.meta.url), 'utf8');
 const filters = [...workflow.matchAll(/grep -qE '([^']+)' "\$RUNNER_TEMP\/ui-changed-paths\.txt"/g)].map(([, expression]) => new RegExp(expression ?? ''));
 
 describe('GitHub Actions Electron UI coverage', () => {

@@ -5029,12 +5029,17 @@ off. Windows NSIS/Linux AppImage can apply automatically; macOS/DEB present the 
 path, development does not stage. Explicit install may relaunch; ordinary quit does not force
 relaunch. Failed checks never replace a verified staged candidate with unverified bytes.
 
-CI verifies supported OS families; native `release.yml` builds/smokes all six targets, then
-assembles installers, the Chromium extension ZIP, native-sources archive and `SHA256SUMS.txt`. `publish.yml`
-is dispatched **at the reviewed version tag**, calls that reusable build in the same run,
-requires `docs/release-notes/vX.Y.Z.md`, rechecks versions/privacy/hashes and refuses an existing
-release. A tag alone does not build/publish. An unpublished candidate can be built separately,
-but do not mix artifacts from another ref/run into a release.
+Default CI verifies Ubuntu 24.04 amd64/Node 24 for this Headless edition. `release.yml` owns the
+complete regressions, provenance build of app+Discord, deployment drills and isolated real
+Electron/Xvfb/browser lifecycle. It emits committed source, a stamped Chromium extension ZIP,
+`HEADLESS-BUILD.json` and strict `SHA256SUMS.txt`; these are source distributions, not installable
+native payloads. Rebuild the exact commit on the VPS before installation. `ci.yml`, manual
+`canary.yml` and version-tag-only `publish.yml` share that build. Stable publishing requires
+reviewed `docs/release-notes/vX.Y.Z.md`, verifies candidate bytes against the exact checkout,
+refuses an existing release and audits downloaded assets afterward. Only this fork's publish
+job has contents-write permission. A tag push alone does not publish. Inherited desktop
+validation/packaging/publishing is retained under manual `desktop-*.yml` entry points; community
+moderation schedules remain inactive here. See `docs/headless-actions.md`.
 
 What's New (#1172) shows a version's highlights once after a real update. `ui.lastSeenVersion`
 is the version this install last started as. Only the main process records it: on a fresh install

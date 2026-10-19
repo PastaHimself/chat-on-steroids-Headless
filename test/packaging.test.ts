@@ -170,20 +170,18 @@ describe('cross-platform packaging targets', () => {
       'Chat-On-Steroids-macOS-arm64.zip', 'Chat-On-Steroids-Linux-x64.AppImage', 'Chat-On-Steroids-Linux-x64.deb',
       'Chat-On-Steroids-Extension.zip', 'Chat-On-Steroids-Native-Sources.tar.gz']);
     expect(() => releaseTargets('some')).toThrow();
-    const canary = yamlFile('.github/workflows/canary.yml');
+    const canary = yamlFile('.github/workflows/desktop-canary.yml');
     expect(canary.jobs.candidate.with).toEqual({ platforms: 'common' });
-    // Built after every app-relevant push to main, and a running canary is never cancelled
-    // halfway through replacing the previous one.
-    expect(canary.on.push).toMatchObject({ branches: ['main'] });
-    expect(canary.on.push['paths-ignore']).toEqual(expect.arrayContaining(['docs/**', 'test/**']));
+    // Desktop compatibility is available deliberately, never on a Headless main push.
+    expect(canary.on).not.toHaveProperty('push');
     expect(canary.on).toHaveProperty('workflow_dispatch');
-    expect(canary.concurrency).toEqual({ group: 'canary', 'cancel-in-progress': false });
+    expect(canary.concurrency).toEqual({ group: 'desktop-canary', 'cancel-in-progress': false });
     // A stable release passes nothing, which is `all`.
-    expect(yamlFile('.github/workflows/publish.yml').jobs.candidate?.with?.platforms).toBeUndefined();
+    expect(yamlFile('.github/workflows/desktop-publish.yml').jobs.candidate?.with?.platforms).toBeUndefined();
   });
 
   it('publishes a canary checksum manifest that names only attached canary assets', () => {
-    const canary = yamlFile('.github/workflows/canary.yml');
+    const canary = yamlFile('.github/workflows/desktop-canary.yml');
     const steps = canary.jobs.publish.steps as Array<Record<string, any>>;
     const reverify = steps.find((step) => step.name === 'Re-verify the checksums');
     const narrow = steps.find((step) => step.name === 'Limit checksums to published canary assets');
@@ -200,7 +198,7 @@ describe('cross-platform packaging targets', () => {
   });
 
   it('skips a stale canary run before staging a replacement', () => {
-    const canary = yamlFile('.github/workflows/canary.yml');
+    const canary = yamlFile('.github/workflows/desktop-canary.yml');
     const steps = canary.jobs.publish.steps as Array<Record<string, any>>;
     const publish = steps.find((step) => step.name === 'Replace the canary prerelease');
     const script = String(publish?.run ?? '');
@@ -220,7 +218,7 @@ describe('cross-platform packaging targets', () => {
   });
 
   it('verifies a temporary draft before swapping the fixed canary tag', () => {
-    const canary = yamlFile('.github/workflows/canary.yml');
+    const canary = yamlFile('.github/workflows/desktop-canary.yml');
     const steps = canary.jobs.publish.steps as Array<Record<string, any>>;
     const publish = steps.find((step) => step.name === 'Replace the canary prerelease');
     const script = String(publish?.run ?? '');
@@ -263,7 +261,7 @@ describe('cross-platform packaging targets', () => {
   });
 
   it('fails closed on canary existence-probe errors and cleans temporary state', () => {
-    const canary = yamlFile('.github/workflows/canary.yml');
+    const canary = yamlFile('.github/workflows/desktop-canary.yml');
     const steps = canary.jobs.publish.steps as Array<Record<string, any>>;
     const publish = steps.find((step) => step.name === 'Replace the canary prerelease');
     const script = String(publish?.run ?? '');
@@ -304,8 +302,8 @@ describe('cross-platform packaging targets', () => {
   });
 
   it('assembles every platform artifact in the reusable release workflow', () => {
-    const workflow = readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
-    const parsed = yamlFile('.github/workflows/release.yml');
+    const workflow = readFileSync(path.join(root, '.github', 'workflows', 'desktop-release.yml'), 'utf8');
+    const parsed = yamlFile('.github/workflows/desktop-release.yml');
     // The matrix comes from the plan job, which reads .github/release-targets.json.
     expect(parsed.jobs.package.strategy.matrix.include).toBe('${{ fromJSON(needs.plan.outputs.include) }}');
     expect(parsed.jobs.plan.steps.at(-1).run).toBe('node scripts/release-targets.mjs "$PLATFORMS"');
@@ -527,7 +525,7 @@ describe('cross-platform packaging targets', () => {
     expect(packageScript).toContain("run(node, ['-e', \"require('electron')\"]);");
     expect(packageScript).toContain('COS_PACKAGE_ARCH: arch');
     expect(packageScript).toContain("run(node, ['scripts/smoke-packaged-runtime.mjs', ...targetArgs]);");
-    const releaseWorkflow = readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
+    const releaseWorkflow = readFileSync(path.join(root, '.github', 'workflows', 'desktop-release.yml'), 'utf8');
     expect(releaseWorkflow).toContain('HOME="$deb_smoke_root/home"');
     expect(releaseWorkflow).toContain('HOME="$smoke_root/home"');
     expect(releaseWorkflow).toContain('PATH="$launch_path"');
@@ -771,7 +769,7 @@ Load command 11
   });
 
   it('rejects invalid publishes before allocating the reusable six-runner build', () => {
-    const workflow = readFileSync(path.join(root, '.github', 'workflows', 'publish.yml'), 'utf8');
+    const workflow = readFileSync(path.join(root, '.github', 'workflows', 'desktop-publish.yml'), 'utf8');
     const preflight = workflow.indexOf('  preflight:');
     const candidate = workflow.indexOf('  candidate:');
     const publish = workflow.indexOf('  publish:');
@@ -797,8 +795,8 @@ Load command 11
     const tag = `v${pkg.version}`;
     const changelog = readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
     const notes = readFileSync(path.join(root, 'docs', 'release-notes', `${tag}.md`), 'utf8');
-    const publish = readFileSync(path.join(root, '.github', 'workflows', 'publish.yml'), 'utf8');
-    const release = readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
+    const publish = readFileSync(path.join(root, '.github', 'workflows', 'desktop-publish.yml'), 'utf8');
+    const release = readFileSync(path.join(root, '.github', 'workflows', 'desktop-release.yml'), 'utf8');
 
     expect(lock.version).toBe(pkg.version);
     expect(lock.packages?.['']?.version).toBe(pkg.version);

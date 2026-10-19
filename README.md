@@ -8,6 +8,8 @@ Browser sign-in, keyring provisioning and provider approvals require an interact
 
 [Install on a VPS](docs/headless-vps.md) · [Discord commands](docs/discord-commands.md) · [Recovery guide](docs/reliability-rollout.md) · [Validation status](docs/headless-validation.md)
 
+GitHub Actions validates the Ubuntu 24.04/Node 24 backend and Discord build and attaches a verified source candidate to successful runs. See [builds and releases](docs/headless-actions.md) for downloads, version-tag publishing and the required VPS build step.
+
 ## What this edition provides
 
 - **Discord control:** start conversations, send tasks, select projects and observed models, inspect results, manage workers and control Goal/Loop.
