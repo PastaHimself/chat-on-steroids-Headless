@@ -3786,6 +3786,45 @@ while preserving pending source debt; master Off explicitly retires that debt. H
 never counts as a source decision. Settled transport/settings failures retain their retry fence
 and do not trigger source reloads while awaiting intervention. Normal and restored committed
 resumes share one projection: move objective/switch, retire A's debt, and let B earn its own.
+Before a ready Goal continuation is exposed to the browser, its source reply ledger must
+durably record possible native Send (`deliveryUncertainAt`). A rejected write must never
+publish that draft as ready. Lost ACK or backend restart cannot turn the same uncertain
+source into a second automatic Send; the pending owner remains retained but excluded
+from automatic pickup until exact receipt reconciliation or deliberate user reactivation.
+Upgrading provisional `turn:<id>` ownership to a stable assistant ID preserves this fence.
+Browser and Discord recovery projections must show the uncertainty as a manual blocker,
+not successful completion or a new reload authorization.
+An exact browser-owned `nativeBusy` deferral proven before Send can clear its
+uncertain marker only with a durable write; rejection restores the hold. A
+different final that wins while the offer write is in flight retires the stale
+draft instead of leaving a phantom busy helper. Expired sources still obey the
+twelve-hour manual-resume rule, and uncertain sources cannot reserve pickup
+reloads or a native recovery Stop.
+An active Goal reply older than 12 hours becomes a handled tombstone with a durable expiration
+reason; session recovery and Discord display a manual-resume blocker for the same verified
+source. No automatic Send occurs after expiry. The 200-row cap applies to new pending
+admissions: reject a full queue visibly and prune handled history first. A restored legacy
+ledger with more than 200 pending replies retains all accepted work for reconciliation.
+When persisting a newly accepted reply fails, its rollback may restore only the exact reply
+object still owned by that failed attempt. A newer reply accepted during the write must survive,
+including after restart. The single-use native recovery Stop claim is returned to the pending
+reply if its durable reservation fails, so a failed write cannot exhaust the claim in memory.
+An app-wide Goal Off is committed in `config.json` together with a new master-Off generation.
+Per-chat switches record the generation in which they were accepted; older switches cannot
+grant execution even when a crash interrupts the separate override cleanup. Goals saved before
+master Off remain visible but cannot implicitly rearm execution under that Off. A later
+deliberate per-chat On records the current generation and remains valid if delayed cleanup
+arrives afterward. Queued per-chat objective, switch or compound-control requests from before
+Off must fail if they cross that boundary. A pending compound-control journal records its
+admission generation: recovery supersedes pre-Off intent after a newer committed master Off,
+and still refuses any row that has since acquired a different accepted owner.
+The cross-ledger journal must receive the generation captured when the combined control
+operation was admitted. Reading the live config generation later, after awaited session
+reads, could wrongly label stale pre-Off intent as post-Off and let restart roll it forward.
+Typing a fresh, nonempty objective in a chat with no own switch after master Off is an explicit
+new command. Its objective row records the current generation in the existing combined durable
+transaction; the switch remains inherited, preserving the UI and Goal/Loop mode contract.
+An unedited saved objective never gains authority by itself.
 Current persistence/publication exceptions are in §21.
 
 ## 18. Desktop workspace, plugins, connection and native control
@@ -5024,9 +5063,11 @@ shared-tree change may already have addressed them.
   the awaited durable write; synchronous clear/move paths and objective/reply mutations do not
   all share the same semantic transaction. Intent is durable commit before visible state, with
   rollback unable to overwrite a newer accepted change.
-- **Goal cross-ledger controls:** master/config/secret changes still cross separate ledgers.
-  Attempt invalidation now preserves debt, but these remaining controls still need one durable
-  semantic transaction and effective current-setting enforcement.
+- **Goal cross-ledger controls:** committed master Off now fences older per-chat switch and
+  journal intents across restart, even if its separate cleanup did not finish. Config changes
+  other than master Off and secret/key replacement still cross separate ledgers; their pending
+  draft invalidation and settings enforcement require continued end-to-end review. No current
+  test proves a simultaneous provider-secret rotation and live browser Send is atomic.
 
 Do not restore obsolete claims while investigating: two MCP surfaces, one global prime run,
 three browser command kinds, fixed 60s Unattributed repair, tab-query

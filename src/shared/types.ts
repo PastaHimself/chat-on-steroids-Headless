@@ -278,6 +278,8 @@ export interface GoalProviderSettings {
 }
 
 export interface GoalSettings {
+  /** Durable master-Off fence; per-chat controls from earlier generations cannot rearm work. */
+  masterOffGeneration?: string;
   /** Optional active-turn Goal impulses; zero disables them. */
   impulseMinutes?: number;
   /** Include tool details in handoff briefs only; Goal/Loop always use authored conversation text. */

@@ -1668,6 +1668,21 @@ it('durably queues all finish-plan stages immediately and keeps manual deletion 
   expect((await listInputs()).filter(row => row.text === 'Delete this checkpoint')).toHaveLength(1);
 });
 
+it('keeps every accepted Plan checkpoint across 4 to 72 simulated hours and repeated restarts', async () => {
+  await enqueueInput(input({ mode: 'finish', text: 'Implement the change',
+    stages: ['Verify behavior', 'Review and publish'] }));
+  const accepted = (await listInputs()).filter(row => row.mode === 'finish').map(row => ({ id: row.id, text: row.text }));
+  expect(accepted.map(row => row.text)).toEqual(['Implement the change', 'Verify behavior', 'Review and publish']);
+  for (const hours of [4, 8, 12, 24, 48, 72]) {
+    now = 1000 + hours * 60 * 60_000;
+    resetInputForTests();
+    const restored = (await listInputs()).filter(row => row.mode === 'finish');
+    expect(restored.map(row => ({ id: row.id, text: row.text }))).toEqual(accepted);
+    expect(restored.every(row => row.state === 'queued')).toBe(true);
+    expect(await pendingBrowserInputs()).toEqual([]);
+  }
+});
+
 it('materializes remaining plan stages once after exact delivery, across restart', async () => {
   const first = input({ sessionId: null, model: 'gpt-5.6-sol', reasoningEffort: 'high', stages: ['Implement remaining work', 'Verify acceptance'] });
   await enqueueInput(first);

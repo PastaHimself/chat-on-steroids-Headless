@@ -91,6 +91,8 @@ import {
   goalArmedFor,
   goalObjectiveFor,
   goalPendingReplyFor,
+  goalDeliveryUncertainFor,
+  goalExpiredReplyFor,
   goalReplySourceTurn,
   consumeGoalReplyForInputNow,
   goalSwitchFor,
@@ -4110,6 +4112,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         origin
       );
     }
+    // Renewed native work has priority over this hold; otherwise an uncertain
+    // browser Send cannot authorize drafting the same completed turn again.
+    if (goalDeliveryUncertainFor(id) && !goalViewFor(id, clientId))
+      return goalJson(res, 409, { error: 'goal_delivery_uncertain', retryable: false }, origin);
     let draft;
     try {
       // Reserve the browser owner synchronously, but do not let provider work begin until the
@@ -4134,6 +4140,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           origin
         );
       }
+      if (err instanceof Error && err.message === 'goal_delivery_uncertain')
+        return goalJson(res, 409, { error: 'goal_delivery_uncertain', retryable: false }, origin);
       throw err;
     }
     // The page has crossed the semantic boundary: this exact completed ChatGPT turn is owed
@@ -7534,6 +7542,32 @@ async function sessionRecoveryCountdowns(sessionId: string, conversationId: stri
   // future, not-yet-handed recovery notices; its deadline still fences calls.
   const providerLimit = providerHistoryBackoff(conversationId);
   if (providerLimit) return [{ kind: 'provider-limit', deadline: providerLimit }];
+  const uncertainGoal = goalArmedFor(conversationId) ? goalDeliveryUncertainFor(conversationId) : null;
+  // A live but uncollected ready draft is normally still in browser delivery.
+  // After the composer wait window it is no longer safe to present it as active
+  // progress indefinitely, even if the backend kept its in-memory draft.
+  if (uncertainGoal?.sessionId === sessionId &&
+      (!goalViewFor(conversationId) || Date.now() - uncertainGoal.at >= 2 * 60_000) &&
+      runningToolCalls(conversationId) === 0) {
+    const [latest] = await readRecentEvents(sessionId, 1, { kinds: ['user_message', 'turn_start'] });
+    const position = latest?.kind === 'user_message' ? latest.origin ?? latest.seq : latest?.seq ?? 0;
+    const source = await goalReplySourceTurn(sessionId, uncertainGoal.turnId);
+    if (source && !(latest && ((uncertainGoal.eventSeq > 0 && position > uncertainGoal.eventSeq) ||
+        (latest.kind === 'turn_start' && latest.turnId !== source)))) {
+      return [{ kind: 'goal-delivery-uncertain', deadline: uncertainGoal.at, next: goalModeFor(conversationId) }];
+    }
+  }
+  const expiredGoal = goalArmedFor(conversationId) ? goalExpiredReplyFor(conversationId) : null;
+  if (expiredGoal?.sessionId === sessionId && runningToolCalls(conversationId) === 0) {
+    const [latestQuestion] = await readRecentEvents(sessionId, 1, { kinds: ['user_message', 'turn_start'] });
+    const position = latestQuestion?.kind === 'user_message'
+      ? latestQuestion.origin ?? latestQuestion.seq : latestQuestion?.seq ?? 0;
+    const source = await goalReplySourceTurn(sessionId, expiredGoal.turnId);
+    if (source && !(latestQuestion && ((expiredGoal.eventSeq > 0 && position > expiredGoal.eventSeq) ||
+        (latestQuestion.kind === 'turn_start' && latestQuestion.turnId !== source)))) {
+      return [{ kind: 'goal-expired', deadline: expiredGoal.expiredAt, next: goalModeFor(conversationId) }];
+    }
+  }
   if (recovery?.silenceBoundary && recoveryInputAllowed(sessionId, conversationId)) {
     const wait = recovery.silenceBoundary.listenUntil ?? 0;
     const pickup = pickupWatch.get(conversationId);

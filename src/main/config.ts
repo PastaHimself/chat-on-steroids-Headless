@@ -13,6 +13,7 @@ import { CONNECTOR_SUFFIX_MAX, CONNECTOR_SUFFIX_PATTERN } from '../shared/connec
  */
 
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -435,6 +436,7 @@ const configSchema = z.object({
   // every root and permission in it intact.
   goal: z
     .object({
+      masterOffGeneration: z.string().uuid().optional(),
       impulseMinutes: z.number().int().min(0).max(60).optional().default(0).catch(0),
       includeToolCalls: z.boolean().optional().default(false),
       enabled: z.boolean().optional().default(DEFAULT_GOAL.enabled),
@@ -809,6 +811,11 @@ export function updateConfig(
     const previous = current;
     // Validate before reserving external resources. The optional publisher owns their rollback.
     const proposed = configSchema.parse(await update(previous));
+    // Config is the authority for master Off. Persist its new generation in the
+    // *same* commit as Off, before the separate chat-switch cleanup can run.
+    // Never trust a stale settings form to supply or roll back this generation.
+    proposed.goal.masterOffGeneration = previous.goal.enabled && !proposed.goal.enabled
+      ? randomUUID() : previous.goal.masterOffGeneration;
     const persist = () => persistConfig(proposed);
     const next = await (publish ? publish(proposed, previous, persist) : persist());
     // Keep dependent durable retirement inside the same settings transaction;
