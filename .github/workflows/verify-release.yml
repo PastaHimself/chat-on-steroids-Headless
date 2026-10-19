@@ -22,7 +22,7 @@ permissions:
 jobs:
   verify:
     # Legacy desktop releases and prereleases have a different artifact contract.
-    if: github.repository == 'PastaHimself/chat-on-steroids-Headless' && (github.event_name != 'release' || (github.event.release.prerelease == false && contains(github.event.release.assets.*.name, 'HEADLESS-BUILD.json')))
+    if: github.repository == 'PastaHimself/chat-on-steroids-Headless' && (github.event_name != 'release' || (github.event.release.prerelease == false && (contains(github.event.release.assets.*.name, 'HEADLESS-BUILD.json') || contains(github.event.release.assets.*.name, 'Chat-On-Steroids-Headless-Source.tar.gz') || contains(github.event.release.assets.*.name, 'Chat-On-Steroids-Headless-Extension.zip'))))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

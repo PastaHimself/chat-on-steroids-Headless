@@ -1,7 +1,9 @@
 // Source-distribution artifacts. This is not a portable native payload or a deployment attestation.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { zipSync, unzipSync } from 'fflate';
@@ -9,8 +11,17 @@ import { assertCommittedSource } from './headless-provenance.mjs';
 import { extensionStamp } from './write-extension-stamp.mjs';
 
 export const CANDIDATE_FILES = ['Chat-On-Steroids-Headless-Source.tar.gz', 'Chat-On-Steroids-Headless-Extension.zip', 'HEADLESS-BUILD.json'];
-const sum = bytes => createHash('sha256').update(bytes).digest('hex');
 const git = (root, args) => execFileSync('git', args, { cwd: root, maxBuffer: 128 * 1024 * 1024 });
+async function hashFile(file) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
+function archive(root, commit, file) {
+  // This repository includes large historical assets. Write directly to disk rather
+  // than collecting the entire compressed source in an execFileSync stdout buffer.
+  git(root, ['archive', '--format=tar.gz', '--prefix=chat-on-steroids-headless/', `--output=${file}`, commit]);
+}
 
 function identity(root, commit, tag) {
   const head = git(root, ['rev-parse', 'HEAD']).toString().trim();
@@ -37,11 +48,12 @@ export async function createCandidate({ root, dir, commit, tag }) {
   const info = identity(root, commit, tag);
   // Never overwrite a previous run's candidate or mix it with other artifacts.
   await fs.mkdir(dir);
-  const source = git(root, ['archive', '--format=tar.gz', '--prefix=chat-on-steroids-headless/', commit]);
+  archive(root, commit, path.join(dir, CANDIDATE_FILES[0]));
   const extension = zipSync(extensionEntries(root, commit), { level: 9, mtime: new Date('1980-01-01T00:00:00Z') });
-  const payloads = [source, extension, Buffer.from(JSON.stringify(info, null, 2) + '\n')];
-  for (const [index, name] of CANDIDATE_FILES.entries()) await fs.writeFile(path.join(dir, name), payloads[index]);
-  await fs.writeFile(path.join(dir, 'SHA256SUMS.txt'), CANDIDATE_FILES.map((name, index) => `${sum(payloads[index])}  ${name}\n`).join(''));
+  await fs.writeFile(path.join(dir, CANDIDATE_FILES[1]), extension);
+  await fs.writeFile(path.join(dir, CANDIDATE_FILES[2]), JSON.stringify(info, null, 2) + '\n');
+  const checksums = await Promise.all(CANDIDATE_FILES.map(async name => `${await hashFile(path.join(dir, name))}  ${name}\n`));
+  await fs.writeFile(path.join(dir, 'SHA256SUMS.txt'), checksums.join(''));
   await verifyCandidate({ root, dir, commit, tag });
 }
 
@@ -59,12 +71,16 @@ export async function verifyCandidate({ root, dir, commit, tag }) {
     hashes.set(match[2], match[1]);
   }
   if (hashes.size !== CANDIDATE_FILES.length) throw new Error('Candidate checksum missing');
-  for (const name of CANDIDATE_FILES) if (sum(await fs.readFile(path.join(dir, name))) !== hashes.get(name)) throw new Error(`Candidate checksum differs: ${name}`);
+  for (const name of CANDIDATE_FILES) if (await hashFile(path.join(dir, name)) !== hashes.get(name)) throw new Error(`Candidate checksum differs: ${name}`);
   const info = JSON.parse(await fs.readFile(path.join(dir, CANDIDATE_FILES[2]), 'utf8'));
   if (JSON.stringify(info) !== JSON.stringify(expectedInfo)) throw new Error('Candidate metadata differs from checkout');
   // Do not extract an untrusted archive. Recreate its exact bytes from the reviewed commit.
-  const source = git(root, ['archive', '--format=tar.gz', '--prefix=chat-on-steroids-headless/', commit]);
-  if (sum(source) !== hashes.get(CANDIDATE_FILES[0])) throw new Error('Candidate archive differs from committed source');
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-source-check-'));
+  try {
+    const source = path.join(temporary, 'source.tar.gz');
+    archive(root, commit, source);
+    if (await hashFile(source) !== hashes.get(CANDIDATE_FILES[0])) throw new Error('Candidate archive differs from committed source');
+  } finally { await fs.rm(temporary, { recursive: true, force: true }); }
   const actual = unzipSync(await fs.readFile(path.join(dir, CANDIDATE_FILES[1])));
   const expected = extensionEntries(root, commit);
   if (JSON.stringify(Object.keys(actual).sort()) !== JSON.stringify(Object.keys(expected).sort()) ||

@@ -29,6 +29,7 @@ describe('Headless Actions entry points', () => {
     expect(commands.indexOf('npm run verify:ci')).toBeLessThan(commands.indexOf('npm run headless:build'));
     expect(commands).not.toMatch(/--no-sandbox|npm run dist|verify:ui/);
     expect(commands).toContain('COS_SMOKE_BROWSER');
+    expect(steps.some((step: any) => step.env?.COS_PLUGIN_LIVE_TEST === '1')).toBe(true);
   });
 
   it('does not automatically publish a rolling desktop canary or run desktop runners', () => {
@@ -63,6 +64,7 @@ describe('Headless Actions entry points', () => {
     expect(commands).toContain('scripts/check-release-absent.mjs');
     expect(commands).toContain('--repo "$GITHUB_REPOSITORY"');
     expect(commands).toContain('--verify-tag');
+    expect(commands).toContain('test "$tag_commit" = "$(git rev-parse HEAD)"');
     expect(commands).not.toMatch(/gh release delete|--clobber|totec448-spec/);
     expect(workflow('verify-release').jobs.verify.steps.some((step: any) => step.run?.includes('scripts/headless-candidate.mjs verify'))).toBe(true);
   });
