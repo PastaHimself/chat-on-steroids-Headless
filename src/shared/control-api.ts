@@ -7,6 +7,7 @@
  * URLs, tunnel ids, plugin sources and config values) are deliberately absent, not masked.
  */
 import type { ChatgptProjectWait } from './projects.js';
+import type { GoalStatus } from './goal.js';
 
 export const CONTROL_API_PROTOCOL = 1;
 
@@ -205,6 +206,7 @@ export interface ControlApiLive {
   finishWaiting: boolean;
   /** Why an armed goal or loop has not sent its next instruction yet. `until` is null when the wait has no deadline. */
   goalWait: { reason: string; until: number | null } | null;
+  goalStatus?: GoalStatus | null;
   /** Deadlines the app is holding for this chat: the reasons it has not acted yet. */
   recovery: ControlApiRecovery[];
   job: ControlApiJob | null;

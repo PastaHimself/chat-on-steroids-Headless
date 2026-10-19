@@ -268,6 +268,18 @@ describe('projectLive', () => {
     }
   });
 
+  it('projects Goal source and gate diagnostics without leaking decision payloads or credentials', () => {
+    const status = { pending: true, sourceTurnId: 'exact-source', acceptedAt: 1_000, finalConfirmed: false,
+      stage: 'failed', owner: 'recorder' as const, nextCheckAt: null, needsAttention: true,
+      error: `Provider refused ${apiKey}`, reply: 'SENTINEL-REPLY', token: 'SENTINEL-TOKEN' };
+    const projected = reads.projectLive(controls({ goalStatus: status })).goalStatus!;
+    expect(projected).toMatchObject({ pending: true, sourceTurnId: 'exact-source', finalConfirmed: false,
+      owner: 'recorder', nextCheckAt: null, needsAttention: true });
+    expect(projected.error).toContain('[redacted]');
+    expect(JSON.stringify(projected)).not.toContain(apiKey);
+    expect(JSON.stringify(projected)).not.toContain('SENTINEL');
+  });
+
   it('carries a job through each stage and send state, without its token or handles', () => {
     for (const stage of ['handoff-pending', 'opening', 'waiting-for-browser', 'done', 'failed'] as const) {
       const busy = stage !== 'done' && stage !== 'failed';
