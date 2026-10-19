@@ -9,7 +9,7 @@ import { ControlClient } from '../discord/src/api.js';
 import { definitions, commands, helpDescription } from '../discord/src/commands.js';
 import { DiscordController } from '../discord/src/bot.js';
 import { Notifications, recordedFinal } from '../discord/src/notifications.js';
-import { EmbedColor, inputDeliveryDescription, sessionStatusIndicator, sessionDescription } from '../discord/src/ui.js';
+import { EmbedColor, inputDeliveryDescription, sessionStatusIndicator, sessionDescription, goalDescription } from '../discord/src/ui.js';
 
 const admin = '111111111111111111', other = '222222222222222222', guild = '333333333333333333', channel = '444444444444444444';
 let dir: string; let store: StateStore; let config: Bootstrap;
@@ -53,6 +53,44 @@ beforeEach(async () => {
 });
 afterEach(async () => { await removeTempDir(dir); vi.restoreAllMocks(); });
 describe('Discord commands and authorization', () => {
+  it('explains a pending Goal source, its recorder gate and unknown reevaluation without calling the objective complete', () => {
+    const live = { automation: 'goal', activeTurnId: null, goalWait: { reason: 'settling', until: null },
+      goalStatus: { pending: true, sourceTurnId: 'exact-source', acceptedAt: 1000, finalConfirmed: false,
+        stage: null, owner: 'recorder', nextCheckAt: null, needsAttention: false, error: null } };
+    const text = goalDescription(live);
+    expect(text).toContain('Pending continuation');
+    expect(text).toContain('exact-source');
+    expect(text).toContain('Canonical final: not confirmed');
+    expect(text).toContain('Waiting on: recorder');
+    expect(text).toContain('Next reevaluation: time unknown');
+    expect(JSON.stringify(sessionDescription({ session: { updatedAt: 1, lastTurnOutcome: 'completed' }, live }))).toContain('exact-source');
+    expect(JSON.stringify(sessionDescription({ session: { updatedAt: 1, lastTurnOutcome: 'completed' }, live }))).not.toContain('turn only');
+    expect(sessionStatusIndicator({ live }).text).toBe('Waiting');
+  });
+  it('distinguishes a failed decision and a no-reply decision from successful Goal completion', () => {
+    const live = { automation: 'goal', goalStatus: { pending: true, stage: 'failed', owner: 'goal',
+      nextCheckAt: null, needsAttention: true, error: 'no_api_key' } };
+    expect(sessionStatusIndicator({ live }).text).toBe('Attention Needed');
+    expect(goalDescription(live)).toContain('no_api_key');
+    expect(goalDescription(live)).toContain('Manual intervention: required');
+    const stopped = { ...live, goalStatus: { ...live.goalStatus, pending: false, stage: 'no-reply', needsAttention: false, error: null } };
+    expect(goalDescription(stopped)).toContain('no further instruction');
+    expect(goalDescription(stopped)).not.toContain('Goal complete');
+  });
+  it('renders goal action:status from the backend gate without issuing a control mutation', async () => {
+    const api = backend();
+    api.request.mockResolvedValueOnce({ automation: 'goal', objective: 'Complete all six stages.' + ' details'.repeat(1000),
+      goalWait: { reason: 'workers', until: null }, goalStatus: { pending: true, sourceTurnId: 'source',
+        owner: 'workers', finalConfirmed: true, nextCheckAt: null, needsAttention: false, stage: null } });
+    const result = await new DiscordController(config, store, api as unknown as ControlClient)
+      .command(interaction('goal', { action: 'status' }));
+    const description = result.embeds[0].toJSON().fields?.map(f => f.value).join('\n') || '';
+    expect(description).toContain('Waiting on: workers');
+    expect(description).toContain('Canonical final: confirmed (turn only)');
+    expect(description).toContain('Complete all six stages.');
+    expect(description!.length).toBeLessThan(3900);
+    expect(api.action).not.toHaveBeenCalled();
+  });
   it('reports a provider restriction and compaction attention before a stale open turn', () => {
     const limited = { session: { updatedAt: Date.now() }, live: { activeTurnId: 'open-but-unverified',
       recovery: [{ kind: 'provider-limit', deadline: Date.now() + 60_000 }] } };

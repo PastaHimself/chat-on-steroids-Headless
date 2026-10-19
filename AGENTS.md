@@ -3750,6 +3750,12 @@ be followed by a resurrected activity grant. This also releases queued input and
 Goal/Loop without waiting for an obsolete silence deadline.
 A full canonical final consumes silence immediately, including an
 exact final first backfilled after a completed turn; interim prose and Stop/Send changes never do.
+When the native terminal message and the completed lifecycle name that exact same provider
+message and response, later-recorded native interim paragraphs of that response cannot make
+the final unfinished again. Their write cursors are not new generations. Unowned prose, a
+different response, newer questions/starts and independent tool work retain their vetoes.
+This completed-final projection is shared by Goal, input and worker settlement and works on
+existing durable history without rewriting ledgers or inventing an execution clock.
 A completed MCP-backed response without final text is a recovery indication, not a terminal error:
 normal chats use two minutes before reload and one minute of listening after confirmed reload.
 An unfinished response uses shared Continue recovery; a canonical final releases Goal/Loop
@@ -3850,7 +3856,12 @@ for an unbound admitted local session, so a legitimate `no_chat` cannot hide its
 Discord status prioritizes provider restrictions, compaction attention and recovery attempts
 over a saved open-turn marker. An open recorded turn is shown as Turn Open and does not prove
 provider liveness; a reload alone does not prove assistant recovery. Recovery kinds/deadlines
-remain read-only projections of existing owners.
+remain read-only projections of existing owners. `goalStatus` projects the pending reply and
+source turn, canonical-final confirmation, decision stage/error, waiting owner, known next
+check and manual attention. Unknown reevaluation times stay explicitly unknown. Discord
+`/status` and `/goal action:status` distinguish turn completion from a Goal decision, pending
+delivery and a technical failure. A no-reply decision is reported as that decision, never
+as independent verification that every objective acceptance check passed.
 Status and empty history project the existing outbox proof (queued awaiting claim, claimed before
 authorization, unconfirmed Send, confirmed receipt, or terminal non-delivery), startup diagnostics
 and provider attribution separately. These projections never retry or grant delivery authority.

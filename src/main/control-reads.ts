@@ -227,6 +227,13 @@ export function projectLive(controls: SessionControlsView): ControlApiLive {
     finishHeld: controls.finishHeld,
     finishWaiting: controls.finishWaiting === true,
     goalWait: goalWait ? { reason: goalWait.reason, until: goalWait.until ?? null } : null,
+    ...(controls.goalStatus ? { goalStatus: {
+      pending: controls.goalStatus.pending, sourceTurnId: controls.goalStatus.sourceTurnId,
+      acceptedAt: controls.goalStatus.acceptedAt, finalConfirmed: controls.goalStatus.finalConfirmed,
+      stage: controls.goalStatus.stage, owner: controls.goalStatus.owner,
+      nextCheckAt: controls.goalStatus.nextCheckAt, needsAttention: controls.goalStatus.needsAttention,
+      error: controls.goalStatus.error ? line(controls.goalStatus.error, SUMMARY_CAP) : null
+    } } : {}),
     recovery: (controls.recovery ?? []).slice(0, MAX_RECOVERY).map((wait) => ({
       kind: wait.kind,
       deadline: wait.deadline,

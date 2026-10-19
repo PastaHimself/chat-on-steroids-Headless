@@ -86,7 +86,7 @@ export function sessionStatusIndicator(detail: any): { emoji: string; text: stri
   if (live?.recovery?.some((row: any) => row.kind === 'provider-limit')) {
     return { emoji: '🟡', text: 'Rate Limited', color: EmbedColor.Warning };
   }
-  if (live?.job?.needsAttention) {
+  if (live?.job?.needsAttention || live?.goalStatus?.needsAttention) {
     return { emoji: '🟡', text: 'Attention Needed', color: EmbedColor.Warning };
   }
   if (live?.recovery?.some((row: any) => row.kind === 'pickup-stopped' || row.kind === 'goal-expired' || row.kind === 'goal-delivery-uncertain')) {
@@ -101,7 +101,32 @@ export function sessionStatusIndicator(detail: any): { emoji: string; text: stri
   if (live?.goalWait) {
     return { emoji: '🟡', text: 'Waiting', color: EmbedColor.Warning };
   }
+  if (live?.goalStatus?.stage === 'failed') return { emoji: '🟡', text: 'Decision Failed', color: EmbedColor.Warning };
+  if (live?.goalStatus?.stage === 'ready') return { emoji: '🟡', text: 'Continuation Ready', color: EmbedColor.Warning };
+  if (live?.goalStatus?.pending || ['sending', 'answering'].includes(live?.goalStatus?.stage))
+    return { emoji: '🟡', text: 'Goal Pending', color: EmbedColor.Warning };
   return { emoji: '⚪', text: 'Idle', color: EmbedColor.Info };
+}
+
+/** These diagnostics describe existing authority; a time or pending row never permits a retry. */
+export function goalDescription(live: any): string {
+  const goal = live?.goalStatus;
+  if (!goal) return `Automation: ${live?.automation ?? 'unavailable'}${live?.goalWait ? `\nWaiting: ${live.goalWait.reason}` : ''}`;
+  return [
+    `Automation: ${live.automation ?? 'unavailable'}`,
+    goal.pending ? 'Pending continuation: saved source reply still owes a decision or delivery.' : 'Pending continuation: none recorded.',
+    goal.sourceTurnId ? `Source turn: ${goal.sourceTurnId}` : '',
+    Number.isFinite(goal.acceptedAt) ? `Reply accepted: ${new Date(goal.acceptedAt).toISOString()}` : '',
+    goal.finalConfirmed === null || goal.finalConfirmed === undefined ? '' : `Canonical final: ${goal.finalConfirmed ? 'confirmed (turn only)' : 'not confirmed'}`,
+    goal.stage === 'no-reply' ? 'Goal decision: no further instruction. This is the decision result, not independent proof of objective completion.'
+      : goal.stage ? `Goal decision: ${goal.stage}` : '',
+    live.goalWait ? `Waiting: ${live.goalWait.reason}` : '',
+    goal.pending || live.goalWait || goal.stage === 'failed' ? `Waiting on: ${goal.owner}` : '',
+    goal.pending || live.goalWait ? `Next reevaluation: ${Number.isFinite(goal.nextCheckAt) ? new Date(goal.nextCheckAt).toISOString() : 'time unknown; depends on new owner/browser evidence.'}` : '',
+    goal.error ? `Goal diagnostic: ${goal.error}` : '',
+    goal.needsAttention ? 'Manual intervention: required; inspect the diagnostic and existing receipts before retrying.'
+      : 'Manual intervention: not currently indicated.'
+  ].filter(Boolean).join('\n');
 }
 
 /** Read-only projection of the outbox's proof; inspecting it never authorizes retry. */
@@ -142,6 +167,12 @@ export function sessionDescription(detail: any): PanelField[] {
   if (live?.goalWait) automation.push(`**Waiting:** ${live.goalWait.reason}`);
   if (live?.recovery && live.recovery.length > 0) {
     automation.push(`**Recovery:**\n${live.recovery.map((row: any) => `• ${row.kind}${Number.isFinite(row.deadline) ? ` (deadline: <t:${Math.floor(row.deadline / 1000)}:R>)` : ''}`).join('\n')}`);
+  }
+  const gd = goalDescription(live);
+  if (gd && !gd.startsWith('Automation:')) automation.push(gd);
+  else if (gd && live?.automation === 'goal') {
+      const gdl = gd.split('\n').slice(1).join('\n');
+      if (gdl) automation.push(gdl);
   }
   fields.push({ name: 'Automation & Health', value: automation.join('\n'), inline: false });
 

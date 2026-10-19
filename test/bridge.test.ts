@@ -14220,6 +14220,76 @@ describe('the goal loop over the bridge', () => {
     resetGoalStateForTests();
   });
 
+  it.each([false, true])('continues an unfinished Goal through late interim backfill and then stops on the next decision (restart=%s)', async restart => {
+    await pair();
+    const events = (conversationId: string, events: Record<string, unknown>[]) => request('POST', '/events', { body: { conversationId, events } });
+    const openTurn = (turnId: string) => ({ kind: 'turn_start', time: Date.now(), turnId });
+    const endTurn = (turnId: string, outcome: string) => ({ kind: 'turn_end', time: Date.now(), turnId, outcome });
+    const chat = randomUUID(), turnId = 'backfilled-goal-source';
+    const nativeId = '11111111-2222-4333-8444-555555555555';
+    const now = Date.now();
+    const recorded = await events(chat, [
+      { kind: 'user_message', time: now, messageId: 'six-stage-task', text: 'Complete all six stages.' },
+      openTurn(turnId),
+      { kind: 'assistant_message', time: now, messageId: nativeId, providerMessageId: nativeId, turnId,
+        text: 'One of six stages is complete; five remain.', final: true, state: 'final', goalEligible: true, activeNow: true },
+      { ...endTurn(turnId, 'completed'), providerMessageId: nativeId }
+    ]);
+    const sessionId = recorded.body.sessionId;
+    await events(chat, [1, 2, 3].map(n => ({ kind: 'assistant_message', time: now + 1,
+      authoredAt: now - 1000 + n, messageId: `late-progress-${n}`, providerMessageId: randomUUID(),
+      turnId, text: `Inspecting stage ${n}`, state: 'streaming', activeNow: true })));
+    const pending = goalPendingReplyFor(chat);
+    expect(pending).toMatchObject({ turnId });
+    if (restart) {
+      await flushDurable(); await sessionStoreModule.flushSessions();
+      resetRecorderForTests(); resetSessionStoreForTests(); resetGoalStateForTests();
+      const goal = await import('../src/main/goal.js');
+      goal.restoreGoalReplies(await readDurable<import('../src/main/goal.js').GoalRepliesSnapshot>(GOAL_REPLIES_STATE));
+      goal.restoreGoalSwitches(await readDurable<import('../src/main/goal.js').GoalSwitchesSnapshot>(GOAL_SWITCHES_STATE));
+      expect(goalPendingReplyFor(chat)).toMatchObject({ turnId, acceptedAt: pending!.acceptedAt });
+    }
+    let calls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      calls++;
+      return Response.json({ choices: [{ message: { content: JSON.stringify(calls === 1
+        ? { action: 'continue', reply: 'Complete the five remaining stages and verify them together.' }
+        : { action: 'stop', reply: '' }) } }] });
+    }) as never;
+    try {
+      const body = { conversationId: chat, turnId, clientId: 'backfill-page' };
+      const draft = await request('POST', '/goal/draft', { body });
+      expect(draft.status, JSON.stringify(draft.body)).toBe(200);
+      expect((await sessionControlsFor(sessionId)).goalStatus).toMatchObject({
+        pending: true, sourceTurnId: turnId, finalConfirmed: true, needsAttention: false
+      });
+      const goal = await import('../src/main/goal.js');
+      await vi.waitFor(() => expect(goal.goalViewFor(chat)?.stage).toBe('ready'));
+      expect((await request('POST', '/goal/draft', { body })).body.goal.token).toBe(draft.body.goal.token);
+      expect(calls).toBe(1);
+      const feed = await request('GET', `/activity?conversationId=${chat}&goalClient=backfill-page`);
+      expect(feed.body.goal.draft.stage).toBe('ready');
+      expect((await readDurable<import('../src/main/goal.js').GoalRepliesSnapshot>(GOAL_REPLIES_STATE))?.replies
+        .find(row => row.conversationId === chat)?.deliveryUncertainAt).toBeTypeOf('number');
+      expect((await request('POST', '/goal/ack', { body: { conversationId: chat, clientId: body.clientId,
+        token: draft.body.goal.token } })).body.acknowledged).toBe(true);
+      expect(goalPendingReplyFor(chat)).toBeNull();
+      await events(chat, [
+        { kind: 'user_message', time: Date.now(), messageId: 'continuation-receipt', text: feed.body.goal.draft.reply },
+        openTurn('goal-successor'),
+        { kind: 'assistant_message', time: Date.now(), messageId: 'all-stages-final', turnId: 'goal-successor',
+          text: 'All six stages and their acceptance checks are complete.', state: 'final', final: true, goalEligible: true, activeNow: true },
+        endTurn('goal-successor', 'completed')
+      ]);
+      expect((await request('POST', '/goal/draft', { body: { ...body, turnId: 'goal-successor' } })).status).toBe(200);
+      await vi.waitFor(() => expect(goal.goalViewFor(chat)?.stage).toBe('no-reply'));
+      expect(goalPendingReplyFor(chat)).toBeNull();
+      expect(calls).toBe(2);
+      expect((await sessionControlsFor(sessionId)).goalDraft?.stage).toBe('no-reply');
+    } finally { globalThis.fetch = realFetch; }
+  });
+
   /**
    * A chat's own workers report back into that same chat, so its next automatic Goal step must
    * not be decided from a context that is about to change. One rule decides that, in the module

@@ -5,7 +5,7 @@ import { ApiError, ControlClient } from './api.js';
 import { authorized, safeText, rememberSecret, type Bootstrap } from './config.js';
 import { definitions, helpDescription } from './commands.js';
 import { StateStore, snowflake, type Permission, type View } from './state.js';
-import { panel, buttons, select, sessionDescription, historyDescription, taskPlanDescription, resourceDescription, sessionStatusIndicator, inputDeliveryDescription, EmbedColor } from './ui.js';
+import { panel, buttons, select, sessionDescription, goalDescription, historyDescription, taskPlanDescription, resourceDescription, sessionStatusIndicator, inputDeliveryDescription, EmbedColor } from './ui.js';
 
 const sessionPath = (id: string) => {
   if (!/^[0-9a-z-]{8,64}$/.test(id)) throw new Error('Invalid local session ID');
@@ -148,7 +148,8 @@ export class DiscordController {
           return panel(`${name} state`, '', [], [], { color: EmbedColor.Info, fields: [
             { name: 'Automation Mode', value: controls.automation ?? 'off', inline: true },
             { name: 'Loop Delivery', value: controls.loopAfterTurn ? 'After turn' : 'Session finish', inline: true },
-            { name: 'Objective', value: (controls.objective || 'None saved').substring(0, 1024), inline: false }
+            { name: 'Objective', value: (controls.objective || 'None saved').substring(0, 1024), inline: false },
+            { name: 'Status Details', value: goalDescription(controls), inline: false }
           ]});
         }
         if (name === 'goal' && string('objective')) {

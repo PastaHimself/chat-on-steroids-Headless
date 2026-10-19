@@ -1902,6 +1902,14 @@ export async function readCompletedFinal(sessionId: string, conversationId: stri
   const last = boundaries.at(-1), prior = boundaries.at(-2);
   const nativeReopen = !!final.providerMessageId && last?.kind === 'turn_start' && last.source === 'app' &&
     last.turnId === final.turnId && prior?.kind === 'turn_end' && prior.turnId === final.turnId && prior.outcome === 'completed';
+  // A native terminal message and its exact completed lifecycle own the whole response,
+  // including earlier progress paragraphs first exposed by a later Fiber scan. Their write
+  // cursors can follow the final even though the recorder correctly kept this turn closed.
+  // Do not use provider creation times as local execution clocks or excuse unowned prose,
+  // another generation, a bare turn_end, or subsequent tool/question/start evidence.
+  const nativeResponseCompleted = nativeFinal && recent.some(event => event.kind === 'turn_end' &&
+    event.outcome === 'completed' && event.providerMessageId === final.providerMessageId &&
+    sameTurn(event.turnId, final.turnId));
   if (recent.some(event => {
     if (event === final || workSequence(event) <= seq) return false;
     if (event.kind === 'tool_call') {
@@ -1925,6 +1933,8 @@ export async function readCompletedFinal(sessionId: string, conversationId: stri
       !(event.source !== 'app' && !!final.turnId && event.turnId === final.turnId &&
         entry.summary.timelineTurns?.[final.turnId]?.origin === positionOf(event));
     if (event.kind === 'user_message') return !correction(event) && !(ownQuestion && event.messageId === ownQuestion);
+    if (event.kind === 'assistant_message' && event.final !== true && event.state !== 'final' &&
+        event.providerMessageId && nativeResponseCompleted && sameTurn(event.turnId, final.turnId)) return false;
     return event.kind === 'assistant_message' || event.kind === 'page_tool';
   })) return null;
   return { messageId, turnId: final.turnId ?? null, completedAt, contentSeq: seq,
