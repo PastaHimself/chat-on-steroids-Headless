@@ -17,6 +17,7 @@ import tempfile
 import uuid
 
 INSTALL = Path('/opt/chat-on-steroids')
+SYSTEMD = Path('/etc/systemd/system')
 UNITS = ['cos-headless.target', 'cos-display.service', 'cos-session.service', 'cos-browser.service', 'cos-backend.service', 'cos-discord.service']
 GUARD = 'cos-maintenance-recovery.service'
 DATA = [Path('/var/lib/cos-backend'), Path('/var/lib/cos-discord'), Path('/etc/chat-on-steroids'), Path('/srv/cos-projects')]
@@ -44,14 +45,14 @@ def remove(file):
     else: file.unlink(missing_ok=True)
 
 
-def inventory(directory, flush=False):
+def inventory(directory, flush=False, allow_external=False):
     rows = {}
     for file in sorted(directory.rglob('*')):
         info = file.lstat(); name = file.relative_to(directory).as_posix()
         row = {'mode': stat.S_IMODE(info.st_mode), 'uid': info.st_uid, 'gid': info.st_gid}
         if file.is_symlink():
             target = os.readlink(file)
-            if os.path.isabs(target) or not file.resolve().is_relative_to(directory.resolve()):
+            if not allow_external and (os.path.isabs(target) or not file.resolve().is_relative_to(directory.resolve())):
                 raise RuntimeError('Backup or staged tree contains a link outside its root: ' + name)
             row.update(kind='link', target=target)
         elif file.is_dir(): row.update(kind='directory')
@@ -109,7 +110,7 @@ class Replacement:
         self.reload(); value['phase'] = 'rolled-back'; atomic_json(self.file, value)
         return True
 
-    def commit(self, pairs, previous):
+    def commit(self, pairs, previous, before_replace=None):
         self.recover()
         previous.mkdir(mode=0o700)
         rows = []
@@ -119,6 +120,12 @@ class Replacement:
         value = dict(version=1, phase='prepared', paths=rows)
         atomic_json(self.file, value)
         value['phase'] = 'stopping'; atomic_json(self.file, value); self.stop()
+        if before_replace:
+            try: before_replace()
+            except Exception:
+                # No destination moved yet; retain the stopped stack and a settled journal.
+                value['phase'] = 'rolled-back'; atomic_json(self.file, value)
+                raise
         value['phase'] = 'replacing'; atomic_json(self.file, value)
         for row in rows:
             source, destination, backup = map(Path, [row['source'], row['destination'], row['backup']])
@@ -133,8 +140,8 @@ class Replacement:
 
 def allowed_paths():
     return [INSTALL / 'current', INSTALL / 'maintenance.py', *DATA,
-        *[Path('/etc/systemd/system') / name for name in UNITS + [GUARD]],
-        *[Path('/etc/systemd/system') / (name + '.d') / 'cos-maintenance.conf' for name in UNITS]]
+        *[SYSTEMD / name for name in UNITS + [GUARD]],
+        *[SYSTEMD / (name + '.d') / 'cos-maintenance.conf' for name in UNITS]]
 
 
 def code_formats(code):
@@ -154,29 +161,64 @@ def compatible(formats):
             raise RuntimeError('Incompatible rollback refused. Restore this code with its matching encrypted backup and reconcile locally.')
 
 
+def public_directory(directory):
+    # Only code and managed service directories belong here, never persistent DATA.
+    if directory.is_symlink(): raise RuntimeError('Managed directory must not be linked: ' + str(directory))
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chown(directory, 0, 0); os.chmod(directory, 0o755)
+
+
+def normalize_code(code):
+    for file in [code, *code.rglob('*')]:
+        if file.is_symlink():
+            os.chown(file, 0, 0, follow_symlinks=False)
+            continue
+        mode = file.stat().st_mode
+        if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            raise RuntimeError('Code contains a special file: ' + str(file))
+        os.chown(file, 0, 0)
+        # copytree preserves restrictive source modes; umask also masks code.mkdir.
+        # Runtime accounts must traverse/read code, while only root may modify it.
+        os.chmod(file, 0o755 if stat.S_ISDIR(mode) or mode & 0o111 else 0o644)
+    os.chmod(code / 'node_modules/electron/dist/chrome-sandbox', 0o4755)
+    for file in (code / 'deploy').glob('*.sh'): os.chmod(file, 0o755)
+
+
+def verify_build(code, payload=False):
+    subprocess.run(['/usr/local/bin/node', str(code / 'scripts/verify-headless-build.mjs'), '--root', str(code),
+                    *(['--payload'] if payload else [])], check=True)
+
+
 def install(source):
     Replacement(INSTALL, allowed_paths()).recover()
-    required = ['package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'node_modules', 'out', 'extension', 'discord', 'deploy', 'runtime']
+    public_directory(INSTALL)
+    verify_build(source)
+    required = ['package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'node_modules', 'out', 'extension', 'deploy', 'runtime',
+                'discord/dist', 'discord/node_modules', 'discord/package.json', 'discord/package-lock.json',
+                'discord/THIRD-PARTY-NOTICES.txt', 'discord/licenses']
     for name in ['out/main/index.js', 'discord/dist/index.js', 'node_modules/electron/dist/electron', 'node_modules/electron/dist/chrome-sandbox', 'runtime/durable-formats.json']:
         if not (source / name).is_file(): raise RuntimeError('Incomplete update: ' + name)
-    formats = json.loads((source / 'runtime/durable-formats.json').read_text()); compatible(formats)
+    compatible(code_formats(source))
     stage = Path(tempfile.mkdtemp(prefix='stage-', dir=INSTALL)); code = stage / 'current'; code.mkdir(mode=0o755); os.chmod(code, 0o755)
     try:
         for name in required + [name for name in ['resources', 'native'] if (source / name).exists()]:
             origin, target = source / name, code / name
+            target.parent.mkdir(parents=True, exist_ok=True)
             if origin.is_dir(): shutil.copytree(origin, target, symlinks=True)
             else: shutil.copy2(origin, target)
-        for file in [code, *code.rglob('*')]:
-            if not file.is_symlink(): os.chown(file, 0, 0); os.chmod(file, stat.S_IMODE(file.stat().st_mode) & ~0o022)
-        os.chmod(code / 'node_modules/electron/dist/chrome-sandbox', 0o4755)
-        for file in (code / 'deploy').glob('*.sh'): os.chmod(file, 0o755)
+        scripts = code / 'scripts'; scripts.mkdir()
+        for name in ['headless-provenance.mjs', 'verify-headless-build.mjs', 'headless-native-probe.cjs']:
+            shutil.copy2(source / 'scripts' / name, scripts / name)
+        normalize_code(code)
+        verify_build(code, payload=True)
+        formats = code_formats(code); compatible(formats)
         helper = stage / 'maintenance.py'; shutil.copy2(code / 'deploy/maintenance.py', helper); os.chmod(helper, 0o755)
         units = stage / 'units'; units.mkdir()
         pairs = [(code, INSTALL / 'current'), (helper, INSTALL / 'maintenance.py')]
         for name in UNITS + [GUARD]:
-            unit = source / 'deploy/systemd' / name
+            unit = code / 'deploy/systemd' / name
             if not unit.read_text().startswith('# Managed by Chat On Steroids headless deployment\n'): raise RuntimeError('Unmanaged unit in update')
-            target = Path('/etc/systemd/system') / name
+            target = SYSTEMD / name
             if target.exists() and not target.read_text().startswith('# Managed by Chat On Steroids headless deployment\n'): raise RuntimeError('Refusing to replace an unmanaged service')
             shutil.copy2(unit, units / name); os.chmod(units / name, 0o644); pairs.append((units / name, target))
         rows = inventory(stage, flush=True)
@@ -184,7 +226,10 @@ def install(source):
         # Re-read the complete staged contents before any service is stopped.
         actual = inventory(stage); actual.pop('verified.json')
         if actual != rows: raise RuntimeError('Staged contents changed during verification')
-        previous = Replacement(INSTALL, allowed_paths()).commit(pairs, INSTALL / ('previous-' + str(uuid.uuid4())))
+        # A running old process can advance its durable floor during staging. Only
+        # the floor read after systemctl stop may authorize the replacement.
+        previous = Replacement(INSTALL, allowed_paths()).commit(pairs, INSTALL / ('previous-' + str(uuid.uuid4())),
+                                                               before_replace=lambda: compatible(formats))
         print('Verified update installed. Previous code and units: ' + str(previous))
         print('Services remain stopped. Start locally only after reviewing health and acceptance results.')
     finally:
@@ -216,25 +261,25 @@ def copy_owned_tree(origin, target):
 
 def bootstrap(source):
     # Independent of current/, so recovery is available even if that directory vanished.
+    public_directory(INSTALL)
     helper = INSTALL / 'maintenance.py'
     temporary = INSTALL / ('maintenance-' + str(uuid.uuid4()) + '.tmp')
-    shutil.copy2(source / 'deploy/maintenance.py', temporary); os.chmod(temporary, 0o755)
+    shutil.copy2(source / 'deploy/maintenance.py', temporary); os.chown(temporary, 0, 0); os.chmod(temporary, 0o755)
     with temporary.open('rb') as stream: os.fsync(stream.fileno())
     os.replace(temporary, helper); sync_directory(INSTALL)
     for name in [GUARD]:
-        target = Path('/etc/systemd/system') / name
+        target = SYSTEMD / name
         if target.is_symlink() or (target.exists() and not target.read_text().startswith('# Managed by Chat On Steroids headless deployment\n')):
             raise RuntimeError('Unmanaged maintenance recovery unit')
-        shutil.copy2(source / 'deploy/systemd' / name, target); os.chmod(target, 0o644)
+        shutil.copy2(source / 'deploy/systemd' / name, target); os.chown(target, 0, 0); os.chmod(target, 0o644)
     # Old units also require the guard before the first transactional upgrade.
     for name in UNITS:
-        directory = Path('/etc/systemd/system') / (name + '.d')
-        if directory.is_symlink(): raise RuntimeError('Linked service drop-in directory')
-        directory.mkdir(exist_ok=True)
+        directory = SYSTEMD / (name + '.d')
+        public_directory(directory)
         target = directory / 'cos-maintenance.conf'
         text = '# Managed by Chat On Steroids headless deployment\n[Unit]\nRequires=' + GUARD + '\nAfter=' + GUARD + '\n'
         if target.is_symlink() or (target.exists() and target.read_text() != text): raise RuntimeError('Unmanaged recovery guard drop-in')
-        target.write_text(text); os.chmod(target, 0o644)
+        target.write_text(text); os.chown(target, 0, 0); os.chmod(target, 0o644)
     reload_units()
 
 
@@ -273,6 +318,61 @@ def account_metadata():
     return {**{name: {'uid': pwd.getpwnam(name).pw_uid, 'gid': grp.getgrnam(name).gr_gid} for name in ['cos-backend', 'cos-discord']}, 'cos-control': {'gid': grp.getgrnam('cos-control').gr_gid}}
 
 
+def encode_external_links(payload):
+    """Represent data links as inert files in the archive; never read their targets."""
+    links = {}
+    data_roots = [payload / str(root).lstrip('/') for root in DATA]
+    for file in sorted(payload.rglob('*')):
+        if not file.is_symlink(): continue
+        target = os.readlink(file)
+        if not os.path.isabs(target) and file.resolve().is_relative_to(payload.resolve()): continue
+        if not any(file.is_relative_to(root) for root in data_roots):
+            raise RuntimeError('Code contains a link outside the backup root')
+        info = file.lstat()
+        links[file.relative_to(payload).as_posix()] = dict(target=target, uid=info.st_uid, gid=info.st_gid)
+        # Only this private stopped-stack staging copy changes. Source data stays exact.
+        file.unlink(); file.write_bytes(b''); os.chmod(file, 0o600); os.chown(file, info.st_uid, info.st_gid)
+    return links
+
+
+def external_link_rows(payload, manifest):
+    links = manifest.get('externalLinks', {})
+    if not isinstance(links, dict) or len(links) > 100000 or (links and manifest.get('version') != 2):
+        raise RuntimeError('Invalid external link metadata')
+    rows = []
+    data_roots = [payload / str(root).lstrip('/') for root in DATA]
+    for name, row in links.items():
+        if not isinstance(name, str): raise RuntimeError('Invalid external link path')
+        relative = Path(name)
+        if relative.is_absolute() or '..' in relative.parts or relative.as_posix() != name:
+            raise RuntimeError('External link path escapes its data root')
+        file = payload / relative
+        if not any(file.is_relative_to(root) and file != root for root in data_roots):
+            raise RuntimeError('External link is not owned by backed-up data')
+        if not isinstance(row, dict) or set(row) != {'target', 'uid', 'gid'} or not isinstance(row['target'], str) or not row['target'] or len(row['target']) > 4096 or '\0' in row['target']:
+            raise RuntimeError('Invalid external link target')
+        if any(type(row[key]) is not int or row[key] < 0 for key in ['uid', 'gid']):
+            raise RuntimeError('Invalid external link ownership')
+        if any(parent.is_symlink() for parent in file.parents if parent != payload and parent.is_relative_to(payload)):
+            raise RuntimeError('External link has a linked ancestor')
+        info = file.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size != 0 or info.st_uid != row['uid'] or info.st_gid != row['gid']:
+            raise RuntimeError('External link placeholder differs from verified metadata')
+        expected = manifest['contents'].get(name)
+        if not expected or expected.get('kind') != 'file' or expected.get('sha256') != hashlib.sha256(b'').hexdigest():
+            raise RuntimeError('External link placeholder was not verified')
+        rows.append((file, row))
+    return rows
+
+
+def restore_external_links(payload, manifest):
+    # Validate the entire map first. No archive member can ever write through a link:
+    # these are reconstructed only after strict extraction and complete hash verification.
+    for file, row in external_link_rows(payload, manifest):
+        file.unlink(); os.symlink(row['target'], file)
+        os.chown(file, row['uid'], row['gid'], follow_symlinks=False)
+
+
 def backup(output):
     if output.exists(): raise RuntimeError('Backup destination already exists')
     if any(output.is_relative_to(source) for source in allowed_paths()): raise RuntimeError('Backup output must be outside the source directories')
@@ -288,9 +388,10 @@ def backup(output):
                 copy_owned_tree(file, target)
             else:
                 shutil.copy2(file, target); info = file.stat(); os.chown(target, info.st_uid, info.st_gid)
+        links = encode_external_links(payload)
         rows = inventory(payload)
         formats = code_formats(INSTALL / 'current')
-        atomic_json(stage / 'manifest.json', {'version': 1, 'accounts': account_metadata(), 'formats': formats, 'contents': rows})
+        atomic_json(stage / 'manifest.json', {'version': 2 if links else 1, 'accounts': account_metadata(), 'formats': formats, 'contents': rows, 'externalLinks': links})
         archive = stage / 'snapshot.tar'
         with tarfile.open(archive, 'w') as stream:
             stream.add(payload, arcname='payload', recursive=True); stream.add(stage / 'manifest.json', arcname='manifest.json')
@@ -325,8 +426,9 @@ def unpack_verified(archive, directory):
             if any(parent.as_posix() in links for parent in Path(member.name).parents): raise RuntimeError('Backup writes through a link')
         stream.extractall(directory, members=members, filter='fully_trusted')
     manifest = json.loads((directory / 'manifest.json').read_text())
-    if manifest.get('version') != 1 or inventory(directory / 'payload') != manifest['contents']:
+    if manifest.get('version') not in [1, 2] or inventory(directory / 'payload') != manifest['contents']:
         raise RuntimeError('Backup checksum or ownership verification failed')
+    external_link_rows(directory / 'payload', manifest)
     return manifest
 
 
@@ -339,6 +441,7 @@ def restore(input_file):
         manifest = unpack_verified(archive, stage)
         if manifest['accounts'] != account_metadata(): raise RuntimeError('Service account ownership differs; reconcile account IDs before restore')
         payload = stage / 'payload'
+        restore_external_links(payload, manifest)
         code = payload / str(INSTALL / 'current').lstrip('/')
         if code_formats(code) != manifest['formats']: raise RuntimeError('Backup code format mismatch')
         # A restore uses matching backed-up code and data, rather than a code-only rollback.
@@ -351,7 +454,7 @@ def restore(input_file):
             source = payload / str(destination).lstrip('/')
             if not source.exists(): raise RuntimeError('Backup is missing required installation state: ' + str(destination))
             pairs.append((source, destination))
-        inventory(payload, flush=True)
+        inventory(payload, flush=True, allow_external=True)
         previous = transaction.commit(pairs, INSTALL / ('before-restore-' + str(uuid.uuid4())))
         print('Verified backup restored with delivery, automation and worker revival held. Previous state: ' + str(previous))
         print('Inspect receipts locally, record reconciliation and release the hold while services are stopped.')

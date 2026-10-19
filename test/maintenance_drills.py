@@ -8,6 +8,7 @@ import tempfile
 import subprocess
 import shutil
 import socket
+import stat
 import unittest
 from unittest.mock import patch
 
@@ -23,6 +24,83 @@ class MaintenanceDrills(unittest.TestCase):
         self.stops = []
         self.transaction = maintenance.Replacement(self.install, [self.destination], stop=lambda: self.stops.append(True), reload=lambda: None)
     def tearDown(self): self.temporary.cleanup()
+
+    def installation_fixture(self):
+        source = self.directory / 'build'; source.mkdir()
+        for name in ['package.json', 'package-lock.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt',
+                     'out/main/index.js', 'discord/dist/index.js', 'discord/node_modules/fixture.js', 'discord/package.json',
+                     'discord/package-lock.json', 'discord/THIRD-PARTY-NOTICES.txt', 'discord/licenses/fixture.txt', 'node_modules/electron/dist/electron',
+                     'node_modules/electron/dist/chrome-sandbox', 'extension/manifest.json',
+                     'scripts/headless-provenance.mjs', 'scripts/verify-headless-build.mjs', 'scripts/headless-native-probe.cjs',
+                     'deploy/maintenance.py', 'deploy/start-backend.sh']:
+            file = source / name; file.parent.mkdir(parents=True, exist_ok=True); file.write_text('fixture')
+        formats = source / 'runtime/durable-formats.json'; formats.parent.mkdir()
+        formats.write_text(json.dumps({'version': 1, 'backendReceipts': 2}))
+        for name in maintenance.UNITS + [maintenance.GUARD]:
+            unit = source / 'deploy/systemd' / name; unit.parent.mkdir(exist_ok=True)
+            unit.write_text('# Managed by Chat On Steroids headless deployment\n[Unit]\n')
+        for file in source.rglob('*'):
+            if file.is_dir(): file.chmod(0o700)
+            else: file.chmod(0o600)
+        (source / 'node_modules/electron/dist/electron').chmod(0o700)
+        # Strip inherited privilege bits; only Chromium's sandbox may be setuid.
+        (source / 'out/main/index.js').chmod(0o6600)
+        return source
+
+    def test_install_with_private_umask_publishes_traversable_root_owned_code_only(self):
+        source = self.installation_fixture(); self.install.chmod(0o700)
+        private = source / 'discord/.env'; private.write_text('private login fixture'); private.chmod(0o600)
+        units = self.directory / 'systemd'; units.mkdir()
+        homes = [self.directory / name for name in ['backend', 'discord', 'configuration', 'projects']]
+        for home in homes: home.mkdir(mode=0o700)
+        secret = homes[2] / 'backend.env'; secret.write_text('private fixture'); secret.chmod(0o600)
+        ownership = []
+        def owned(file, uid, gid, **options): ownership.append((str(file), uid, gid, options))
+        old_umask = os.umask(0o077)
+        try:
+            with patch.object(maintenance, 'INSTALL', self.install), patch.object(maintenance, 'SYSTEMD', units), \
+                 patch.object(maintenance, 'DATA', homes), patch.object(maintenance.os, 'chown', side_effect=owned), \
+                 patch.object(maintenance.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+                maintenance.bootstrap(source)
+                maintenance.install(source)
+        finally: os.umask(old_umask)
+        code = self.install / 'current'
+        self.assertFalse((code / 'discord/.env').exists())
+        self.assertEqual(private.read_text(), 'private login fixture')
+        self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
+        for file in [code, self.install, *[file for file in code.rglob('*') if file.is_dir()],
+                     *[units / (name + '.d') for name in maintenance.UNITS]]:
+            self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o755, str(file))
+        for file in code.rglob('*'):
+            mode = stat.S_IMODE(file.stat().st_mode)
+            self.assertFalse(mode & 0o022, str(file))
+            if file.is_file(): self.assertTrue(mode & 0o044 == 0o044, str(file))
+            self.assertIn((str(file).replace(str(code), next(path for path, _, _, _ in ownership if path.endswith('/current'))), 0, 0, {}), ownership)
+        self.assertEqual(stat.S_IMODE((code / 'node_modules/electron/dist/chrome-sandbox').stat().st_mode), 0o4755)
+        self.assertEqual(stat.S_IMODE((code / 'out/main/index.js').stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE((code / 'node_modules/electron/dist/electron').stat().st_mode), 0o755)
+        for home in homes: self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(secret.stat().st_mode), 0o600)
+        self.assertEqual(secret.read_text(), 'private fixture')
+
+    def test_install_rechecks_durable_floor_after_stopping_before_replacement(self):
+        source = self.installation_fixture()
+        units = self.directory / 'systemd'; units.mkdir()
+        homes = [self.directory / 'backend', self.directory / 'discord']
+        app = homes[0] / 'app'; app.mkdir(parents=True)
+        floor = app / 'durable-formats.json'; floor.write_text(json.dumps({'version': 1, 'backendReceipts': 2}))
+        code = self.install / 'current'; code.mkdir(); (code / 'value').write_text('old code')
+        def stopping(args, **options):
+            if args[:2] == ['systemctl', 'stop']:
+                floor.write_text(json.dumps({'version': 1, 'backendReceipts': 3}))
+            return subprocess.CompletedProcess(args, 0)
+        with patch.object(maintenance, 'INSTALL', self.install), patch.object(maintenance, 'SYSTEMD', units), \
+             patch.object(maintenance, 'DATA', homes), patch.object(maintenance.os, 'chown'), \
+             patch.object(maintenance.subprocess, 'run', side_effect=stopping):
+            with self.assertRaisesRegex(RuntimeError, 'Incompatible rollback'):
+                maintenance.install(source)
+        self.assertEqual((code / 'value').read_text(), 'old code')
+        self.assertEqual(json.loads((self.install / 'installation.json').read_text())['phase'], 'rolled-back')
     def test_success_preserves_previous_code(self):
         previous = self.transaction.commit([(self.source, self.destination)], self.install / 'previous')
         self.assertEqual((self.destination / 'value').read_text(), 'new code')
@@ -98,6 +176,8 @@ class MaintenanceDrills(unittest.TestCase):
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
                 endpoint.bind(str(cache / 'control'))
         (homes[1] / 'state.json').write_text('bot checkpoint')
+        external = self.directory / 'jdk-policy'; external.write_text('outside target is never replaced')
+        os.symlink(str(external), homes[3] / 'jdk-policy-link')
         account = {'uid': os.getuid(), 'gid': os.getgid()}
         metadata = {'cos-backend': account, 'cos-discord': account, 'cos-control': {'gid': os.getgid()}}
         keyring = self.directory / 'test-keyring'; keyring.mkdir(mode=0o700)
@@ -123,6 +203,9 @@ class MaintenanceDrills(unittest.TestCase):
         self.assertEqual((cache / 'ordinary').read_text(), 'regular keyring cache file')
         self.assertFalse((cache / 'control').exists())
         self.assertEqual((homes[1] / 'state.json').read_text(), 'bot checkpoint')
+        self.assertTrue((homes[3] / 'jdk-policy-link').is_symlink())
+        self.assertEqual(os.readlink(homes[3] / 'jdk-policy-link'), str(external))
+        self.assertEqual(external.read_text(), 'outside target is never replaced')
         self.assertEqual(maintenance.Replacement(self.install, [code, *homes]).read()['phase'], 'committed')
 
     def test_legacy_restored_code_cannot_start_before_reconciliation(self):
@@ -132,6 +215,26 @@ class MaintenanceDrills(unittest.TestCase):
         with patch.object(maintenance, 'INSTALL', self.install), patch.object(maintenance, 'DATA', [backend]):
             with self.assertRaisesRegex(RuntimeError, 'Legacy restored code'): maintenance.boot_guard()
             self.assertEqual(maintenance.code_formats(self.install / 'current')['backendReceipts'], 1)
+
+    def test_external_link_metadata_cannot_create_links_in_code_or_replace_nonempty_data(self):
+        payload = self.directory / 'payload'; payload.mkdir()
+        home = self.directory / 'backend'
+        data = payload / str(home).lstrip('/'); data.mkdir(parents=True)
+        target = data / 'link'; target.write_bytes(b'')
+        name = target.relative_to(payload).as_posix()
+        row = {'target': '/etc/java-fixture', 'uid': os.getuid(), 'gid': os.getgid()}
+        manifest = {'version': 2, 'contents': maintenance.inventory(payload), 'externalLinks': {name: row}}
+        with patch.object(maintenance, 'DATA', [home]):
+            maintenance.external_link_rows(payload, manifest)
+            target.write_text('must not be replaced')
+            with self.assertRaisesRegex(RuntimeError, 'placeholder'):
+                maintenance.restore_external_links(payload, manifest)
+            self.assertEqual(target.read_text(), 'must not be replaced')
+            target.write_bytes(b'')
+            with patch.object(maintenance, 'DATA', [self.directory / 'other']):
+                with self.assertRaisesRegex(RuntimeError, 'not owned'):
+                    maintenance.restore_external_links(payload, manifest)
+        self.assertFalse(target.is_symlink())
 
     def test_inventory_refuses_symlinks_outside_backup(self):
         os.symlink('/etc/passwd', self.source / 'escape')

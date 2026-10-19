@@ -69,6 +69,20 @@ try {
   if (backend.child.signalCode || backend.child.exitCode !== 0) throw new Error(`Backend did not exit cleanly: ${backend.output()}`);
   if (xvfb.child.exitCode !== null) throw new Error('Display exited before backend teardown');
   console.log('PASS: authenticated loopback API, no BrowserWindows, persistent isolated profile, SIGTERM drain and credential-file removal on real Electron/Xvfb.');
+  for (const failure of ['future-formats', 'control-publication']) {
+    const failedData = path.join(directory, failure); await fs.mkdir(failedData, { mode: 0o700 });
+    await fs.writeFile(path.join(failedData, 'config.json'), JSON.stringify(config), { mode: 0o600 });
+    const formatFile = path.join(failedData, 'durable-formats.json');
+    const original = JSON.stringify({ version: 1, backendReceipts: 999 });
+    if (failure === 'future-formats') await fs.writeFile(formatFile, original, { mode: 0o600 });
+    else await fs.writeFile(path.join(failedData, 'control-api'), 'publication is impossible', { mode: 0o600 });
+    const failed = launch(electron, [directory], { ...env, COS_DATA_DIR: failedData });
+    await waitFor(async () => failed.child.exitCode !== null || Boolean(failed.child.signalCode), `${failure} nonzero exit`, 30_000);
+    if (failed.child.exitCode !== 1 || failed.child.signalCode) throw new Error(`${failure} did not propagate startup failure: ${failed.output()}`);
+    if (failure === 'future-formats' && await fs.readFile(formatFile, 'utf8') !== original) throw new Error('Startup changed incompatible durable metadata');
+    if (!failed.output().includes('Application initialization failed')) throw new Error(`${failure} did not report initialization failure`);
+  }
+  console.log('PASS: incompatible durable formats and failed control publication exit nonzero; incompatible metadata is retained.');
   if (process.env.COS_SMOKE_BROWSER) {
     const argumentsForBrowser = [`--user-data-dir=${profile}`, '--disable-renderer-backgrounding', '--disable-background-timer-throttling', '--no-first-run', '--restore-last-session', 'about:blank'];
     const browser = launch(process.env.COS_SMOKE_BROWSER, argumentsForBrowser, env);

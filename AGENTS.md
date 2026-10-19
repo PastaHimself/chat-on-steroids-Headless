@@ -298,6 +298,7 @@ the same backend owners and using their bounded shutdown. `COS_DATA_DIR` also su
 desktop bootstrap against the server's data. Headless is windowless Electron, not a Node-only or
 native-headless-browser claim. `deploy/systemd/cos-headless.target` owns continuous service
 availability; display/private Secret Service/Brave precede the backend. Stop the target for maintenance.
+Managed Headless startup awaits Control API publication; fatal bootstrap errors retain state and exit nonzero. Systemd ExecStartPost authenticates `/v1/health` and requires the exact main PID before startup completes. Backend KillMode=mixed signals only Electron main during graceful shutdown; killing its GPU/network children at the same time can crash Chromium before state flush. The existing stop deadline still kills the whole cgroup if shutdown stalls. Code and managed unit directories are explicitly root-owned 0755 despite restrictive umasks; persistent state and environment files stay private.
 The dedicated profile is passed on every external browser URL handoff and an explicit executable
 cannot fall back to another browser family. See `docs/headless-vps.md` and `scripts/verify-headless.mjs`.
 `browser-selection.ts::selectedChatBrowser` resolves Headless to Brave for every runtime consumer,
@@ -3871,6 +3872,8 @@ fingerprint / outcome fence commit before hot removal. Bulky payloads expire aft
 fences never expire. Version 2 migrations preserve version 1 originals. Confirmed rejection needs
 proof that no owning mutation began; transport failure remains uncertain.
 
+`resource-admission.ts` supplies a Headless-only memory-headroom budget to the existing broker new-spawn and sleeping-worker message admission boundaries. Already accepted unread messages keep their existing revival guarantee; pressure cannot strand them after their owning worker stops. Reservations remain broker-owned; foreground messages and already running work continue under pressure. A one-second sample cache accounts for newly reserved slots; there is no eviction, retry queue, timer, model change or Java CPU limit. Resource diagnostics use eight bounded concurrent proc readers, kernel PSI and Headless event-loop delay.
+
 `operational-health.ts` projects service, connection, companion, resource and recovery owners with
 per-component observation times/actions. Provider eligibility remains unknown. `/monitor`, local
 healthcheck, Activity checks and Diagnostics share it. `health-alerts.ts` has opt-in 30-second
@@ -3891,7 +3894,7 @@ verifies complete code/units before stopping, retains previous contents and jour
 Its independent root recovery helper/unit precedes runtime units and rolls back an interrupted
 boot while requiring local review. Local GPG backup/restore includes matching code, data, profile,
 keyring, bot/config/project state, units and ownership; checksum verification precedes replacement.
-Data format floors refuse incompatible code-only rollback. Live gates: `docs/reliability-rollout.md`.
+Backup manifest v2 stores external DATA symlinks (for example unpacked JDK configuration links) as inert verified placeholders plus exact link metadata. Strict archive path/link-traversal checks remain; only after verification does the new helper reconstruct links inside the staged DATA roots, without reading or replacing external targets. Code symlinks retain strict containment. Older helpers refuse v2; retain the matching new maintenance helper for recovery. Data format floors refuse incompatible code-only rollback. Live gates: `docs/reliability-rollout.md`.
 Tests: `headless`, `remote-control`, `discord`, `control-api*`, `mcp-worktree-spawn`, lifecycle/shutdown.
 
 Dark is the default theme. Theme selection belongs in Appearance settings; the main header
@@ -4975,6 +4978,8 @@ encrypted pre-upgrade backup and the existing restore/reconciliation hold for ro
 is `com.chatonsteroids.app`. Native release targets are Windows x64/arm64 NSIS, macOS x64/arm64
 DMG+ZIP and Linux x64/arm64 AppImage+DEB. Windows is per-user-capable and `asInvoker`; replacing
 the package preserves userData. Synchronize package/main/extension versions deliberately.
+
+`headless:prepare` explicitly provisions checksum-verified Electron, ripgrep and tunnel binaries and probes the native runtime stack with that executable. `headless:build` clears both compiled trees and previous attestation, builds app and Discord, then seals commit/source/payload/dependencies in local `runtime/headless-build.json`. The managed installer verifies source and staged payload before stop, and rechecks saved durable floors after stop. Never use plain bundle output as Headless deployment evidence.
 
 `electron-vite` builds main/preload/renderer into `out/`; extension files ship directly without
 a bundler. `electron-builder.yml` puts executable tunnel/rg, extension and required native

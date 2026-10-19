@@ -51,14 +51,15 @@ node --version                    # v24.x
 /usr/local/bin/node --version     # v24.x
 git clone https://github.com/PastaHimself/chat-on-steroids-Headless.git
 cd chat-on-steroids-Headless
-npm ci
+npm ci --ignore-scripts
 npm run discord:install
+npm run headless:prepare
 COS_TEST_WORKERS=2 npm run verify
-npm run build
-npm run discord:build
+npm run headless:build
+npm run verify:headless-build
 ```
 
-Build on Linux amd64 so native terminal/parser dependencies match the VPS. Do not transfer a Windows/macOS dependency directory. If native installation scripts are blocked by your package manager, approve the repository's reviewed native dependencies and rerun installation; do not ignore a failed native check. Root builds and root application execution are unsupported.
+Build on Linux amd64 so native terminal/parser dependencies match the VPS. Do not transfer a Windows/macOS dependency directory. The explicit preparation command provisions the pinned Electron binary through its checksum-verified installer even when npm lifecycle scripts are disabled, and stages the pinned checksum-verified ripgrep and tunnel distribution. It then exercises the parser, image decoder, FFI and terminal prebuilds using Electron's embedded Node runtime. A network failure without a verified cached Electron archive stops preparation; retain the cache for offline rebuilding. Never substitute a download or bypass a failed native check. Root builds and root application execution are unsupported.
 
 ## 2. Install the managed service files
 
@@ -185,7 +186,7 @@ sudo systemd-run --unit=cos-register --wait --collect \
 sudo systemctl enable --now cos-headless.target
 ```
 
-`cos-headless.target` holds display, private session, Brave, backend and bot services up. Ordering starts display/keyring before Brave, and Brave before the backend. Service process groups are cleaned up during stops. The backend drains existing state on SIGTERM; its stop timeout is 95 seconds. The bot reconnects transport and rereads rotated backend token/port files for every request. Dependency crashes can stop dependent services; the active target restarts them. Stop the target for maintenance so it does not restart a deliberately stopped component.
+`cos-headless.target` holds display, private session, Brave, backend and bot services up. Ordering starts display/keyring before Brave, and Brave before the backend. Service process groups are cleaned up during stops. Backend startup remains activating until an authenticated Control API health response names the exact main PID. Initialization failures exit nonzero and cannot leave a falsely healthy Electron process. Discord remains available for outage reporting and rereads credentials when the backend recovers. The backend drains existing state on SIGTERM; its stop timeout is 95 seconds. `KillMode=mixed` preserves Electron helpers during the main process drain and still kills the entire cgroup if that deadline expires. The bot reconnects transport and rereads rotated backend token/port files for every request. Dependency crashes can stop dependent services; the active target restarts them. Stop the target for maintenance so it does not restart a deliberately stopped component.
 
 On Android run `/help`, `/setup`, then select a session/project and observed model. Setup sections cover connection, default session/channel mapping, model/reasoning, worker capacity, user/channel grants, opt-in notifications, Goal/Loop timing, planner/finish settings and resources. Edits are private staged drafts. Finish validates readiness and requires Confirm Save. Interrupted drafts survive; stale drafts cannot overwrite a newer administrator's settings. Browser credentials, roots, plugin secrets and tunnel provisioning remain local operations.
 
@@ -238,7 +239,7 @@ Rollback verifies ownership and enough free RAM before swapoff. If activation pa
 
 Use the root-only local maintenance helper described in [reliability rollout](reliability-rollout.md#local-update-backup-and-restore). It stops the stack and creates an encrypted GPG snapshot of matching code, both service homes, browser profile/keyring, configuration, managed units/drop-ins, workspaces and ownership. Keep backup and keyring passwords separately in a secure manager. Do not publish a backup or its logs. Restore verifies checksums and ownership before replacement and places delivery, automation and worker revival on hold. Review potentially repeated work locally and record reconciliation before releasing that hold; services remain stopped until an explicit local start.
 
-Build and verify an update as the SSH login user, back up, then run `sudo ./deploy/install-ubuntu.sh --update`. The installer stages and verifies complete contents before stopping the stack, journals replacement and retains previous code and managed units under a UUID directory. Its independent recovery guard rolls back interrupted replacement and retains a local review requirement across reboots. Existing environment files/data are preserved. Check local unit syntax, re-register changed commands locally, then explicitly start `cos-headless.target` and run health/readiness checks. Headless mode disables the desktop auto-updater because installed code is root-owned. Durable format floors refuse incompatible code-only rollback; restore matching encrypted code/data and reconcile provider-side effects instead.
+Run `npm run headless:prepare` and validation as the SSH login user, commit the reviewed source, then run `npm run headless:build`. Deployment builds require committed source. `verify:headless-build` binds the checkout commit, source, both clean compiled outputs, durable formats and dependency bytes in a generated local attestation. An install rejects missing or stale attestation before stopping services; the staged payload is verified again, and durable compatibility is rechecked after stop. Back up, then run `sudo ./deploy/install-ubuntu.sh --update`. The installer stages and verifies complete contents before stopping the stack, journals replacement and retains previous code and managed units under a UUID directory. Its independent recovery guard rolls back interrupted replacement and retains a local review requirement across reboots. Existing environment files/data are preserved. Check local unit syntax, re-register changed commands locally, then explicitly start `cos-headless.target` and run health/readiness checks. Headless mode disables the desktop auto-updater because installed code is root-owned. Durable format floors refuse incompatible code-only rollback; restore matching encrypted code/data and reconcile provider-side effects instead.
 
 ## Troubleshooting
 

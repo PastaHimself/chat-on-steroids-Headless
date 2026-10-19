@@ -46,11 +46,12 @@ After preparing Ubuntu, build tools and Node.js 24:
 ```sh
 git clone https://github.com/PastaHimself/chat-on-steroids-Headless.git
 cd chat-on-steroids-Headless
-npm ci
+npm ci --ignore-scripts
 npm run discord:install
+npm run headless:prepare
 COS_TEST_WORKERS=2 npm run verify
-npm run build
-npm run discord:build
+npm run headless:build
+npm run verify:headless-build
 ```
 
 Build on Linux amd64 so native dependencies match the VPS. Run the build and runtime as unprivileged users.

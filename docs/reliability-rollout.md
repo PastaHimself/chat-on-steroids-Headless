@@ -108,7 +108,7 @@ never appear in arguments, configuration or Discord. The snapshot includes match
 code, backend data, dedicated browser profile, keyring, bot state, configuration, projects,
 managed units/drop-ins and service account ownership. Services stop before capture and remain
 stopped afterward. Transient browser lock files are excluded. External links, special files,
-invalid archive paths and writes through links are refused. Keep the backup destination outside
+invalid archive paths and writes through links are refused. External links inside backed-up data, such as unpacked JDK configuration links, use backup manifest v2: the archive carries inert files and exact target/owner metadata. The new helper validates the entire archive before reconstructing those links inside the private staging tree, and never reads or replaces their external targets. Code links remain contained. Retain a copy of the new helper outside the installation before backing up; an older helper safely refuses v2. Keep the backup destination outside
 those source directories. Private staging contains plaintext only for the workflow and is
 removed on normal completion; protect free space and reconcile interrupted staging locally.
 

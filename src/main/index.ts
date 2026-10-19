@@ -137,6 +137,7 @@ let tray: Tray | null = null;
 let quitting = false;
 let shutdownStarted = false;
 let shutdownComplete = false;
+let exitCode = 0;
 const usageWarmup = new AbortController();
 
 // One instance only: two copies would fight over the tunnel and the config file.
@@ -611,8 +612,6 @@ void app.whenReady().then(async () => {
   }
   onMainTextsChange(() => writeDurableSoon(MAIN_TEXTS_STATE, mainTextTranslations()));
 
-  logInfo(`app started (${headless ? 'headless' : 'desktop'})`);
-
   // Historical Unattributed repair may legitimately scan and rewrite a large legacy bucket.
   // It is maintenance, not a prerequisite for showing the app or accepting new exact-id
   // traffic, so never make startup/reload wait behind years of old session history.
@@ -623,13 +622,20 @@ void app.whenReady().then(async () => {
   // The CoS browser starts once the bridge listens: its extension looks for the app as soon as it
   // loads, and a miss would leave it waiting for its next retry.
   if (browserExtensionRequired(getConfig())) {
-    void startBridge().finally(() => void syncCosBrowser());
+    if (headless) { await startBridge(); await syncCosBrowser(); }
+    else void startBridge().finally(() => void syncCosBrowser());
   } else void syncCosBrowser();
+  if (windowActivation.isDisabled()) return;
   // Opt-in, and only once every fact it projects has been restored. ipc.ts starts and stops it
   // when the setting changes; a failed bind is logged and leaves the rest of the app untouched.
   if (getConfig().controlApi.enabled) {
-    startControlApi().catch((error: Error) => logWarn(`control API did not start: ${error.message}`));
+    if (headless) await startControlApi();
+    else startControlApi().catch((error: Error) => logWarn(`control API did not start: ${error.message}`));
+  } else if (headless) {
+    throw new Error('Headless requires the locally enabled Control API for managed readiness');
   }
+  if (windowActivation.isDisabled()) return;
+  logInfo(`app started (${headless ? 'headless' : 'desktop'})`);
   if (getConfig().ui.autoConnect) void connect();
 
   // Never awaited: an unreachable GitHub, a slow download or a broken release must not delay a
@@ -642,6 +648,13 @@ void app.whenReady().then(async () => {
   void usageOverview(usageWarmup.signal).catch((error: Error) => {
     if (!usageWarmup.signal.aborted) logWarn(`usage background refresh failed: ${error.message}`);
   });
+}).catch((error: unknown) => {
+  exitCode = 1;
+  const message = error instanceof Error ? error.message : String(error);
+  logError(`Application initialization failed: ${message}`);
+  process.stderr.write('Application initialization failed; inspect app.log for the redacted error.\n');
+  snapshotLogOnCrash(`Application initialization failed: ${message}`);
+  app.quit();
 });
 
 app.on('before-quit', () => {
@@ -731,8 +744,8 @@ app.on('will-quit', (event) => {
           // so app.exit() would leave the process running with nothing to click, ignoring even
           // SIGTERM (2026-10-10, a new build quit before its prompt was answered). Every phase has
           // flushed by now; end the process directly instead.
-          if (process.platform === 'darwin' && keychainReadPending()) exitNow(0);
-          app.exit(0);
+          if (process.platform === 'darwin' && keychainReadPending()) exitNow(exitCode);
+          app.exit(exitCode);
         });
       }
     }
