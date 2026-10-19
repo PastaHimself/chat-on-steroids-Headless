@@ -1,368 +1,102 @@
-name: Release candidate
+name: Headless candidate
 
+# One validation/build authority for PRs, main, manual candidates and stable releases.
+# Artifacts are source distributions: native dependencies are rebuilt on the VPS.
 on:
   workflow_call:
-    inputs:
-      platforms:
-        description: all for a release; common for a canary (the targets most installs use, see scripts/release-targets.mjs)
-        type: string
-        default: all
+    outputs:
+      artifact-name:
+        description: Verified source candidate from this exact run and attempt
+        value: ${{ jobs.headless.outputs.artifact-name }}
   workflow_dispatch:
-    inputs:
-      platforms:
-        description: Which targets to package
-        type: choice
-        options: [all, common]
-        default: all
 
 permissions:
   contents: read
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  plan:
-    name: Plan targets
+  headless:
+    name: Ubuntu 24.04 amd64
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 45
+    env:
+      COS_TEST_WORKERS: '2'
+      COS_TEST_RETRY: '0'
     outputs:
-      include: ${{ steps.plan.outputs.include }}
-      files: ${{ steps.plan.outputs.files }}
+      artifact-name: ${{ steps.candidate.outputs.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Choose the packaged targets
-        id: plan
-        env:
-          PLATFORMS: ${{ inputs.platforms || 'all' }}
-        run: node scripts/release-targets.mjs "$PLATFORMS"
-
-  sources:
-    name: Package native library sources
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
-      - name: Verify and archive corresponding native sources
-        run: node scripts/package-native-sources.mjs
-      - name: Upload source artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: package-native-sources
-          path: release/Chat-On-Steroids-Native-Sources.tar.gz
-          if-no-files-found: error
-          retention-days: 30
-
-  package:
-    name: Package ${{ matrix.name }}
-    needs: plan
-    strategy:
-      fail-fast: false
-      # The six targets live in .github/release-targets.json; a canary packages only the common ones.
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.include) }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          architecture: ${{ matrix.arch }}
+          node-version: 24
           cache: npm
-
-      - name: Install dependencies
+          cache-dependency-path: |
+            package-lock.json
+            discord/package-lock.json
+      - name: Install Linux runtime and virtual display
         run: |
-          npm ci
-          npm ci --prefix discord --ignore-scripts
-
-      - name: Verify tag matches package version
-        if: github.ref_type == 'tag'
-        run: node -e "const v=require('./package.json').version;if(process.env.GITHUB_REF_NAME!=='v'+v)throw new Error('Tag '+process.env.GITHUB_REF_NAME+' does not match package version '+v)"
-
-      - name: Verify
-        run: npm run verify:ci
-        env:
-          # The slow Intel macOS and Windows runners retry a failed test; the flaky reporter still names
-          # every retried test as a warning. Windows had no retry, so a known timing flake failed 3 of 8
-          # canaries on 2026-10-04 (plugins-manager, bridge, code-mode-mcp), each green in its PR's CI.
-          COS_TEST_RETRY: ${{ ((matrix.platform == 'darwin' && matrix.arch == 'x64') || matrix.platform == 'win32') && '2' || '0' }}
-
-      - name: Prove native runner target
-        run: node -e "if(process.platform!=='${{ matrix.platform }}'||process.arch!=='${{ matrix.arch }}')throw new Error('Expected ${{ matrix.platform }}-${{ matrix.arch }}, got '+process.platform+'-'+process.arch)"
-
-      - name: Package
-        run: npm run ${{ matrix.script }}
-
-      - name: Smoke packaged runtime natively
-        run: node scripts/smoke-packaged-runtime.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
-
-      - name: Audit packaged macOS bundle metadata and Mach-O payloads
-        if: matrix.platform == 'darwin'
-        run: node scripts/smoke-macos-bundle.mjs ${{ matrix.arch }}
-
-      - name: Verify generated macOS archives
-        if: matrix.platform == 'darwin'
-        shell: bash
-        run: |
-          set -euo pipefail
-          dmg="$PWD/release/Chat-On-Steroids-macOS-${{ matrix.arch }}.dmg"
-          zip="$PWD/release/Chat-On-Steroids-macOS-${{ matrix.arch }}.zip"
-          test -f "$dmg"
-          test -f "$zip"
-          hdiutil verify "$dmg"
-          # ZIP containers cannot be code-signed, but DMGs can. v2.0.2 explicitly promises a
-          # publisher-unsigned Mac distribution, so reject a signed outer disk image as well as
-          # the .app. Fail closed if codesign itself errors for any reason other than the expected
-          # unsigned-object result.
-          set +e
-          codesign --display --verbose=4 "$dmg" >dmg-codesign.log 2>&1
-          dmg_codesign_status=$?
-          set -e
-          if [ "$dmg_codesign_status" -eq 0 ]; then
-            cat dmg-codesign.log
-            echo "macOS DMG unexpectedly has a code signature; release metadata says publisher-unsigned" >&2
-            exit 1
-          fi
-          if [ "$dmg_codesign_status" -ne 1 ] || ! grep -Eqi 'code object is not signed( at all)?' dmg-codesign.log; then
-            cat dmg-codesign.log
-            echo "Could not prove the macOS DMG is unsigned (codesign status $dmg_codesign_status)" >&2
-            exit 1
-          fi
-          unzip -tq "$zip"
-          mount_dir="$(mktemp -d)"
-          zip_dir="$(mktemp -d)"
-          cleanup() {
-            hdiutil detach "$mount_dir" -quiet >/dev/null 2>&1 || true
-            rmdir "$mount_dir" >/dev/null 2>&1 || true
-            rm -rf "$zip_dir"
-          }
-          trap cleanup EXIT
-          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg" >/dev/null
-          test -d "$mount_dir/Chat On Steroids.app"
-          test -L "$mount_dir/Applications"
-          test "$(readlink "$mount_dir/Applications")" = /Applications
-          test -x "$mount_dir/Chat On Steroids.app/Contents/MacOS/Chat On Steroids"
-          test -f "$mount_dir/Chat On Steroids.app/Contents/Info.plist"
-          node scripts/smoke-macos-bundle.mjs '${{ matrix.arch }}' "$mount_dir/Chat On Steroids.app"
-          # ditto is the macOS-native ZIP extractor and preserves executable modes/metadata.
-          ditto -x -k "$zip" "$zip_dir"
-          test -d "$zip_dir/Chat On Steroids.app"
-          test -x "$zip_dir/Chat On Steroids.app/Contents/MacOS/Chat On Steroids"
-          test -f "$zip_dir/Chat On Steroids.app/Contents/Info.plist"
-          node scripts/smoke-macos-bundle.mjs '${{ matrix.arch }}' "$zip_dir/Chat On Steroids.app"
-
-      - name: Launch packaged macOS app normally
-        if: matrix.platform == 'darwin'
-        run: node scripts/smoke-macos-gui.mjs ${{ matrix.arch }}
-
-      - name: Install generated DEB on target distro
-        if: matrix.platform == 'linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          deb="$PWD/release/Chat-On-Steroids-Linux-${{ matrix.arch }}.deb"
-          test -f "$deb"
-          echo "Generated control metadata:"
-          dpkg-deb --field "$deb" Package Version Architecture Depends
-          test "$(dpkg-deb --field "$deb" Package)" = chat-on-steroids
-          test "$(dpkg-deb --field "$deb" Version)" = "$(node -p "require('./package.json').version")"
-          expected_deb_arch=arm64
-          if [ '${{ matrix.arch }}' = x64 ]; then expected_deb_arch=amd64; fi
-          test "$(dpkg-deb --field "$deb" Architecture)" = "$expected_deb_arch"
-          depends="$(dpkg-deb --field "$deb" Depends)"
-          printf '%s\n' "$depends" | grep -Eq 'libgtk-3-0[[:space:]]*\|[[:space:]]*libgtk-3-0t64|libgtk-3-0t64[[:space:]]*\|[[:space:]]*libgtk-3-0'
-          printf '%s\n' "$depends" | grep -Eq 'libatspi2\.0-0[[:space:]]*\|[[:space:]]*libatspi2\.0-0t64|libatspi2\.0-0t64[[:space:]]*\|[[:space:]]*libatspi2\.0-0'
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends "$deb"
-          sudo apt-get install -y --no-install-recommends xvfb xauth
-          dpkg-query -W -f='${Status}\n' chat-on-steroids | grep -Fxq 'install ok installed'
-          desktop=/usr/share/applications/com.chatonsteroids.app.desktop
-          test -f "$desktop"
-          grep -Fxq 'Name=Chat On Steroids' "$desktop"
-          grep -Fxq 'Icon=chat-on-steroids' "$desktop"
-          grep -Fxq 'StartupWMClass=com.chatonsteroids.app' "$desktop"
-          # electron-builder's DEB postinstall registers /usr/bin through update-alternatives.
-          # Prove package integration is present, then anchor the full runtime smoke at the
-          # package-owned resolved binary rather than assuming an /opt product-directory spelling.
-          test -L /usr/bin/chat-on-steroids
-          ELECTRON_RUN_AS_NODE=1 /usr/bin/chat-on-steroids -e "if(process.platform!=='linux'||process.arch!=='${{ matrix.arch }}')process.exit(9); console.log('deb-runtime-ok')" | grep -Fxq 'deb-runtime-ok'
-          installed_executable="$(readlink -f /usr/bin/chat-on-steroids)"
-          test -x "$installed_executable"
-          dpkg-query -S "$installed_executable" | grep -Eq '^chat-on-steroids:'
-          node scripts/smoke-packaged-runtime.mjs --platform linux --arch '${{ matrix.arch }}' --root "$(dirname "$installed_executable")"
-
-      - name: Launch installed DEB normally under Xvfb
-        if: matrix.platform == 'linux'
-        shell: bash
+          sudo apt-get install -y --no-install-recommends xvfb xauth x11-utils libgtk-3-0t64 libnss3 libasound2t64 libgbm1
+      - name: Install locked dependencies and verified native runtime
         run: |
-          set -euo pipefail
-          deb_smoke_root="$(mktemp -d)"
-          cleanup_path_with_retries() {
-            target="$1"
-            for attempt in 1 2 3 4 5; do
-              rm -rf "$target" 2>/dev/null && return 0
-              sleep 0.2
-            done
-            # Cleanup is not product evidence, the same rule the AppImage smoke below follows.
-            # `timeout` signals xvfb-run rather than the process tree beneath it, so an Electron
-            # helper can still be writing into the sandbox here, and `rm -rf` over a directory
-            # that is still gaining entries fails with "Directory not empty". Under `set -e`
-            # that teardown race outranked a smoke test whose own assertions had all passed,
-            # and skipped the release assembly with every package job green.
-            rm -rf "$target" 2>/dev/null || true
-          }
-          trap 'cleanup_path_with_retries "$deb_smoke_root"' EXIT
-          mkdir -p \
-            "$deb_smoke_root/home" \
-            "$deb_smoke_root/config" \
-            "$deb_smoke_root/cache" \
-            "$deb_smoke_root/data" \
-            "$deb_smoke_root/state"
-          set +e
-          HOME="$deb_smoke_root/home" \
-          XDG_CONFIG_HOME="$deb_smoke_root/config" \
-          XDG_CACHE_HOME="$deb_smoke_root/cache" \
-          XDG_DATA_HOME="$deb_smoke_root/data" \
-          XDG_STATE_HOME="$deb_smoke_root/state" \
-          CLF_DEBUG=1 timeout --signal=TERM --kill-after=5s 12s xvfb-run -a /usr/bin/chat-on-steroids >deb-gui.log 2>&1
-          status=$?
-          set -e
-          cat deb-gui.log
-          if [ "$status" -ne 124 ]; then
-            echo "Installed DEB GUI exited before the intentional timeout (status $status)" >&2
-            exit 1
-          fi
-          grep -Fq '[info] app started' deb-gui.log
-          grep -Fq '[info] window loaded' deb-gui.log
-          grep -Fq '[info] renderer state ready' deb-gui.log
-          if grep -Fq '[error] window failed to load' deb-gui.log || grep -Fq '[error] renderer:' deb-gui.log; then
-            echo "Installed DEB GUI reported a renderer startup failure" >&2
-            exit 1
-          fi
-
-      - name: Execute generated static-runtime AppImage
-        if: matrix.platform == 'linux'
-        shell: bash
+          npm ci --ignore-scripts
+          npm run discord:install
+          npm run headless:prepare
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: Verify complete regression suite and generated Discord reference
         run: |
-          set -euo pipefail
-          appimage="$PWD/release/Chat-On-Steroids-Linux-${{ matrix.arch }}.AppImage"
-          test -x "$appimage"
-          # Exercise the actual static-runtime artifact through Chromium/Electron startup and
-          # require renderer-state proof rather than accepting a process that merely hangs.
-          # Do not use Electron's Node mode through AppRun here: when user namespaces are blocked,
-          # the 1.0.3 launcher can prepend --no-sandbox, which Node mode rejects as a bad option.
-          # The unpacked native-runtime probe above already validates every native dependency.
-          # First launch with the runner's real namespace/tool environment. Then force the
-          # launcher's namespace probe to fail in a second, independently isolated profile so CI
-          # covers both the ordinary host decision and the documented --no-sandbox fallback.
-          fake_bin="$(mktemp -d)"
-          normal_smoke_root="$(mktemp -d)"
-          fallback_smoke_root="$(mktemp -d)"
-          cleanup() {
-            rm -rf "$fake_bin" "$normal_smoke_root" "$fallback_smoke_root"
-          }
-          trap cleanup EXIT
-          printf '#!/bin/sh\nexit 1\n' > "$fake_bin/unshare"
-          chmod +x "$fake_bin/unshare"
-          run_appimage_smoke() {
-            label="$1"
-            smoke_root="$2"
-            launch_path="$3"
-            log="$4"
-            mkdir -p \
-              "$smoke_root/home" \
-              "$smoke_root/config" \
-              "$smoke_root/cache" \
-              "$smoke_root/data" \
-              "$smoke_root/state"
-            set +e
-            HOME="$smoke_root/home" \
-            XDG_CONFIG_HOME="$smoke_root/config" \
-            XDG_CACHE_HOME="$smoke_root/cache" \
-            XDG_DATA_HOME="$smoke_root/data" \
-            XDG_STATE_HOME="$smoke_root/state" \
-            PATH="$launch_path" \
-            CLF_DEBUG=1 timeout --signal=TERM --kill-after=5s 12s xvfb-run -a "$appimage" >"$log" 2>&1
-            status=$?
-            set -e
-            cat "$log"
-            if [ "$status" -ne 124 ]; then
-              echo "AppImage $label GUI exited before the intentional timeout (status $status)" >&2
-              exit 1
-            fi
-            grep -Fq '[info] app started' "$log"
-            grep -Fq '[info] window loaded' "$log"
-            grep -Fq '[info] renderer state ready' "$log"
-            if grep -Fq '[error] window failed to load' "$log" || grep -Fq '[error] renderer:' "$log"; then
-              echo "AppImage $label GUI reported a renderer startup failure" >&2
-              exit 1
-            fi
-          }
-          run_appimage_smoke normal "$normal_smoke_root" "$PATH" appimage-normal-gui.log
-          run_appimage_smoke forced-fallback "$fallback_smoke_root" "$fake_bin:$PATH" appimage-fallback-gui.log
-
-      - name: Upload package artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          npm run verify:ci
+          node scripts/generate-discord-reference.mjs --check
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.files }}
-          if-no-files-found: error
-          retention-days: 30
-
-  assemble:
-    name: Assemble release candidate
-    needs: [plan, package, sources]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: package-*
-          path: release
-          merge-multiple: true
-
-      - name: Package standalone extension
-        run: |
-          set -euo pipefail
-          # Same stamp as the packaged app, so a ZIP-loaded extension reports its build (#568).
-          node scripts/write-extension-stamp.mjs
-          (cd extension && zip -qr ../release/Chat-On-Steroids-Extension.zip . -x '*.map')
-          zip -q release/Chat-On-Steroids-Extension.zip LICENSE
-          node -e "const m=require('./extension/manifest.json'),p=require('./package.json');if(m.version!==p.version)throw new Error('Extension '+m.version+' does not match app '+p.version)"
-          for required in manifest.json build-stamp.txt background.js chatgpt-dom.js content.js fiber.js overlay.css popup.html popup.css popup.js icons/icon16.png icons/icon32.png icons/icon48.png icons/icon128.png LICENSE; do
-            unzip -Z1 release/Chat-On-Steroids-Extension.zip | grep -Fxq "$required" || { echo "Extension zip missing $required" >&2; exit 1; }
-          done
-
-      - name: Create SHA-256 checksums
+          python-version: '3.12'
+      - name: Install pinned plugin Python runtime
+        run: python -m pip install uv==0.12.5
+      - name: Exercise published plugins on Linux
         env:
-          FILES: ${{ needs.plan.outputs.files }}
+          COS_PLUGIN_LIVE_TEST: '1'
+        run: npx vitest run --maxWorkers=1 test/plugins-live-proxy.test.ts test/plugins-python-live.test.ts test/plugins-catalog-live.test.ts
+      - name: Build and verify both applications with provenance
         run: |
-          set -euo pipefail
-          # Exactly the planned targets plus the extension and native sources; nothing may be missing.
-          read -r -a files <<< "$FILES"
-          for file in "${files[@]}"; do test -f "release/$file" || { echo "Missing release/$file" >&2; exit 1; }; done
-          (cd release && sha256sum "${files[@]}" > SHA256SUMS.txt)
-          cat release/SHA256SUMS.txt
-
-      - name: Upload release candidate
+          npm run headless:build
+          npm run verify:headless-build
+      - name: Verify deployment boundaries and maintenance fault drills
+        run: npm run verify:deployment
+      - name: Exercise real windowless Electron and browser lifecycle
+        run: |
+          browser="$(command -v google-chrome)"
+          test -x "$browser"
+          COS_SMOKE_BROWSER="$browser" npm run verify:headless
+          npm run verify:headless-build
+      - name: Assemble verified source candidate
+        id: candidate
+        env:
+          CANDIDATE_NAME: headless-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          node scripts/headless-candidate.mjs create candidate "$(git rev-parse HEAD)"
+          echo "name=$CANDIDATE_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Headless source candidate'
+            echo 'Ubuntu 24.04 amd64 / Node 24: regression suite, provenance build, deployment drills and isolated Electron/Xvfb/browser lifecycle passed.'
+            echo 'Download the candidate artifact below. Build its commit on the VPS using docs/headless-vps.md before installation.'
+            echo 'Authenticated provider/Discord delivery, privileged installation and long-running VPS acceptance remain separate live gates.'
+            cat candidate/HEADLESS-BUILD.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.candidate.outputs.name }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Keep build evidence on failure
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          # Artifact names reject `/`, so direct candidate runs from feature/foo refs must not
-          # fail after all six package jobs. A run id is filesystem-safe and caller-stable.
-          name: chat-on-steroids-candidate-${{ github.run_id }}
+          name: headless-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            release/Chat-On-Steroids-*
-            release/SHA256SUMS.txt
-          if-no-files-found: error
-          retention-days: 30
+            runtime/headless-build.json
+            outputs/
+          if-no-files-found: ignore
+          retention-days: 7

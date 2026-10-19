@@ -1,14 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const publishedAudit = readFileSync(new URL('../.github/workflows/verify-release.yml', import.meta.url), 'utf8');
-const publish = readFileSync(new URL('../.github/workflows/publish.yml', import.meta.url), 'utf8');
+const publishedAudit = readFileSync(new URL('../.github/workflows/desktop-verify-release.yml', import.meta.url), 'utf8');
+const publish = readFileSync(new URL('../.github/workflows/desktop-publish.yml', import.meta.url), 'utf8');
 
 describe('release asset verification on repository forks', () => {
   it('runs the reusable post-publication verifier without an upstream-only repository guard', () => {
     expect(publishedAudit).toMatch(/on:\s*\n[\s\S]*?workflow_call:/);
     expect(publishedAudit).toMatch(/workflow_dispatch:/);
-    expect(publishedAudit).toMatch(/release:\s*\n\s+types: \[published\]/);
+    expect(publishedAudit).not.toMatch(/\n  release:/);
     expect(publishedAudit).toMatch(/jobs:\s*\n\s+verify:\s*\n/);
     expect(publishedAudit).not.toMatch(/if:\s*github\.repository\s*==\s*['"]totec448-spec\/chat-on-steroids['"]/);
     expect(publishedAudit).toContain('scripts/verify-release-assets.mjs');
@@ -17,7 +17,7 @@ describe('release asset verification on repository forks', () => {
   it('does not demand full stable-release assets when the rolling canary prerelease is published', () => {
     // The canary workflow intentionally drops the native-sources archive and packages
     // only common platforms, while verify-release-assets requires the full release set.
-    const canary = readFileSync(new URL('../.github/workflows/canary.yml', import.meta.url), 'utf8');
+    const canary = readFileSync(new URL('../.github/workflows/desktop-canary.yml', import.meta.url), 'utf8');
     expect(canary).toContain('grep -vF');
     expect(canary).toContain('prerelease=true');
     expect(publishedAudit).toContain("if: (github.event_name != 'release' || github.event.release.prerelease == false) && inputs.tag != 'canary'");
@@ -25,7 +25,7 @@ describe('release asset verification on repository forks', () => {
   });
 
   it('requires publish.yml to invoke this verifier after publishing, not before', () => {
-    expect(publish).toMatch(/verify:\s*\n\s+name: Verify published files\s*\n\s+needs: publish\s*\n\s+uses: \.\/\.github\/workflows\/verify-release\.yml/);
+    expect(publish).toMatch(/verify:\s*\n\s+name: Verify published files\s*\n\s+needs: publish\s*\n\s+uses: \.\/\.github\/workflows\/desktop-verify-release\.yml/);
     expect(publishedAudit).toContain('gh release download "$TAG" --repo "$GITHUB_REPOSITORY"');
   });
 
