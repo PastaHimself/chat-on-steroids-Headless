@@ -29,6 +29,7 @@ describe('Headless Actions deployment contract', () => {
 
   it('builds one sealed headless candidate and verifies the actual archive before upload', () => {
     const release = text('workflows/release.yml');
+    expect(read('workflows/release.yml').on.pull_request.paths).toContain('scripts/package-headless.mjs');
     expect(release).not.toMatch(/matrix|dist:|platforms:/);
     expect(release).toContain('npm run headless:build');
     expect(release).toContain('scripts/package-headless.mjs');

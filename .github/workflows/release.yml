@@ -3,6 +3,16 @@ name: Headless release candidate
 on:
   workflow_call:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/actions/setup-headless/**'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/publish.yml'
+      - '.github/workflows/canary.yml'
+      - '.github/workflows/verify-release.yml'
+      - 'scripts/package-headless.mjs'
+      - 'scripts/verify-headless-release.mjs'
+      - 'scripts/headless-provenance.mjs'
 
 permissions:
   contents: read
