@@ -27,6 +27,7 @@ describe('Headless Actions entry points', () => {
     }
     expect(commands.indexOf('apt-get install')).toBeLessThan(commands.indexOf('npm run headless:prepare'));
     expect(commands.indexOf('npm run verify:ci')).toBeLessThan(commands.indexOf('npm run headless:build'));
+    expect(commands.indexOf('node scripts/generate-discord-reference.mjs --check')).toBeGreaterThan(commands.indexOf('npm run headless:build'));
     expect(commands).not.toMatch(/--no-sandbox|npm run dist|verify:ui/);
     expect(commands).toContain('COS_SMOKE_BROWSER');
     expect(steps.some((step: any) => step.env?.COS_PLUGIN_LIVE_TEST === '1')).toBe(true);

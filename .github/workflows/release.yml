@@ -45,10 +45,8 @@ jobs:
           npm run headless:prepare
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
-      - name: Verify complete regression suite and generated Discord reference
-        run: |
-          npm run verify:ci
-          node scripts/generate-discord-reference.mjs --check
+      - name: Verify complete regression suite
+        run: npm run verify:ci
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -62,6 +60,7 @@ jobs:
         run: |
           npm run headless:build
           npm run verify:headless-build
+          node scripts/generate-discord-reference.mjs --check
       - name: Verify deployment boundaries and maintenance fault drills
         run: npm run verify:deployment
       - name: Exercise real windowless Electron and browser lifecycle
