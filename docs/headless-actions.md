@@ -14,7 +14,7 @@ display. The standalone Discord package uses its own lockfile and Node 24.
 | Headless canary | Main only, after app-relevant changes: builds the same candidate, verifies its exact commit and stages/digest-checks a replacement before updating the rolling canary prerelease. |
 | Publish Headless release | Manual dispatch at a reviewed `vX.Y.Z` tag: checks version metadata, release notes, privacy and existing-release absence; builds its own candidate and re-verifies the extracted payload before publishing. |
 | Verify published Headless release | Downloads published assets and checks both hashes, tag/version, the expected commit, source/payload inventories, compiled durable formats and native runtime. Called directly after stable publication because token-created releases do not start another workflow. |
-| CodeQL / PR checklist | Code scanning and the existing PR/fail-first checks remain. Fail-first runs with Node 24, including when a changed native test selects Windows. |
+| CodeQL / PR checklist | Code scanning and the existing PR/fail-first checks remain. Fail-first runs with Node 24, restores changed workflow/composite configuration, and exercises changed Node `.mjs` regressions as well as Vitest suites. Native test changes can still select Windows. |
 
 All build/check jobs have read-only repository permissions. Publication alone gets
 `contents: write`; failed-release audits get issue creation. Setup installs OS

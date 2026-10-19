@@ -4931,7 +4931,8 @@ with other suites' native windows or input; its assertions remain unchanged. `vi
 forces Node, bounded hooks/tests, `CLF_BRIDGE_PORTS=0`
 and test-only `CLF_EVIDENCE_MS=1500`; never let tests contact the installed production bridge.
 Opt-in live plugin/macOS probes are separate evidence, not implied by the ordinary suite.
-The Node 24 fail-first workflow selects Windows for changed `test/windows-*` and `test/computer*`
+The Node 24 fail-first workflow restores changed Actions configuration as well as app code,
+runs changed `.test.mjs` suites with Node and `.test.ts` suites with Vitest, and selects Windows for changed `test/windows-*` and `test/computer*`
 suites through `scripts/pr-fail-first.mjs`; other changes keep the Linux runner. The selected
 job still runs changed tests against base code: platform-skipped native tests are not proof.
 

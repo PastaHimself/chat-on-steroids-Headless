@@ -11,8 +11,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, rmSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-const CODE = /^(src|extension|scripts|native|build)\//;
-const TEST = /^test\/.+\.test\.ts$/;
+const CODE = /^(?:(src|extension|scripts|native|build)\/|\.github\/(?:workflows|actions)\/)/;
+const TEST = /^test\/.+\.test\.(?:ts|mjs)$/;
 const TEST_SUPPORT = /^(test\/|scripts\/verify-[^/]+\.cjs$|scripts\/fixtures\/)/;
 const OPT_OUT = /^fail-first:\s*n\/a\b.{10,}/im;
 
@@ -70,8 +70,19 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   for (const file of plan.remove) rmSync(file, { force: true });
   console.log(`Running ${plan.tests.length} changed test file(s) against the base branch's code:`);
   for (const file of plan.tests) console.log(`  ${file}`);
-  const run = spawnSync('npx', ['vitest', 'run', ...plan.tests], { stdio: 'inherit', shell: process.platform === 'win32' });
-  if (run.status === 0) {
+  const typescript = plan.tests.filter(file => file.endsWith('.ts'));
+  const node = plan.tests.filter(file => file.endsWith('.mjs'));
+  const commands = [
+    ...(typescript.length ? [{ command: 'npx', args: ['vitest', 'run', ...typescript] }] : []),
+    ...(node.length ? [{ command: process.execPath, args: ['--test', ...node] }] : [])
+  ];
+  let failed = false;
+  for (const { command, args } of commands) {
+    const run = spawnSync(command, args, { stdio: 'inherit', shell: command === 'npx' && process.platform === 'win32' });
+    if (run.error || run.status === null) throw new Error(`Fail-first runner could not complete: ${run.error ?? run.signal}`);
+    failed ||= run.status !== 0;
+  }
+  if (!failed) {
     const message = 'The changed tests also pass without your code change, so they do not show that it fixes anything. ' +
       'Add a test that fails on main and passes with your change, or write "Fail-first: n/a <reason>" if the tests only follow a refactor.';
     console.log(message);

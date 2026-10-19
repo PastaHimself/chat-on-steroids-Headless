@@ -8,19 +8,19 @@ The selected approach replaces the upstream OS matrix. Keeping that matrix as th
 primary gate would retain unnecessary GUI checks; adding another headless-only
 workflow would leave the desktop release and canary paths active.
 
-- [ ] Add workflow regressions for Linux/Node 24, both lockfiles, required Brave
+- [x] Add workflow regressions for Linux/Node 24, both lockfiles, required Brave
   smoke, sealed builds, immutable candidate identity and headless-only assets.
-- [ ] Share CI provisioning through a local composite action. Run the complete
+- [x] Share CI provisioning through a local composite action. Run the complete
   Linux suite, isolated native tests, deployment checks and the real Xvfb/Brave
   smoke. Keep live plugin checks separate and preserve CodeQL.
-- [ ] Build a tar bundle containing committed source and the sealed payload,
+- [x] Build a tar bundle containing committed source and the sealed payload,
   excluding Git metadata and the upstream snapshot archives. Publish matching
   native sources and checksums. Re-extract and verify source/payload inventories,
   compiled formats, native runtime, commit and version before upload/publication.
-- [ ] Update candidate, canary, stable publication and published-file audits to
+- [x] Update candidate, canary, stable publication and published-file audits to
   consume the same exact headless asset set. Preserve tag/version/notes/privacy
   checks, existing-release refusal and the staged canary replacement safeguards.
-- [ ] Replace obsolete desktop workflow assertions with headless assertions;
+- [x] Replace obsolete desktop workflow assertions with headless assertions;
   retain tests for desktop packaging scripts that are still usable locally.
 - [ ] Document download/install provenance and actual checks, update AGENTS.md,
   run targeted and full checks, commit and open an unmerged PR in this fork.

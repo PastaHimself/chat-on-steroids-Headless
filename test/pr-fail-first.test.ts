@@ -7,6 +7,18 @@ const plan = planFailFirst as (nameStatus: string) => { tests: string[]; restore
 const runner = runnerForFailFirst as (nameStatus: string) => string;
 
 describe('fail-first proof plan', () => {
+  it('restores Actions configuration and includes standalone Headless Node regressions', () => {
+    expect(plan([
+      'M\t.github/workflows/ci.yml',
+      'A\t.github/actions/setup-headless/action.yml',
+      'A\ttest/headless-release.test.mjs'
+    ].join('\n'))).toEqual({
+      tests: ['test/headless-release.test.mjs'],
+      restore: ['.github/workflows/ci.yml'],
+      remove: ['.github/actions/setup-headless/action.yml']
+    });
+  });
+
   it('bounds the workflow runner to the two named hosted platforms', () => {
     const workflow = readFileSync(new URL('../.github/workflows/pr-checklist.yml', import.meta.url), 'utf8');
     expect(workflow).toContain("runs-on: ${{ needs.fail-first-platform.outputs.runner == 'windows-2025' && 'windows-2025' || 'ubuntu-24.04' }}");
