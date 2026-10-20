@@ -70,6 +70,6 @@ it('leaves no tag behind in plain text, however the markup nests it (code scanni
 
 
 it('discards raw incomplete tag delimiters while preserving encoded authored comparison text', () => {
-  expect(plainTextOfHtml('<p>Safe</p><script')).toBe('Safescript');
+  expect(plainTextOfHtml('<p>Safe</p><script')).toBe('Safe\nscript');
   expect(plainTextOfHtml('<p>x &lt; 5 and y &gt; 2</p>')).toBe('x < 5 and y > 2');
 });
