@@ -178,6 +178,21 @@ export function historyDescription(events: any[]): string {
   return events
     .map(event => {
       const emoji = event.kind === 'user_message' ? '💬' : event.kind === 'assistant_message' ? '🤖' : '⚙️';
+      if (event.kind === 'tool_call' && event.tool) {
+        const tool = event.tool;
+        const result = typeof tool.result?.text === 'string' ? tool.result.text : null;
+        const changes = Array.isArray(tool.changes) ? tool.changes : [];
+        const files = changes.slice(0, 4).map((change: any) =>
+          `${String(change.path ?? '').replace(/\s+/g, ' ').slice(0, 180)} (+${change.added ?? 0} / -${change.removed ?? 0})`);
+        return [
+          `**${emoji} ${event.kind} · ${event.position}**`,
+          tool.summary?.title ?? tool.name ?? 'Recorded action',
+          tool.summary?.detail,
+          `Outcome: ${tool.outcome && tool.outcome !== 'null' ? tool.outcome : 'not recorded'}${Number.isFinite(tool.durationMs) ? ` · ${tool.durationMs} ms` : ''}`,
+          result === null ? 'Result: not recorded' : `Result: ${result.slice(0, 400)}${tool.result?.truncated || result.length > 400 ? '\n[result shortened]' : ''}`,
+          files.length ? `Files: ${files.join('; ')}${changes.length > 4 ? `; … ${changes.length - 4} more recorded changes` : ''}` : ''
+        ].filter(Boolean).join('\n');
+      }
       return `**${emoji} ${event.kind} · ${event.position}**\n${event.message?.text ?? event.tool?.summary?.title ?? event.detail ?? event.outcome ?? event.delivery ?? ''}${event.message?.truncated ? '\n[recorded display shortened]' : ''}`;
     })
     .join('\n\n');

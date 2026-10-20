@@ -3858,6 +3858,9 @@ leases, approved-root revalidation and caller incarnation; MCP and remote contro
 `discord/src/state.ts` owns only bot grants, setup drafts, local session mappings and notification
 checkpoints. It never reads backend ledgers. Discord status skips provider-scoped worker reads
 for an unbound admitted local session, so a legitimate `no_chat` cannot hide its input status.
+Discord `/workerlogs` and recorded history show bounded tool outcomes, results and changed-file
+counts from the existing Control API event projection. Missing results remain explicitly
+unknown; shortening a result is labelled. These read-only views grant no worker authority.
 Discord status prioritizes provider restrictions, compaction attention and recovery attempts
 over a saved open-turn marker. An open recorded turn is shown as Turn Open and does not prove
 provider liveness; a reload alone does not prove assistant recovery. Recovery kinds/deadlines
