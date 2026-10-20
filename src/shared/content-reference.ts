@@ -44,9 +44,16 @@ export function plainTextOfHtml(html: string): string {
   let previous: string;
   do {
     previous = html;
-    html = html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, '');
+    html = html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '');
+  } while (html !== previous);
+  do {
+    previous = html;
+    html = html.replace(/<[^>]+>/g, '');
   } while (html !== previous);
   return html
+    // Valid captured HTML encodes authored comparison signs. Discard raw dangling
+    // delimiters before decoding those entities, rather than returning a partial tag.
+    .replace(/[<>]/g, '')
     .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+|#39);/gi, (entity, name: string) => {
       if (name.startsWith('#x') || name.startsWith('#X')) return String.fromCodePoint(parseInt(name.slice(2), 16));
       if (name.startsWith('#') && name !== '#39') return String.fromCodePoint(Number(name.slice(1)));
