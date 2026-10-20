@@ -5000,8 +5000,8 @@ Source integration does not establish installation or feature parity. Headless C
 remains fork-owned; upstream native/Firefox publication jobs are not activated.
 
 Source, bundle, package, installed bytes and live behavior are separate gates (§3). `runtime/durable-formats.json`
-now includes `providerHistoryBackoff:1` and `freshTurns:1`; older code cannot ignore the
-restriction ledger or misparse rotation rows during a code-only downgrade. Use a matching
+includes `providerHistoryBackoff:1`, `freshTurns:1` and `providerInputActions:1`; older code cannot ignore the
+restriction ledger or misparse rotation, native edit or branch rows during a code-only downgrade. Use a matching
 encrypted pre-upgrade backup and the existing restore/reconciliation hold for rollback. The app id
 is `com.chatonsteroids.app`. Native release targets are Windows x64/arm64 NSIS, macOS x64/arm64
 DMG+ZIP and Linux x64/arm64 AppImage+DEB. Windows is per-user-capable and `asInvoker`; replacing
