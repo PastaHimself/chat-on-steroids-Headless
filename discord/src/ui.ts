@@ -149,28 +149,50 @@ export function inputDeliveryDescription(input: any): string {
   return `Input: ${input.id}\nOutbox: ${input.state}\n${phase}${preparation}${input.error ? `\nDelivery diagnostic: ${input.error}` : ''}`;
 }
 
-export function sessionDescription(detail: any): string {
+export function sessionDescription(detail: any): PanelField[] {
   const session = detail.session, live = detail.live;
   const status = sessionStatusIndicator(detail);
 
-  return [
-    `Session: ${session.title || 'Untitled session'}`,
-    `Observed model: ${session.model ?? 'unknown'}`,
-    `State: ${status.emoji} ${status.text.toLowerCase()}`,
-    goalDescription(live),
-    live?.blocked ? `Blocked: ${live.blocked}` : '',
-    ...(live?.recovery ?? []).map((row: any) => `Recovery: ${row.kind}${Number.isFinite(row.deadline) ? ` · ${new Date(row.deadline).toISOString()}` : ''}`),
-    ...(live?.job ? [
-      `Compact & Resume: ${live.job.stage}`,
-      `Handoff Send: ${live.job.sourceSend ?? 'unknown'}`,
-      `Replacement Send: ${live.job.destinationSend ?? 'unknown'}`,
-      live.job.needsAttention ? `Compaction needs attention: ${live.job.error ?? 'Inspect the paired browser and existing handoff receipts.'}` :
-        live.job.error ? `Compaction note: ${live.job.error}` : ''
-    ] : []),
-    `Last recorded outcome (turn only): ${session.lastTurnOutcome ?? 'unknown'}`,
-    `Updated: ${new Date(session.updatedAt).toISOString()}`,
-    'An open recorded turn does not prove current provider activity. A stopped generation alone does not prove task success.'
-  ].filter(Boolean).join('\n');
+  const fields: PanelField[] = [];
+
+  fields.push({
+    name: 'Session',
+    value: `**Title:** ${session.title || 'Untitled session'}\n**Model:** ${session.model ?? 'unknown'}\n**State:** ${status.emoji} ${status.text}`,
+    inline: false
+  });
+
+  const automation = [];
+  automation.push(`**Mode:** ${live?.automation ?? 'unavailable'}`);
+  if (live?.blocked) automation.push(`**Blocked:** ${live.blocked}`);
+  if (live?.goalWait) automation.push(`**Waiting:** ${live.goalWait.reason}`);
+  if (live?.recovery && live.recovery.length > 0) {
+    automation.push(`**Recovery:**\n${live.recovery.map((row: any) => `• ${row.kind}${Number.isFinite(row.deadline) ? ` (deadline: <t:${Math.floor(row.deadline / 1000)}:R>)` : ''}`).join('\n')}`);
+  }
+  const gd = goalDescription(live);
+  if (gd && !gd.startsWith('Automation:')) automation.push(gd);
+  else if (gd && live?.automation === 'goal') {
+      const gdl = gd.split('\n').slice(1).join('\n');
+      if (gdl) automation.push(gdl);
+  }
+  fields.push({ name: 'Automation & Health', value: automation.join('\n'), inline: false });
+
+  if (live?.job) {
+    const jobInfo = [
+      `**Stage:** ${live.job.stage}`,
+      `**Handoff Send:** ${live.job.sourceSend ?? 'unknown'}`,
+      `**Replacement Send:** ${live.job.destinationSend ?? 'unknown'}`,
+      live.job.needsAttention ? `⚠️ **Needs attention:** ${live.job.error ?? 'Inspect browser/handoff receipts.'}` : (live.job.error ? `**Note:** ${live.job.error}` : '')
+    ].filter(Boolean);
+    fields.push({ name: 'Compact & Resume', value: jobInfo.join('\n'), inline: false });
+  }
+
+  fields.push({
+    name: 'Activity',
+    value: `**Outcome:** ${session.lastTurnOutcome ?? 'unknown'}\n**Updated:** <t:${Math.floor(new Date(session.updatedAt).getTime() / 1000)}:R>`,
+    inline: false
+  });
+
+  return fields;
 }
 
 export function historyDescription(events: any[]): string {
@@ -178,7 +200,11 @@ export function historyDescription(events: any[]): string {
   return events
     .map(event => {
       const emoji = event.kind === 'user_message' ? '💬' : event.kind === 'assistant_message' ? '🤖' : '⚙️';
-      return `**${emoji} ${event.kind} · ${event.position}**\n${event.message?.text ?? event.tool?.summary?.title ?? event.detail ?? event.outcome ?? event.delivery ?? ''}${event.message?.truncated ? '\n[recorded display shortened]' : ''}`;
+      let content = event.message?.text ?? event.tool?.summary?.title ?? event.detail ?? event.outcome ?? event.delivery ?? '';
+      if (content) {
+        content = content.split('\n').map((line: string) => `> ${line}`).join('\n');
+      }
+      return `**${emoji} ${event.kind} · ${event.position}**\n${content}${event.message?.truncated ? '\n> *[recorded display shortened]*' : ''}`;
     })
     .join('\n\n');
 }
@@ -186,29 +212,62 @@ export function historyDescription(events: any[]): string {
 export function taskPlanDescription(plan: any): string {
   if (!plan) return 'No durable executor update_plan document is recorded.';
   const completed = plan.plan.filter((row: any) => row.status === 'completed').length;
-  return [
-    `**Progress:** ${completed}/${plan.plan.length} steps marked completed by executor.`,
-    plan.explanation ? `*Explanation:* ${plan.explanation}` : '',
-    ...plan.plan.map((row: any, index: number) => `${index + 1}. ${row.status === 'completed' ? '✅' : row.status === 'in_progress' ? '▶️' : '⚪'} **${row.step}**\n${row.details ? `└ ${row.details}` : ''}`),
-    '\n*These are the executor’s recorded progress labels; inspect results for verification.*'
-  ].filter(Boolean).join('\n');
+
+  const progressLine = `**Progress:** \`${completed}/${plan.plan.length}\` steps marked completed by executor.`;
+  const explanation = plan.explanation ? `\n> *${plan.explanation}*\n` : '';
+
+  const steps = plan.plan.map((row: any, index: number) => {
+    const icon = row.status === 'completed' ? '✅' : row.status === 'in_progress' ? '▶️' : '⚪';
+    return `${icon} **Step ${index + 1}:** ${row.step}${row.details ? `\n   └ ${row.details}` : ''}`;
+  }).join('\n\n');
+
+  return `${progressLine}${explanation}\n${steps}\n\n*These are the executor’s recorded progress labels; inspect results for verification.*`;
 }
 
-export function resourceDescription(resource: any): string {
+export function resourceDescription(resource: any): PanelField[] {
   const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
   const browsers = resource.processes.filter((row: any) => row.kind === 'browser');
-  return [
-    `💻 **CPU:** ${resource.cpuCount} cores · load ${resource.loadAverage.map((value: number) => value.toFixed(2)).join(' / ')}`,
-    `🧠 **Physical RAM:** ${gib(resource.memory.totalBytes)} · available ${gib(resource.memory.availableBytes)} · pressure ${resource.pressure}`,
-    `⚡ **Backend Resident Memory:** ${gib(resource.memory.app.rss)}`,
-    `💾 **Disk:** ${gib(resource.disk.availableBytes)} available / ${gib(resource.disk.totalBytes)}`,
-    ...resource.swaps.map((row: any) => `🔄 ${row.kind === 'zram' ? 'ZRAM' : 'Disk swap'}: ${gib(row.usedBytes)} used / ${gib(row.bytes)} · priority ${row.priority}`),
-    `🌐 **Browser Processes:** ${browsers.length} · combined RSS ${gib(browsers.reduce((sum: number, row: any) => sum + row.rssBytes, 0))} (shared pages may be counted more than once)`,
-    `🐚 **Terminal Shells:** ${resource.processes.filter((row: any) => row.kind === 'terminal').length}`,
-    `❓ **Possible Orphan PIDs:** ${resource.possibleOrphans.slice(0, 12).join(', ') || 'none observed'} (parent PID 1 can also mean a managed process)`,
-    `🌐 **Dedicated Browser Profile:** ${resource.browser?.configured ? resource.browser.accessible ? 'accessible' : 'unavailable' : 'not configured'}`,
-    ...(resource.systemd.services ?? []).map((row: any) => `⚙️ ${row.name}: ${row.active} / ${row.state}`),
-    resource.systemd.available ? '' : '⚠️ Systemd state unavailable; check systemctl locally.',
-    '\nDiagnostics never terminate active work. Browser presence does not prove ChatGPT authentication.'
-  ].filter(Boolean).join('\n');
+
+  const fields: PanelField[] = [];
+
+  fields.push({
+    name: '💻 CPU & RAM',
+    value: `**Cores:** ${resource.cpuCount}\n**Load:** \`${resource.loadAverage.map((value: number) => value.toFixed(2)).join(' / ')}\`\n**Physical:** ${gib(resource.memory.totalBytes)} (av: ${gib(resource.memory.availableBytes)})\n**Pressure:** ${resource.pressure}\n**App RSS:** ${gib(resource.memory.app.rss)}`,
+    inline: true
+  });
+
+  const diskInfo = [
+    `**Available:** ${gib(resource.disk.availableBytes)} / ${gib(resource.disk.totalBytes)}`,
+    ...resource.swaps.map((row: any) => `🔄 ${row.kind === 'zram' ? 'ZRAM' : 'Disk swap'}: ${gib(row.usedBytes)} used / ${gib(row.bytes)}`)
+  ];
+  fields.push({
+    name: '💾 Storage & Swap',
+    value: diskInfo.join('\n'),
+    inline: true
+  });
+
+  fields.push({
+    name: '🌐 Processes',
+    value: `**Browsers:** ${browsers.length}\n**RSS:** ${gib(browsers.reduce((sum: number, row: any) => sum + row.rssBytes, 0))}\n**Shells:** ${resource.processes.filter((row: any) => row.kind === 'terminal').length}\n**Profile:** ${resource.browser?.configured ? resource.browser.accessible ? 'Accessible' : 'Unavailable' : 'Not configured'}`,
+    inline: false
+  });
+
+  const sysInfo = [];
+  if (resource.possibleOrphans && resource.possibleOrphans.length > 0) {
+    sysInfo.push(`**Orphans:** \`${resource.possibleOrphans.slice(0, 12).join(', ')}\``);
+  }
+  if (resource.systemd.available) {
+    sysInfo.push(...(resource.systemd.services ?? []).map((row: any) => `⚙️ ${row.name}: \`${row.active} / ${row.state}\``));
+  } else {
+    sysInfo.push('⚠️ *Systemd state unavailable*');
+  }
+  if (sysInfo.length > 0) {
+    fields.push({
+      name: '⚙️ System Services',
+      value: sysInfo.join('\n'),
+      inline: false
+    });
+  }
+
+  return fields;
 }

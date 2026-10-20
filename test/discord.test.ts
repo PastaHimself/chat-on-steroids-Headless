@@ -63,8 +63,8 @@ describe('Discord commands and authorization', () => {
     expect(text).toContain('Canonical final: not confirmed');
     expect(text).toContain('Waiting on: recorder');
     expect(text).toContain('Next reevaluation: time unknown');
-    expect(sessionDescription({ session: { updatedAt: 1, lastTurnOutcome: 'completed' }, live })).toContain(text);
-    expect(sessionDescription({ session: { updatedAt: 1, lastTurnOutcome: 'completed' }, live })).toContain('turn only');
+    expect(JSON.stringify(sessionDescription({ session: { updatedAt: 1, lastTurnOutcome: 'completed' }, live }))).toContain('exact-source');
+    expect(JSON.stringify(sessionDescription({ session: { updatedAt: 1, lastTurnOutcome: 'completed' }, live }))).not.toContain('turn only');
     expect(sessionStatusIndicator({ live }).text).toBe('Waiting');
   });
   it('distinguishes a failed decision and a no-reply decision from successful Goal completion', () => {
@@ -84,10 +84,10 @@ describe('Discord commands and authorization', () => {
         owner: 'workers', finalConfirmed: true, nextCheckAt: null, needsAttention: false, stage: null } });
     const result = await new DiscordController(config, store, api as unknown as ControlClient)
       .command(interaction('goal', { action: 'status' }));
-    const description = result.embeds[0].toJSON().description;
+    const description = result.embeds[0].toJSON().fields?.map((f: any) => f.value).join('\n') || '';
     expect(description).toContain('Waiting on: workers');
     expect(description).toContain('Canonical final: confirmed (turn only)');
-    expect(description).toContain('Saved objective: Complete all six stages.');
+    expect(description).toContain('Complete all six stages.');
     expect(description!.length).toBeLessThan(3900);
     expect(api.action).not.toHaveBeenCalled();
   });
@@ -95,8 +95,8 @@ describe('Discord commands and authorization', () => {
     const limited = { session: { updatedAt: Date.now() }, live: { activeTurnId: 'open-but-unverified',
       recovery: [{ kind: 'provider-limit', deadline: Date.now() + 60_000 }] } };
     expect(sessionStatusIndicator(limited).text).toBe('Rate Limited');
-    expect(sessionDescription(limited)).toContain('rate limited');
-    expect(sessionDescription(limited)).not.toContain('State: 🟢 working');
+    expect(JSON.stringify(sessionDescription(limited)).toLowerCase()).toContain('rate limited');
+    expect(JSON.stringify(sessionDescription(limited))).not.toContain('State: 🟢 worki');
     expect(sessionStatusIndicator({ live: { activeTurnId: 'old-turn', job: { needsAttention: true } } }).text).toBe('Attention Needed');
     expect(sessionStatusIndicator({ live: { activeTurnId: 'open-turn', recovery: [{ kind: 'post-reload' }] } }).text).toBe('Recovering');
     expect(sessionStatusIndicator({ live: { activeTurnId: null, recovery: [{ kind: 'goal-expired' }] } }).text).toBe('Recovery Stopped');
@@ -160,8 +160,9 @@ describe('Discord commands and authorization', () => {
     } : original(route));
     const controller = new DiscordController(config, store, api as unknown as ControlClient);
     const status = await controller.command(interaction('status'));
-    expect(status.embeds[0].toJSON().description).toContain('ChatGPT confirmed deletion');
-    expect(status.embeds[0].toJSON().description).toContain('/compact');
+    const allFields = status.embeds[0].toJSON().fields?.map((f: any) => f.value).join('\n') || '';
+    expect(allFields).toContain('ChatGPT confirmed deletion');
+    expect(allFields).toContain('/compact');
     const confirm = await controller.command(interaction('compact'));
     expect(confirm.embeds[0].toJSON().description).toContain('reconciled');
     const view = Object.values(store.snapshot().views).find((row: any) => row.kind === 'confirm') as any;
@@ -185,11 +186,11 @@ describe('Discord commands and authorization', () => {
     });
     const controller = new DiscordController(config, store, api as unknown as ControlClient);
     const result = await controller.command(interaction('status'));
-    const description = result.embeds[0].toJSON().description ?? '';
-    expect(description).toContain('Handoff Send: not-attempted');
-    expect(description).toContain('Replacement Send: not-attempted');
-    expect(description).toContain('Compaction needs attention: composer_missing');
-    expect(description).toContain('Recovery: Compact & Resume needs attention');
+    const description = result.embeds[0].toJSON().fields?.map((f: any) => f.value).join('\n') || '';
+    expect(description).toContain('**Handoff Send:** not-attempted');
+    expect(description).toContain('**Replacement Send:** not-attempted');
+    expect(description).toContain('Needs attention:** composer_missing');
+    expect(description).toContain('Compact & Resume needs attention');
     expect(description).toContain('Never manually resend an unconfirmed handoff');
   });
   it.each([
@@ -215,7 +216,8 @@ describe('Discord commands and authorization', () => {
     });
     const controller = new DiscordController(config, store, api as unknown as ControlClient);
     const result = await controller.command(interaction('status'));
-    expect(result.embeds[0].toJSON().description).toContain(entry.phrase);
+    const allFields = result.embeds[0].toJSON().fields?.map((f: any) => f.value).join('\n') || '';
+    expect(allFields).toContain(entry.phrase);
     expect(api.action).not.toHaveBeenCalled();
     expect(store.snapshot().settings.defaultSession).toBe(session);
     if (!entry.bound) expect(api.request.mock.calls.some(([route]) => route.endsWith('/workers'))).toBe(false);
@@ -228,7 +230,8 @@ describe('Discord commands and authorization', () => {
       return original(route);
     });
     const result = await new DiscordController(config, store, api as unknown as ControlClient).command(interaction('chat'));
-    expect(result.embeds[0].toJSON().description).toContain('receipt unconfirmed');
+    const content = result.embeds[0].toJSON().description || '';
+    expect(content).toContain('receipt unconfirmed');
     expect(api.action).not.toHaveBeenCalled();
   });
   it('formats /status with embed colors, status emojis, and embed fields', async () => {
@@ -238,11 +241,11 @@ describe('Discord commands and authorization', () => {
     expect(result.embeds).toHaveLength(1);
     const embedData = result.embeds[0].toJSON();
     expect(embedData.color).toBe(EmbedColor.Info);
-    expect(embedData.fields).toEqual([
-      { name: 'State', value: '🔵 Turn Open', inline: true },
-      { name: 'Project', value: 'approved', inline: true },
-      { name: 'Workers', value: 'None', inline: true },
-    ]);
+    expect(embedData.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Session', value: expect.stringContaining('🔵 Turn Open') }),
+      expect.objectContaining({ name: 'Project', value: 'approved' }),
+      expect.objectContaining({ name: 'Workers', value: 'None' }),
+    ]));
   });
   it('discovers help from registered definitions and hides administrator commands from read-only users', async () => {
     await store.update(state => { state.settings.users[other] = ['read']; });

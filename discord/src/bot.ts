@@ -107,7 +107,7 @@ export class DiscordController {
         const id = this.session(interaction); const detail = await this.api.request(sessionPath(id));
         if (['worker', 'helper'].includes(detail.session.origin?.kind)) throw new Error('Select an ordinary or owning prime session.');
         await this.store.update(state => { state.selected[interaction.user.id] = id; });
-        return panel('Session selected', sessionDescription(detail), [], [], { color: EmbedColor.Success });
+        return panel('Session selected', '', [], [], { color: EmbedColor.Success, fields: sessionDescription(detail) });
       }
       case 'new': {
         const startedAt = Date.now();
@@ -145,16 +145,25 @@ export class DiscordController {
         const id = this.session(interaction), action = string('action');
         if (action === 'status') {
           const controls = await this.api.request(`${sessionPath(id)}/controls`);
-          const objective = controls.objective ? `\nSaved objective: ${controls.objective.slice(0, 1000)}${controls.objective.length > 1000 ? '… (shortened)' : ''}` : '';
-          return panel(`${name} state`, `Session: ${id}\n${goalDescription(controls)}${objective}`, [], [],
-            { color: controls.goalStatus?.needsAttention ? EmbedColor.Warning : EmbedColor.Info });
+          return panel(`${name} state`, '', [], [], { color: EmbedColor.Info, fields: [
+            { name: 'Automation Mode', value: controls.automation ?? 'off', inline: true },
+            { name: 'Loop Delivery', value: controls.loopAfterTurn ? 'After turn' : 'Session finish', inline: true },
+            { name: 'Objective', value: (controls.objective || 'None saved').substring(0, 1024), inline: false },
+            { name: 'Status Details', value: goalDescription(controls), inline: false }
+          ]});
         }
         if (name === 'goal' && string('objective')) {
           if (action !== 'on') throw new Error('Use action:on with an objective, or leave objective empty to switch modes without changing it.');
-          return panel('Goal objective saved', await act('objective', { sessionId: id, objective: string('objective'), mode: 'goal' }), [], [], { color: EmbedColor.Success });
+          return panel('Goal objective saved', '', [], [], { color: EmbedColor.Success, fields: [
+            { name: 'Objective', value: (string('objective') as string).substring(0, 1024), inline: false },
+            { name: 'Result', value: await act('objective', { sessionId: id, objective: string('objective'), mode: 'goal' }), inline: false }
+          ]});
         }
         const afterTurn = name === 'loop' && string('delivery') ? string('delivery') === 'after-turn' : undefined;
-        return panel(`${name} configuration`, await act('automation', { sessionId: id, automation: action === 'on' ? name : 'off', afterTurn }), [], [], { color: EmbedColor.Success });
+        return panel(`${name} configuration`, '', [], [], { color: EmbedColor.Success, fields: [
+          { name: 'Mode', value: action === 'on' ? name : 'off', inline: true },
+          { name: 'Result', value: await act('automation', { sessionId: id, automation: action === 'on' ? name : 'off', afterTurn }), inline: false }
+        ]});
       }
       case 'plan': {
         const id = this.session(interaction); const plan = await act('plan', { sessionId: id, prompt: string('prompt') });
@@ -222,8 +231,11 @@ export class DiscordController {
       }
       case 'queue': {
         const id = this.session(interaction), queue = await this.api.request('/v1/inputs?limit=100');
-        return panel('Input delivery records', queue.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id)
-          .slice(-20).map((row: any) => `${row.id}\n${row.state} · proof: ${row.delivery} · ${row.mode}\nDue: ${new Date(row.dueAt).toISOString()}\n${row.error ?? ''}`).join('\n\n'), [], [], { color: EmbedColor.Info });
+        const items = queue.inputs.filter((row: any) => row.sessionId === id || row.deliveredSessionId === id).slice(-20);
+        const description = items.length === 0 ? 'No queued inputs.' : items.map((row: any) =>
+          `**ID:** \`${row.id}\`\n**State:** ${row.state} · **Proof:** ${row.delivery} · **Mode:** ${row.mode}\n**Due:** <t:${Math.floor(new Date(row.dueAt).getTime() / 1000)}:R>${row.error ? `\n⚠️ **Error:** ${row.error}` : ''}`
+        ).join('\n\n');
+        return panel('Input delivery records', description, [], [], { color: EmbedColor.Info });
       }
       case 'cancel': {
         const id = this.session(interaction), input = string('input');
@@ -261,7 +273,8 @@ export class DiscordController {
         const health = await this.api.request('/v1/remote/health');
         const resource = await this.api.request('/v1/remote/resources');
         const healthy = health.serviceAvailable && health.components.every((c: any) => c.state === 'available');
-        return panel('VPS and service health', `${health.components.map((row: any) => `${row.label}: ${row.state}\n${row.detail}${row.state === 'available' ? '' : `\n${row.action}`}`).join('\n\n')}\n\n${resourceDescription(resource)}`, [], [], { color: healthy ? EmbedColor.Success : EmbedColor.Warning });
+        const healthString = health.components.map((row: any) => `**${row.label}:** ${row.state}\n${row.detail}${row.state === 'available' ? '' : `\n*Action:* ${row.action}`}`).join('\n\n');
+        return panel('VPS and service health', healthString, [], [], { color: healthy ? EmbedColor.Success : EmbedColor.Warning, fields: resourceDescription(resource) });
       }
       case 'operations': return this.operationListPanel(interaction, this.session(interaction));
       case 'operation': return this.operationPanel(interaction, string('id'));
@@ -299,16 +312,28 @@ export class DiscordController {
     const status = sessionStatusIndicator(detail);
     const delivery = `${input?.delivery ?? 'No recent input proof'}\n${inputDeliveryDescription(input)}\nProvider binding: ${detail.session.conversationId ? 'attributed' : 'not yet attributed'}`;
 
-    return panel('Session status', `${sessionDescription(detail)}\nProject: ${project?.name ?? 'Unfiled or unavailable'}\nNext prompt model: ${requested.model ?? 'Current provider selection'}\nDelivery: ${delivery}\nWorkers: ${workerSummary}\nRecovery: ${detail.live?.providerUnavailable?.reason === 'conversation_deleted' ? 'ChatGPT confirmed deletion. Local work and objective are retained. Review /queue, /operations, /history and workers; after reconciliation, /compact can recover from a saved summary. A stream resume 404 alone does not prove deletion.' : detail.live?.recordingIncompleteAt !== undefined ? 'Recording history is incomplete. Inspect and reconcile it locally before requesting automatic continuation.' : detail.live?.blocked ? 'Review the session block in Details.' : detail.live?.job?.needsAttention ? 'Compact & Resume needs attention; inspect the source and replacement Send checkpoints above. Never manually resend an unconfirmed handoff.' : detail.live?.recovery?.some((row: any) => row.kind === 'provider-limit') ? 'Provider retry deadline is active. Tasks remain saved; inspect the existing receipts before retrying.' : detail.live?.recovery?.length ? 'The backend reports a recovery wait or attempt. A reload alone does not prove assistant recovery; inspect Details and the existing receipts.' : input?.delivery === 'unconfirmed' ? 'Inspect queue and history before submitting another request.' : 'No current recovery action reported.'}`,
+    const fields = sessionDescription(detail);
+    fields.push({ name: 'Project', value: project?.name ?? 'Unfiled or unavailable', inline: true });
+    fields.push({ name: 'Next Prompt Model', value: requested.model ?? 'Current provider selection', inline: true });
+    fields.push({ name: 'Workers', value: workerSummary, inline: true });
+    fields.push({ name: 'Delivery', value: delivery, inline: false });
+
+    let recoveryNotes = 'No current recovery action reported.';
+    if (detail.live?.providerUnavailable?.reason === 'conversation_deleted') recoveryNotes = 'ChatGPT confirmed deletion. Local work and objective are retained. Review /queue, /operations, /history and workers; after reconciliation, /compact can recover from a saved summary. A stream resume 404 alone does not prove deletion.';
+    else if (detail.live?.recordingIncompleteAt !== undefined) recoveryNotes = 'Recording history is incomplete. Inspect and reconcile it locally before requesting automatic continuation.';
+    else if (detail.live?.blocked) recoveryNotes = 'Review the session block in Details.';
+    else if (detail.live?.job?.needsAttention) recoveryNotes = 'Compact & Resume needs attention; inspect the source and replacement Send checkpoints above. Never manually resend an unconfirmed handoff.';
+    else if (detail.live?.recovery?.some((row: any) => row.kind === 'provider-limit')) recoveryNotes = 'Provider retry deadline is active. Tasks remain saved; inspect the existing receipts before retrying.';
+    else if (detail.live?.recovery?.length) recoveryNotes = 'The backend reports a recovery wait or attempt. A reload alone does not prove assistant recovery; inspect Details and the existing receipts.';
+    else if (input?.delivery === 'unconfirmed') recoveryNotes = 'Inspect queue and history before submitting another request.';
+    fields.push({ name: 'Recovery & Warnings', value: recoveryNotes, inline: false });
+
+    return panel('Session status', '',
       [buttons(view, [['refresh', 'Refresh', ButtonStyle.Primary], ['taskplan', 'View Plan', ButtonStyle.Secondary], ['queue', 'View queue', ButtonStyle.Secondary], ['history', 'View history', ButtonStyle.Secondary], ['details', 'Details', ButtonStyle.Secondary]])],
       [],
       {
         color: status.color,
-        fields: [
-          { name: 'State', value: `${status.emoji} ${status.text}`, inline: true },
-          { name: 'Project', value: project?.name ?? 'Unfiled', inline: true },
-          { name: 'Workers', value: workerSummary, inline: true },
-        ]
+        fields
       });
   }
   private async operationListPanel(interaction: any, sessionId: string, cursor?: string) {
@@ -349,7 +374,8 @@ export class DiscordController {
     for (const row of rows) {
       let live: any;
       try { live = (await this.api.request(`${sessionPath(row.id)}?live=1`)).live; } catch { /* Saved metadata remains readable if a live probe fails. */ }
-      descriptions.push(`${row.title || row.id}\n${row.id} · project ${row.projectId ?? 'unfiled'} · ${row.model ?? 'unknown model'}\n${live ? live.activeTurnId ? 'working' : live.stopPending ? 'stop requested' : 'no proven active turn' : 'live state unavailable'} · automation ${live?.automation ?? 'unavailable'}\n${new Date(row.updatedAt).toISOString()}`);
+      const status = live ? live.activeTurnId ? '🟢 Working' : live.stopPending ? '🔴 Stop requested' : '⚪ Idle' : '⚠️ State unavailable';
+      descriptions.push(`**${row.title || row.id}**\n\`${row.id}\`\n**Project:** ${row.projectId ?? 'unfiled'} · **Model:** ${row.model ?? 'unknown'}\n**Status:** ${status} · **Automation:** ${live?.automation ?? 'unavailable'}\n**Updated:** <t:${Math.floor(new Date(row.updatedAt).getTime() / 1000)}:R>`);
     }
     const components: any[] = [];
     const selectable = rows.filter((row: any) => !['worker', 'helper'].includes(row.origin?.kind));
@@ -398,9 +424,21 @@ export class DiscordController {
     const inputs = await this.api.request('/v1/inputs?limit=100');
     const owned = inputs.inputs.filter((row: any) => row.sessionId === plan.sessionId && row.mode === 'finish');
     const color = plan.state === 'approval' ? EmbedColor.Warning : plan.state === 'completed' ? EmbedColor.Success : ['failed', 'interrupted'].includes(plan.state) ? EmbedColor.Danger : EmbedColor.Info;
-    return panel('Composer workflow', [`State: ${plan.state} · revision ${plan.revision}`, `Original objective: ${plan.prompt}`, plan.error ?? '',
-      ...plan.stages.map((stage: string, index: number) => `${index + 1}. ${stage}`), `Checkpoint queue: ${owned.filter((row: any) => ['queued', 'browser'].includes(row.state)).length} pending; ${owned.filter((row: any) => row.delivery === 'unconfirmed').length} unconfirmed.`,
-      plan.inputId ? `Approval input: ${plan.inputId}. Inspect /queue for delivery; approval alone is not execution or verified completion.` : 'No stages execute before approval.'].join('\n\n'), components, [], { color });
+
+    const fields = [
+      { name: 'State', value: `${plan.state} (rev ${plan.revision})`, inline: true },
+      { name: 'Checkpoints', value: `${owned.filter((row: any) => ['queued', 'browser'].includes(row.state)).length} pending, ${owned.filter((row: any) => row.delivery === 'unconfirmed').length} unconfirmed.`, inline: true },
+      { name: 'Objective', value: (plan.prompt || 'None').substring(0, 1024), inline: false }
+    ];
+    if (plan.error) fields.push({ name: 'Error', value: plan.error.substring(0, 1024), inline: false });
+
+    const stages = plan.stages.map((stage: string, index: number) => `**${index + 1}.** ${stage}`).join('\n\n');
+    fields.push({ name: 'Stages', value: stages.length > 1024 ? stages.substring(0, 1020) + '...' : stages || 'No stages yet.', inline: false });
+
+    if (plan.inputId) fields.push({ name: 'Approval Input', value: `\`${plan.inputId}\`\nInspect /queue for delivery. Approval alone is not execution.`, inline: false });
+    else fields.push({ name: 'Status', value: 'No stages execute before approval.', inline: false });
+
+    return panel('Composer workflow', '', components, [], { color, fields });
   }
   private async confirmPanel(interaction: any, action: string, args: Record<string, unknown>, description: string) {
     const view = await this.makeView(interaction, { kind: 'confirm', action, args, sessionId: args.sessionId as string });
