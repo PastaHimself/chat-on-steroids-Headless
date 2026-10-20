@@ -48,11 +48,11 @@ describe('compaction operator status remains safe and informative', () => {
       sourceSend: 'not-attempted', destinationSend: 'not-attempted', error: 'composer_missing'
     });
     const message = shown(live);
-    expect(message).toContain('Handoff Send: not-attempted');
-    expect(message).toContain('Replacement Send: not-attempted');
-    expect(message).toContain('Compaction needs attention: composer_missing');
+    expect(JSON.stringify(message)).toContain('**Handoff Send:** not-attempted');
+    expect(JSON.stringify(message)).toContain('**Replacement Send:** not-attempted');
+    expect(JSON.stringify(message)).toContain('**Needs attention:** composer_missing');
     expect(JSON.stringify(live)).not.toContain('do-not-publish-this-');
-    expect(message).not.toContain('do-not-publish-this-');
+    expect(JSON.stringify(message)).not.toContain('do-not-publish-this-');
   });
 
   it('distinguishes ambiguous dispatch from a definitely unsent handoff', () => {
@@ -60,16 +60,16 @@ describe('compaction operator status remains safe and informative', () => {
       source: 'dispatched-unresolved', attention: true,
       error: 'The send result is uncertain. Do not resend it.'
     }));
-    expect(message).toContain('Handoff Send: dispatched-unresolved');
-    expect(message).toContain('Do not resend it.');
-    expect(message).not.toContain('Handoff Send: not-attempted');
+    expect(JSON.stringify(message)).toContain('**Handoff Send:** dispatched-unresolved');
+    expect(JSON.stringify(message)).toContain('Do not resend it.');
+    expect(JSON.stringify(message)).not.toContain('**Handoff Send:** not-attempted');
   });
 
   it('does not invent an attention alert for a healthy in-progress compaction', () => {
     const live = liveJob({ source: 'sent' });
     expect(live.job).not.toHaveProperty('needsAttention');
     const message = shown(live);
-    expect(message).toContain('Handoff Send: sent');
-    expect(message).not.toContain('Compaction needs attention:');
+    expect(JSON.stringify(message)).toContain('**Handoff Send:** sent');
+    expect(JSON.stringify(message)).not.toContain('**Needs attention:**');
   });
 });

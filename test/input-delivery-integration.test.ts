@@ -96,7 +96,7 @@ it.each(['requested', 'claimed', 'creating', 'failed', 'uncertain'] as const)('s
     expect((await post('/status', { openConversations: [] })).body.inputs).not.toContainEqual(expect.objectContaining({ id: inputRow!.id }));
     expect((await api.request('/v1/inputs')).inputs[0].projectWait).toEqual({ state, error: ['failed', 'uncertain'].includes(state) ? error : null });
     for (const response of [admitted, await bot.command(command('status')), await bot.command(command('chat'))]) {
-      const description = response.embeds[0].toJSON().description;
+      const description = JSON.stringify(response.embeds[0].toJSON());
       expect(description).toContain(`ChatGPT Project (${state})`);
       expect(description).not.toContain('waiting for browser claim');
       if (['failed', 'uncertain'].includes(state)) expect(description).toContain(error);
@@ -172,7 +172,7 @@ it.each(['no-tab', 'home', 'lost-marker'])('delivers Discord /new through real H
       { kind: 'assistant_message', messageId: 'native-answer', turnId: turn, text: 'Hello from the simulated provider.', state: 'final', final: true, time: Date.now() },
       { kind: 'turn_end', turnId: turn, outcome: 'completed', time: Date.now() }
     ] });
-    expect((await bot.command(command('status'))).embeds[0].toJSON().description).toContain('Provider receipt confirmed');
+    expect(JSON.stringify((await bot.command(command('status'))).embeds[0].toJSON())).toContain('Provider receipt confirmed');
     expect(JSON.stringify(await bot.command(command('chat')))).toContain('Hello from the simulated provider.');
     await bot.command(command('ask', { prompt: 'Continue', delivery: 'auto' }));
     const follow = (await input.listInputs()).find(entry => entry.id !== row!.id)!;
