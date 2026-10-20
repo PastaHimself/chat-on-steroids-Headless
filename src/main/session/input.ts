@@ -1,40 +1,80 @@
+import { heldCallCount } from '../rotation-hold.js';
 import { recoveryHeld } from '../recovery-hold.js';
 import { providerUnavailableFor, REASONING_EFFORTS, workSequence } from '../../shared/session.js';
-/** User-authored input has one durable owner across browser and MCP delivery.
- * A claimed browser send is never automatically retried: losing the ACK is ambiguous.
- * Tool delivery repeats under a stable message id until a later request proves receipt.
- */
 import { z } from 'zod';
-import { browserInputModel, manualInput, queuedFollowup, MAX_INPUT_IMAGES, type InputImage } from '../../shared/input.js';
-import type { SessionSummary } from '../../shared/session.js';
+import { authoredTextOf, browserInputModel, manualInput, queuedFollowup, MAX_INPUT_IMAGES, type InputImage } from '../../shared/input.js';
 import { getConfig } from '../config.js';
 import { randomUUID } from 'node:crypto';
 import { userTitle } from './title.js';
 import { readDurable, writeDurableNow, writeDurableSoon } from '../durable.js';
-import { getSession, findSessionByConversation, createSession, deleteSession, rebindSession, conversationWasSuperseded, readRecentEvents, listUsageSessions, questionHasMcpCall, sessionDirectoryMissing, readCompletedFinal, readLatestUserMessage } from './store.js';
-import { assignSessionProject, getProject, listProjects, projectWorkspace, getSessionProject } from '../projects.js';
-import type { ChatgptProjectWait } from '../../shared/projects.js';
+import { getSession, findSessionByConversation, createSession, deleteSession, rebindSession, conversationWasSuperseded, readRecentEvents, listUsageSessions, questionHasMcpCall, sessionDirectoryMissing, readCompletedFinal, readLatestUserMessage, readEvents } from './store.js';
+import { assignSessionProject, getProject, listProjects, projectWorkspace, getSessionProject, localProjectPath } from '../projects.js';
+import { noteEditReplacement } from './edits.js';
+import { userPromptText, MAX_CHATGPT_MESSAGE_CHARS } from '../../shared/user-prompt.js';
 import { isChatBlocked } from './blocked-chats.js';
 import { wakeBrowserWork } from '../browser-wake.js';
 import { logInfo, logWarn } from '../logger.js';
 import { noteChatOrigin } from './recorder.js';
+import { seedBranchHistory } from './branch-history.js';
 import { DEFAULT_HELPER_CHAT_MODEL, isAstraModel, isProModel } from '../../shared/chat-models.js';
 import { inFlightToolCalls } from '../mcp/call-context.js';
-import { automaticFinishEnabled, goalArmedFor, goalControlRecoveryNeeded, goalControlsPending, goalDrivingMode, consumeGoalReplyForInputNow } from '../goal.js';
+import { automaticFinishEnabled, goalControlRecoveryNeeded, goalControlsPending, goalDrivingMode, consumeGoalReplyForInputNow } from '../goal.js';
 import { activeRunIds, primeConversation, isWorkerConversation } from '../agents.js';
 import { pendingContinuations } from './continuation.js';
 import { providerHistoryRetryAt } from '../provider-history-backoff.js';
 import { finishInstruction } from '../../shared/finish.js';
 import { CONVERSATION_DELETED } from '../../shared/chat-error.js';
 import { attachmentSchema, validateInputAttachments, normalizeInputAttachments } from './input-attachments.js';
-import { MAX_CHATGPT_MESSAGE_CHARS } from '../../shared/user-prompt.js';
-import type { PromptLimits } from './prompt.js';
 import { BROWSER_PICKUP_MAX_ATTEMPTS, recoveryMessage, recoveryBusyMs, rotationMessage } from '../../shared/recovery.js';
 import { invokedSkills } from '../../shared/skill-invocation.js';
 import { SKILL_ID_PATTERN } from '../../shared/skills.js';
 import { autoSelectManagedSkills } from '../skill-routing.js';
 import { asksForImage } from './image-request.js';
 
+
+/** User-authored input has one durable owner across browser and MCP delivery.
+ * A claimed browser send is never automatically retried: losing the ACK is ambiguous.
+ * Tool delivery repeats under a stable message id until a later request proves receipt.
+ */
+
+
+import type { SessionSummary } from '../../shared/session.js';
+
+
+
+
+
+
+import type { ChatgptProjectWait } from '../../shared/projects.js';
+
+
+
+import type { SessionEvent } from '../../shared/session.js';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import type { PromptLimits } from './prompt.js';
+
+
+
+
+
+
+/** ChatGPT's own conversation and message ids; synthetic interim ids never name a branch point. */
+const NATIVE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const inputArgs = z.object({
   projectId: z.string().uuid().nullable().optional(),
   automation: z.enum(['off', 'goal', 'loop']).optional(),
@@ -55,7 +95,21 @@ export const inputArgs = z.object({
   afterTurn: z.boolean().optional(),
   dueAt: z.number().int().nonnegative(),
   model: z.string().max(80).nullable(),
-  reasoningEffort: z.enum(REASONING_EFFORTS).nullable()
+  reasoningEffort: z.enum(REASONING_EFFORTS).nullable(),
+  /**
+   * Branch in new chat (#482): this first message of a new chat is sent into ChatGPT's own branch
+   * of `conversationId` at the exact native reply `messageId`, made by the page just before Send.
+   */
+  branch: z.object({
+    sessionId: z.string().min(8).max(64),
+    conversationId: z.string().regex(NATIVE_ID),
+    messageId: z.string().regex(NATIVE_ID)
+  }).strict().optional(),
+  /**
+   * Edit & resubmit (#365): this message replaces the chat's question `messageId` through ChatGPT's
+   * own edit, which keeps the old version beside it and continues the chat from the new one.
+   */
+  edit: z.object({ messageId: z.string().regex(NATIVE_ID) }).strict().optional()
 });
 export type InputArgs = z.infer<typeof inputArgs>;
 const browserPreparationSchema = z.object({
@@ -66,6 +120,8 @@ const browserPreparationSchema = z.object({
 const entrySchema = inputArgs.extend({
   /** Last companion observation only; never claim, Send, retry or completion authority. */
   browserPreparation: browserPreparationSchema.optional(),
+  /** An edit of the chat's first question: its new version carries the chat's setup again. */
+  editFramed: z.literal(true).optional(),
   /** This exact outbox row owns the first native send of its reserved local session. */
   opening: z.literal(true).optional(),
   /** An explicit retry can keep its unbound local chat instead of reserving another. */
@@ -95,6 +151,7 @@ const entrySchema = inputArgs.extend({
   deliveryText: z.string().min(1).max(240000).optional(),
   /** One checkpoint shares this browser send and its receipt with the user's correction. */
   companionInputId: z.string().uuid().optional(),
+  /** `rotation`: the app's automatic continue that starts a fresh turn in a long one (#1402). */
   purpose: z.enum(['user', 'decision', 'rotation']).optional(),
   lifetime: z.literal('temporary-planner').optional(),
   decisionSourceSessionId: z.string().min(8).max(64).optional(),
@@ -157,6 +214,13 @@ const UNCONFIRMED_SEND = 'Stopped waiting for delivery confirmation. The message
  * opening read back with `&#x20;` for spaces). The same code in extension/content.js.
  */
 const RECEIPT_UNCONFIRMED = 'Native Send receipt was not confirmed.';
+/** extension/content.js reports this, word for word, when ChatGPT offered no Send for a fresh-turn continue. */
+export const ROTATION_DECLINED = 'Fresh-turn continue declined: no Send while ChatGPT works.';
+/**
+ * Continues the page declined, for the call held for each to answer at once. Kept here, not as the
+ * row's error: a cancelled continue with an error is shown in the chat as a failed message.
+ */
+const declinedRotations = new Set<string>();
 /** The page clicked Send, yet its exact text stayed in the composer and no new user row appeared. */
 const SEND_NOT_TAKEN = 'Native Send did not take the message.';
 export const TOOL_INPUT_HEADER = '\n--- New instructions from the user ---\n';
@@ -554,6 +618,14 @@ async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
       // A never-authorized Continue still owes delivery. Retain its ticket and
       // pickup budget, but never replay a possibly consumed Stop after losing a page.
       if (row.recovery) return releaseRecoveryClaim(row);
+      // A message the user sent into the running answer that the page could not take (its answer
+      // broke and was reloaded, 2026-10-14) was never sent: keep it for after that turn rather than
+      // cancelling what the person typed.
+      if (row.directTurn && manualInput(row) && !row.opening && !row.companionInputId) {
+        const { directTurn: _turn, owner: _owner, offeredAt: _offered, requiresAuthorization: _authorization, ...rest } = row;
+        return { ...rest, state: 'queued', mode: 'after-turn', owner: null,
+          error: 'Kept for after the running answer: ChatGPT could not take it into the answer.' };
+      }
       return { ...row, state: 'cancelled', error: row.requiresAuthorization && row.sendAuthorizedAt === undefined
         ? 'Not sent: browser preparation timed out. This attempt was cancelled.'
         : UNCONFIRMED_SEND };
@@ -562,9 +634,11 @@ async function expireQueued(current: InputEntry[]): Promise<InputEntry[]> {
     // browser row past authorization is not preparable, so no path re-offers or
     // replays it. Left in place it still owns its whole session, so every later
     // message waits behind an outcome nobody will ever publish. Retire it visibly
-    // after a bounded wait. Automatic Continue, an opening's first send and a
-    // combined delivery keep their existing custody.
-    if (row.state === 'browser' && row.sendAuthorizedAt !== undefined && !row.recovery && !row.opening &&
+    // after a bounded wait; a late receipt still records the delivery. Automatic
+    // Continue and a combined delivery keep their existing custody. A new chat's
+    // first send is retired the same way: held for hours it was invisible and kept
+    // every automatic extension update waiting (2.1.41 release round).
+    if (row.state === 'browser' && row.sendAuthorizedAt !== undefined && !row.recovery &&
         !row.companionInputId && manualInput(row) && Date.now() - row.sendAuthorizedAt >= UNCERTAIN_SEND_MS)
       return { ...row, state: 'cancelled', error: UNCONFIRMED_SEND };
     if (row.state === 'browser' && row.sendAuthorizedAt !== undefined && Date.now() - row.sendAuthorizedAt >= ABANDONED_SEND_MS)
@@ -747,6 +821,56 @@ async function target(entry: InputEntry): Promise<string | null> {
   if (isChatBlocked(session.conversationId)) throw new Error('Unblock this conversation before sending');
   return session.conversationId;
 }
+/**
+ * A branch is the first plain message of a new chat, from a chat that still shows that ChatGPT
+ * conversation. Whether the reply exists there is the page's to prove, just before Send.
+ */
+async function assertBranchSource(input: InputArgs, requested: SessionSummary | null, retryOpening: boolean): Promise<void> {
+  const branch = input.branch;
+  // A branch that has not started yet retries only in its own reserved chat, at the same reply:
+  // anything else would quietly turn it into an unrelated new chat.
+  const reserved = requested?.origin?.branchOf;
+  if (input.sessionId && (!reserved || !retryOpening || !branch || reserved.conversationId !== branch.conversationId ||
+      reserved.messageId !== branch.messageId || requested?.origin?.fromSessionId !== branch.sessionId))
+    throw new Error('This branch can only start at the reply it was made from');
+  if (!branch) throw new Error('This branch can only start at the reply it was made from');
+  if (input.mode !== 'auto' || input.stages?.length || input.delivery || input.attachmentDelivery)
+    throw new Error('Start a branch with one plain message');
+  const source = await getSession(branch.sessionId);
+  if (!source || source.origin?.kind === 'worker' || source.origin?.kind === 'helper')
+    throw new Error('This chat cannot be branched');
+  if (source.conversationId !== branch.conversationId)
+    throw new Error('The chat you branched from changed; branch again from its reply');
+  if (isChatBlocked(branch.conversationId)) throw new Error('Unblock this conversation before sending');
+  // Its page is opened a second time to make the branch; never beside a turn still working there.
+  if (source.activeTurnId) throw new Error('Wait until the chat you branch from finishes its turn, then send again');
+}
+/**
+ * An edit replaces one recorded question of the chat's current ChatGPT conversation, its newest
+ * version, as one plain message sent now, never beside a running turn. Whether the question is
+ * still on the page is the page's to prove, just before Send.
+ */
+async function assertEditSource(input: InputArgs, entry: InputEntry): Promise<void> {
+  const edit = input.edit!;
+  if (!input.sessionId || entry.opening) throw new Error('Edit a message in the chat it was sent in');
+  if (input.branch) throw new Error('Edit a message in the chat it was sent in');
+  if (input.mode !== 'auto' || input.stages?.length || input.delivery || input.attachmentDelivery || input.images?.length || input.attachments?.length)
+    throw new Error('Send an edit as one plain message');
+  const session = await getSession(input.sessionId);
+  if (!session || session.origin?.kind === 'worker' || session.origin?.kind === 'helper') throw new Error('This chat\'s messages cannot be edited');
+  if (!session.conversationId) throw new Error('This recording has no ChatGPT conversation');
+  if (isChatBlocked(session.conversationId)) throw new Error('Unblock this conversation before sending');
+  if (session.activeTurnId) throw new Error('Wait until this chat finishes its turn, then edit again');
+  // Only the chat ChatGPT shows now: a chat left through Compact & Resume has its own messages.
+  const since = Math.max(0, ...Object.values(session.retiredChatAt ?? {}));
+  const questions = (await readEvents(input.sessionId, { kinds: ['user_message'] }))
+    .filter((event): event is Extract<SessionEvent, { kind: 'user_message' }> => event.kind === 'user_message');
+  const versions = questions.filter(event => event.messageId === edit.messageId);
+  const latest = versions.at(-1);
+  if (!latest || versions[0]!.time < since) throw new Error('That message is no longer in this ChatGPT chat, so it cannot be edited');
+  if (questions.some(event => event.replaces === edit.messageId)) throw new Error('That message was edited already; edit its newest version');
+  if (userPromptText(latest.message.text) !== null) entry.editFramed = true;
+}
 async function finishInputCurrent(entry: InputEntry): Promise<boolean> {
   // Periodic generation was retired; persisted rows cannot regain delivery authority.
   if (!entry.finishOwner || entry.finishOwner.periodic || !entry.sessionId) return false;
@@ -768,14 +892,17 @@ async function materializeOpening(entry: InputEntry): Promise<void> {
     existing.conversationId === entry.conversationId &&
     existing.origin?.kind !== 'worker' && existing.origin?.kind !== 'helper';
   const session = recoveredExactOwner ? existing : await createSession({ reservedId: entry.sessionId,
-    title: userTitle(entry.text, entry.text), titleSource: 'fallback',
-    origin: { kind: 'desktop', fromSessionId: null, agentId: null, task: '' } });
+    title: userTitle(entry.text, authoredTextOf(entry)), titleSource: 'fallback',
+    origin: entry.branch
+      ? { kind: 'desktop', fromSessionId: entry.branch.sessionId, agentId: null, task: '',
+        branchOf: { conversationId: entry.branch.conversationId, messageId: entry.branch.messageId } }
+      : { kind: 'desktop', fromSessionId: null, agentId: null, task: '' } });
   if (session.conversationId && session.conversationId !== entry.conversationId)
     throw new Error('Reserved opening session belongs to another ChatGPT conversation');
   if (entry.projectId && session.projectId !== entry.projectId) await assignSessionProject(session.id, entry.projectId);
 }
 /** A fresh-turn message retains this exact source. It never falls through to an
- * after-turn send, a worker/helper, Goal/Loop, or an active continuation transaction. */
+ * after-turn send, a worker/helper or an active continuation transaction. */
 async function rotationInputCurrent(row: InputEntry, requireDrained = false): Promise<boolean> {
   if (recoveryHeld() || goalControlRecoveryNeeded() || !(getConfig().ui.rotateTurnMinutes! > 0) || !row.sessionId || !row.directTurn) return false;
   const session = await getSession(row.sessionId);
@@ -788,12 +915,12 @@ async function rotationInputCurrent(row: InputEntry, requireDrained = false): Pr
       // A single-owner resolver returns null for several recovered families of
       // one prime. That ambiguity cannot be treated as proof of no workers.
       activeRunIds().some(id => primeConversation(id) === session.conversationId) ||
-      goalControlsPending(session.conversationId) || goalArmedFor(session.conversationId) ||
+      goalControlsPending(session.conversationId) ||
       pendingContinuations().some(entry => entry.from === session.conversationId)) return false;
   const selection = session.selectedModel;
   return selection?.conversationId === session.conversationId && !!selection.model &&
     !isProModel(selection.model, selection.reasoningEffort) &&
-    (!requireDrained || inFlightToolCalls(session.conversationId) === 0);
+    (!requireDrained || inFlightToolCalls(session.conversationId) <= heldCallCount(session.conversationId));
 }
 
 /** Adapted from v2.1.38 #1402. One durable outbox row per exact source turn,
@@ -819,6 +946,34 @@ export function fileRotationInput(sessionId: string, turnId: string, currentOwne
     await commit(next);
     if (currentOwner()) wakeBrowserWork();
     return { ...row };
+  });
+}
+
+/**
+ * Where a fresh-turn continue (#1402) stands, for the tool call held for it (#1662): not yet sent,
+ * being sent (Send is authorized), or settled either way.
+ */
+export async function rotationDelivery(id: string): Promise<'pending' | 'sending' | 'declined' | 'settled'> {
+  const row = (await load()).find(entry => entry.id === id);
+  if (!row || row.purpose !== 'rotation') return 'settled';
+  if (row.state === 'cancelled' && declinedRotations.has(id)) return 'declined';
+  if (row.state === 'queued' || (row.state === 'browser' && row.sendAuthorizedAt === undefined)) return 'pending';
+  return row.state === 'browser' ? 'sending' : 'settled';
+}
+
+/**
+ * Withdraws a fresh-turn continue that has not been sent, once the call it was held for has to
+ * answer. Sent after that answer it would land in the gap where ChatGPT queues it behind the
+ * reply. Nobody's message, so it leaves no notice; the turn is tried again at a later call.
+ */
+export function withdrawUnsentRotation(id: string): Promise<boolean> {
+  return serial(async () => {
+    const current = await load();
+    const row = current.find(entry => entry.id === id && entry.purpose === 'rotation' &&
+      (entry.state === 'queued' || (entry.state === 'browser' && entry.sendAuthorizedAt === undefined)));
+    if (!row) return false;
+    await commit(current.map(entry => entry === row ? { ...entry, state: 'cancelled' as const } : entry));
+    return true;
   });
 }
 
@@ -902,7 +1057,7 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
     if (getConfig().ui.autoSelectSkills === true && authoredOrdinary && invokedSkills(input.text).length === 0) {
       const folder = input.sessionId ? await getSessionProject(input.sessionId)
         : input.projectId ? await projectWorkspace(input.projectId) : null;
-      entry.autoSkills = await autoSelectManagedSkills(input.text, { projectPath: folder?.real ?? null });
+      entry.autoSkills = await autoSelectManagedSkills(input.text, { projectPath: localProjectPath(folder) });
     }
     if (retryOpening) { entry.opening = true; entry.requestedSessionId = input.sessionId; }
     entry.conversationId = await target(entry);
@@ -910,6 +1065,9 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
       entry.opening = true;
       entry.sessionId = input.id;
     }
+    if (input.branch || (requestedSession?.origin?.branchOf && !requestedSession.conversationId))
+      await assertBranchSource(input, requestedSession, retryOpening);
+    if (input.edit) await assertEditSource(input, entry);
     if (finishOwner && !(await finishInputCurrent(entry))) throw new Error('The automatic follow-up no longer belongs to an active turn');
     if (injectionOwner) {
       policy = await sessionInputPolicy(input.sessionId!);
@@ -1162,6 +1320,27 @@ export function editQueuedInput(id: string, text: string, afterTurn?: boolean): 
   });
 }
 
+/**
+ * Sends one queued follow-up into the running turn now, the way Send directly would (Codex calls
+ * this Steer). Only a plain text message waiting for the end of the turn qualifies, and only while
+ * that turn can be joined through ChatGPT's own composer; otherwise it keeps waiting.
+ */
+export function sendQueuedInputNow(id: string): Promise<boolean> {
+  return serial(async () => {
+    const current = await load();
+    const row = current.find(entry => entry.id === id && entry.state === 'queued' && entry.mode === 'after-turn' && queuedFollowup(entry) &&
+      !entry.recovery && !entry.finishOwner && !entry.attachments?.length && !entry.images?.length && !entry.stages?.length && !!entry.sessionId);
+    if (!row) return false;
+    const policy = await sessionInputPolicy(row.sessionId!);
+    if (!policy.directTurn) return false;
+    // The person chose immediate delivery for this message; it is no longer an after-turn request.
+    const { requestedMode: _requested, silenceBoundary: _silence, ...rest } = row;
+    await commit(current.map(entry => entry === row ? { ...rest, mode: 'auto' as const, directTurn: policy.directTurn!, transportIntent: 'browser' as const,
+      dueAt: Math.min(row.dueAt, Date.now()) } : entry));
+    return true;
+  });
+}
+
 /** Revalidate the same durable claim immediately before sending; never hand out text again. */
 export function authorizeBrowserInput(id: string, owner: string, conversationId: string | null): Promise<boolean> {
   return serial(async () => {
@@ -1292,7 +1471,11 @@ async function eligibleStageEnd(entry: InputEntry): Promise<string | null> {
   // Queue intent names the turn we were waiting for, not when Chrome reported it.
   // Other turns and legacy rows retain the later-completion rule. A rebind cannot
   // lend this reference to another frontend, even if its turn id happens to match.
-  const queuedHere = entry.queuedTurn?.conversationId === session.conversationId && entry.queuedTurn?.turnId === end.turnId;
+  // A silence ticket names its source turn the same way: that turn completing releases the message
+  // even when it completed before the message was queued, which is when the app still took a chat
+  // whose final it could not read yet for busy (2026-10-19). Its end is the one it waited for.
+  const queuedHere = (entry.queuedTurn?.conversationId === session.conversationId && entry.queuedTurn?.turnId === end.turnId) ||
+    (entry.silenceBoundary?.conversationId === session.conversationId && entry.silenceBoundary.turnId === end.turnId);
   if (!queuedHere && end.time < entry.createdAt) return null;
   if (!(await sessionInputPolicy(entry.sessionId)).settled) return null;
   return end.turnId;
@@ -1483,7 +1666,7 @@ export function fileRecoveryInput(sessionId: string, conversationId: string, tur
     const now = Date.now();
     const row: InputEntry = { id: randomUUID(), sessionId, conversationId, owner: null, state: 'queued',
       mode: 'after-turn', dueAt: now, createdAt: now, model: null, reasoningEffort: null,
-      text: recoveryMessage(),
+      text: recoveryMessage({ playful: getConfig().ui.playfulContinue === true }),
       recovery: { questionId: question.messageId, episode, pro, busyUntil, phase: 'ready' },
       silenceBoundary: { turnId, conversationId, workSeq: workSequence(work), acceptedAt: now } };
     if (!await recoveryCurrent(row)) {
@@ -1632,7 +1815,7 @@ async function completedStageBoundary(entry: InputEntry, current: InputEntry[]):
   return turnId;
 }
 function opensNativeProject(entry: InputEntry, conversationId: string | null): boolean {
-  return !conversationId && !!entry.projectId && entry.purpose !== 'decision' && !entry.lifetime;
+  return !conversationId && !!entry.projectId && entry.purpose !== 'decision' && !entry.lifetime && !entry.branch;
 }
 
 /** Project the same native Project gate as publication, without changing any queue/claim state. */
@@ -1651,9 +1834,9 @@ export async function inputProjectWaits(entries: readonly InputEntry[]): Promise
   return waits;
 }
 
-export function pendingBrowserInputs(): Promise<Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner'; project?: string }>> {
+export function pendingBrowserInputs(): Promise<Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner'; project?: string; branch?: { conversationId: string; messageId: string }; edit?: { messageId: string } }>> {
   return serial(async () => {
-    const result: Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner'; project?: string }> = [];
+    const result: Array<{ id: string; conversationId: string | null; recovery?: { questionId: string; stop: boolean }; silenceTurnId?: string; directTurn?: InputEntry['directTurn']; supersededConversationId?: string; lifetime?: 'temporary-planner'; project?: string; branch?: { conversationId: string; messageId: string }; edit?: { messageId: string } }> = [];
     const current = await load();
     for (const entry of ordered(current)) {
       if (companionOf(current, entry)) continue;
@@ -1664,8 +1847,9 @@ export function pendingBrowserInputs(): Promise<Array<{ id: string; conversation
         const conversationId = await target(entry);
         // A new chat of a project with a native ChatGPT Project opens in that Project and nowhere
         // else: it waits while the Project is being created or could not be, never the root.
-        const chatgptProject = opensNativeProject(entry, conversationId)
-          ? (await getProject(entry.projectId!))?.chatgpt : undefined;
+        // A branch is made where its source chat lives in ChatGPT, never on a Project's page.
+        const chatgptProject = !conversationId && entry.projectId && entry.purpose !== 'decision' && !entry.lifetime && !entry.branch
+          ? (await getProject(entry.projectId))?.chatgpt : undefined;
         if (chatgptProject && chatgptProject.state !== 'linked') continue;
         const [end] = !entry.silenceBoundary && manualInput(entry) && entry.sessionId
           ? await readRecentEvents(entry.sessionId, 1, { kinds: ['turn_start', 'turn_end'] }) : [];
@@ -1678,7 +1862,9 @@ export function pendingBrowserInputs(): Promise<Array<{ id: string; conversation
           ...(entry.state === 'queued' && entry.purpose !== 'decision' && entry.sessionId && entry.conversationId && entry.conversationId !== conversationId
             ? { supersededConversationId: entry.conversationId } : {}),
           ...(entry.lifetime ? { lifetime: entry.lifetime } : {}),
-          ...(chatgptProject?.state === 'linked' ? { project: chatgptProject.id } : {}) });
+          ...(chatgptProject?.state === 'linked' ? { project: chatgptProject.id } : {}),
+          ...(entry.branch && !conversationId ? { branch: { conversationId: entry.branch.conversationId, messageId: entry.branch.messageId } } : {}),
+          ...(entry.edit && conversationId ? { edit: { messageId: entry.edit.messageId } } : {}) });
       } catch { /* blocked/deleted stays user-visible */ }
     }
     return result;
@@ -1798,6 +1984,9 @@ async function bindOpening(entry: InputEntry, conversationId: string): Promise<b
   if (!session.conversationId) {
     if (!await rebindSession(session.id, null, conversationId)) return false;
     boundSessionNow = true;
+    // A branch (#482) gets the history it continues before its first question is recorded.
+    if (session.origin?.branchOf) await seedBranchHistory(session.id, conversationId)
+      .catch((err: Error) => logWarn(`session ${session.id}: could not copy the branched history (${err.message})`));
   }
   // This is the first exact provider attachment that can prove the chat was opened by the CoS
   // composer: the durable outbox row is an opening, the browser proved its exact owner/id pair,
@@ -1869,6 +2058,9 @@ export function acknowledgeBrowserInput(id: string, owner: string, conversationI
       entry.state !== 'cancelled' && (entry.opening || !entry.sessionId) && entry.automation && deliveredConversation && entry.purpose !== 'decision' ? [acknowledged] : [], 'after-send');
     if (entry.completedTurnId && entry.sessionId && deliveredConversation)
       await consumeGoalReplyForInputNow(deliveredConversation, entry.sessionId, entry.completedTurnId);
+    // The page saw its edit replace the question: that is known now, before ChatGPT draws its versions.
+    if (entry.edit && messageId && entry.sessionId) await noteEditReplacement(entry.sessionId, messageId, entry.edit.messageId)
+      .catch((err: Error) => logWarn(`input ${id}: could not mark the edited question (${err.message})`));
     logInfo(`input ${id}: browser acknowledged after ${Math.max(0, Date.now() - entry.createdAt)} ms`);
     await publishHistory();
     return true;
@@ -2014,7 +2206,7 @@ export function offerToolInput(sessionId: string | null | undefined, conversatio
   });
 }
 
-export function resetInputForTests(): void { entries = null; chain = Promise.resolve(); offered.clear(); decisionWaiters.clear(); }
+export function resetInputForTests(): void { entries = null; chain = Promise.resolve(); offered.clear(); decisionWaiters.clear(); declinedRotations.clear(); }
 
 export async function pausedBrowserHelpers(): Promise<Array<{ id: string; sourceSessionId: string }>> {
   return (await listInputs()).filter(row => row.purpose === 'decision' && row.state === 'cancelled' && row.cancelledByUser === true && !row.conversationId && row.decisionSourceSessionId)
@@ -2044,6 +2236,8 @@ export function authorizeBrowserHelperRetry(id: string, sourceSessionId: string)
  * many minutes, its text left in the composer. Past this, the Continue ends and the log says why.
  */
 export const RECOVERY_WITHDRAW_LIMIT_MS = 3 * 60_000;
+/** What the chat shows for a Continue that found no safe moment; the exact reason is in the log. */
+export const RECOVERY_WITHDRAWN_ERROR = 'Automatic Continue found no safe moment to send for 3 minutes. Send Continue yourself to go on.';
 
 /**
  * Ends an automatic Continue that a page refuses before ever claiming it, because ChatGPT shows
@@ -2070,11 +2264,42 @@ export function endRecoveryInput(id: string, conversationId: string): Promise<bo
   });
 }
 
+/** Why a page could not make a branch, as the chat shows it; the page sends only the code. */
+export const BRANCH_ERRORS = {
+  branch_unavailable: 'ChatGPT did not offer Branch in new chat for that reply. Open the original chat, then try again.',
+  branch_message_missing: 'That reply is no longer in the original ChatGPT chat, so it cannot be branched.'
+} as const;
+/**
+ * The page showing the exact source chat could not make the branch, before any claim or Send.
+ * Nothing was typed or sent; the new chat keeps the message so it can be sent again.
+ */
+export function failBranchInput(id: string, conversationId: string, reason: keyof typeof BRANCH_ERRORS): Promise<boolean> {
+  return serial(async () => {
+    if (!Object.hasOwn(BRANCH_ERRORS, reason)) return false;
+    const current = await load();
+    const row = current.find(entry => entry.id === id && entry.opening && entry.branch?.conversationId === conversationId &&
+      entry.state === 'queued' && entry.offeredAt === undefined && entry.sendAuthorizedAt === undefined);
+    if (!row) return false;
+    logWarn(`input ${row.id}: the page could not branch the chat (${reason})`);
+    await commit(current.map(entry => entry === row ? { ...entry, state: 'failed', owner: null, error: BRANCH_ERRORS[reason] } : entry));
+    return true;
+  });
+}
+
 export function failBrowserInput(id: string, owner: string, error: string, detail?: string): Promise<boolean> {
   return serial(async () => {
     const current = await load();
     const entry = current.find((row) => row.id === id && row.owner === owner && row.state === 'browser');
     if (!entry || companionOf(current, entry)) return false;
+    // ChatGPT showed Stop and offered no Send for a fresh-turn continue; nothing was sent. The call
+    // held for it answers now, and a later tool result may try again (turn-rotation.ts).
+    if (entry.purpose === 'rotation' && entry.sendAuthorizedAt === undefined && error === ROTATION_DECLINED) {
+      logInfo(`input ${entry.id}: ChatGPT offered no Send for the fresh-turn continue; a later tool result tries again`);
+      await commit(current.map(row => row === entry ? { ...row, state: 'cancelled', owner: null } : row));
+      declinedRotations.add(entry.id);
+      if (declinedRotations.size > 200) declinedRotations.delete(declinedRotations.values().next().value!);
+      return true;
+    }
     // The page clicked Send and could not prove the result (#821). This is the outcome an
     // unreported send reaches in expireQueued, without the wait: the session is free again,
     // nothing is replayed, and a late exact receipt still confirms it (acknowledgeBrowserInput
@@ -2101,7 +2326,7 @@ export function failBrowserInput(id: string, owner: string, error: string, detai
         logWarn(`input ${entry.id}: automatic Continue ended — pages withdrew it before Send for ` +
           `${Math.round((now - since) / 60_000)} minutes (last: ${told.slice(0, 160)})`);
         await commit(current.map(row => row === entry
-          ? { ...row, state: 'failed', owner: null, error: `Automatic Continue was not sent: ${detail ?? 'withdrawn before Send'}`.slice(0, 200) } : row));
+          ? { ...row, state: 'failed', owner: null, error: RECOVERY_WITHDRAWN_ERROR } : row));
         return true;
       }
       await commit(current.map(row => row === entry
@@ -2118,6 +2343,10 @@ export function failBrowserInput(id: string, owner: string, error: string, detai
     }
     // A generic transport failure supplies no proof that native Send was skipped.
     if (entry.recovery && entry.sendAuthorizedAt !== undefined) return false;
+    // The page's own reason, which no record keeps: the only trace of why an attempt stopped short.
+    if (error === 'After-turn pickup was withdrawn before Send.') {
+      logInfo(`input ${entry.id}: the page withdrew it before Send${entry.sendAuthorizedAt !== undefined ? ' after authorization' : ''}${detail ? ` (${detail.slice(0, 120)})` : ''}`);
+    }
     const pickupCancelled = !!(entry.silenceBoundary || entry.completedTurnId) && entry.requiresAuthorization === true &&
       entry.sendAuthorizedAt === undefined && error === 'After-turn pickup was withdrawn before Send.';
     // Losing a document before Send does not lose a still-valid refresh ticket.
@@ -2181,6 +2410,8 @@ export async function requestBrowserDecision(text: string, signal: AbortSignal, 
   sourceSessionId?: string; conversationId?: string | null; model?: string | null;
   reasoningEffort?: InputArgs['reasoningEffort'] | null;
   publish?: (text: string) => void;
+  /** ChatGPT took the prompt (exact receipt) and it ended without an answer. */
+  onSentUnanswered?: () => void;
 } = {}): Promise<string> {
   if (recoveryHeld()) throw new Error('restore_held');
   if (!text.trim() || text.length > MAX_CHATGPT_MESSAGE_CHARS) throw new Error('goal_context_too_large');
@@ -2231,12 +2462,15 @@ export async function requestBrowserDecision(text: string, signal: AbortSignal, 
     signal.removeEventListener('abort', cancel);
     // Catch an abort that raced enqueue before the answer was awaited.
     void answer.catch(() => undefined);
+    let sentUnanswered = false;
     await serial(async () => {
       const current = await load();
+      sentUnanswered = current.some(row => row.id === id && row.state === 'decision');
       if (current.some((row) => row.id === id && !terminal(row))) {
         await commit(current.map((row) => row.id === id && !terminal(row) ? { ...row, state: 'cancelled' } : row));
       }
     });
+    if (sentUnanswered) options.onSentUnanswered?.();
   }
 }
 export function completeBrowserDecision(id: string, owner: string, response: string, conversationId?: string | null): Promise<boolean> {

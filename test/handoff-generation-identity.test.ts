@@ -146,3 +146,30 @@ it('captures fresh final content after a same-id reopen and restart', async () =
     turnId: 'original-generation', outcome: 'completed', providerMessageId: provider }]);
   expect(await readHandoffResponse(id, chat, anchor, token)).toMatchObject({ status: 'complete', text: fresh.text });
 });
+
+it.each([false, true])('ignores only an independently recorded pre-handoff turn end (restart=%s)', async cold => {
+  const earlier = await recordChatObservations(chat, [
+    { kind: 'user_message', time: 1, messageId: 'earlier-question', text: 'Original task' },
+    { kind: 'turn_start', time: 2, turnId: 'interrupted-before-handoff' }
+  ]);
+  const id = earlier.sessionId!;
+  await recordChatObservations(chat, [
+    { kind: 'user_message', time: 3, messageId: anchor, text: `[[CLF-HANDOFF:${token}]]\nWrite a handoff.` },
+    { kind: 'turn_start', time: 4, turnId: 'handoff-generation' },
+    { ...final('handoff-generation'), time: 5 },
+    { kind: 'turn_end', time: 6, turnId: 'handoff-generation', outcome: 'completed', providerMessageId: provider }
+  ]);
+  await appendEvent(id, { kind: 'turn_end', source: 'extension', time: 7,
+    turnId: 'interrupted-before-handoff', outcome: 'interrupted' });
+  if (cold) await restart();
+  expect(await readHandoffResponse(id, chat, anchor, token)).toMatchObject({ status: 'complete', text });
+});
+
+it('does not discard a competing generation merely because its start was lost', async () => {
+  const id = await begin();
+  await recordChatObservations(chat, [final('original-generation'),
+    { kind: 'turn_end', time: 5, turnId: 'original-generation', outcome: 'completed', providerMessageId: provider }]);
+  await appendEvent(id, { kind: 'turn_end', source: 'extension', time: 6,
+    turnId: 'unknown-generation-after-reload', outcome: 'completed', providerMessageId: randomUUID() });
+  expect(await readHandoffResponse(id, chat, anchor, token)).toMatchObject({ status: 'ambiguous', reason: 'multiple-generations' });
+});

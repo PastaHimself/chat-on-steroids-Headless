@@ -130,6 +130,10 @@ it('translates known IPC failures and keeps provider errors and successful repli
   const { run } = await import('../src/renderer/dom.js');
   expect(await run(Promise.resolve({ ok: false, error: 'Secure credential storage is unavailable.' }))).toBeNull();
   expect(document.querySelector('.toast')!.textContent).toBe(catalogs.ja!['Secure credential storage is unavailable.']);
+  const limitError = 'The Skills library supports at most 128 skills';
+  expect(catalogs.ja).toHaveProperty(limitError);
+  expect(await run(Promise.resolve({ ok: false, error: limitError }))).toBeNull();
+  expect(document.querySelector('.toast')!.textContent).toBe(catalogs.ja![limitError]);
   const error = 'PROVIDER: /Save/<img src=x> {0}\n  details';
   expect(await run(Promise.resolve({ ok: false, error }))).toBeNull();
   expect(document.querySelector('.toast')!.textContent).toBe(error);
@@ -317,4 +321,91 @@ it('matches both Turkish I pairs when searching settings', async () => {
   const entries = [{ tab: 'home', page: 'Çalışma alanı', section: 'İzinler', title: 'IŞIK', detail: '', target: document.createElement('div') }];
   for (const query of ['izinler', 'İZİNLER', 'ışık', 'IŞIK']) expect(searchSettings(entries, query)).toHaveLength(1);
   expect(searchSettings(entries, 'missing')).toEqual([]);
+});
+
+// The German interface says "du". Formal address crept in with whole features more than once
+// (sign-in flow, 2026-10): an imperative or statement with "Sie", or "Ihr …" for the person's things.
+it('addresses the person as "du" throughout the German catalog', () => {
+  const formal = /(?:^|[.!?:]\s+|,\s+|\s)(?:\p{Lu}\p{Ll}+(?:en|ern|eln) Sie\b|Sie (?:sind|können|müssen|haben|werden gefragt)\b)|\b(?:werden|können|müssen|sind|haben|wählen|öffnen|versuchen|fahren) Sie\b|\bIhr(?:e[mnrs]?)? (?:Browser|Konto|App|Einstellungen|Computer|Projekt|Chat)\b/u;
+  const offenders = Object.entries(catalogs.de!).filter(([, value]) => formal.test(value)).map(([key, value]) => `${key} → ${value}`);
+  expect(offenders).toEqual([]);
+  // The extension's popup and in-page notices are the same product, in its own catalog.
+  const extension = JSON.parse(readFileSync('extension/_locales/de/messages.json', 'utf8')) as Record<string, { message: string }>;
+  expect(Object.entries(extension).filter(([, entry]) => formal.test(entry.message)).map(([key, entry]) => `${key} → ${entry.message}`)).toEqual([]);
+});
+
+// A feature has one name per language. Sentences kept the English name ("Wie viel ein Compact &
+// Resume-Bericht behält") beside the translated one ("Komprimieren & Fortsetzen"), or a second
+// translation of it, so one settings page named the same feature three ways (2026-10-13).
+it('calls each feature by the language\'s own name in every sentence', () => {
+  // The names hold no regular-expression characters.
+  const word = (name: string) => new RegExp(`(?<![\\p{L}\\p{N}-])${name}(?![\\p{L}\\p{N}-])`, 'u');
+  const offenders: string[] = [];
+  for (const [language, catalog] of Object.entries(catalogs)) {
+    for (const [name, entry] of [['Compact & Resume', 'Compact & Resume:'], ['Goal', 'Goal'], ['Loop', 'Loop'], ['Activity', 'Activity']] as const) {
+      const own = catalog![entry]?.replace(/[:：]\s*$/, '').trim();
+      if (!own || own === name) continue;
+      for (const [key, value] of Object.entries(catalog!)) {
+        if (!word(name).test(key)) continue;
+        if (word(name).test(value)) offenders.push(`${language}: "${name}" left in → ${value}`);
+        // The handoff feature is always named in full; a second translation of it is a second name.
+        else if (name === 'Compact & Resume' && !value.toLowerCase().includes(own.toLowerCase())) offenders.push(`${language}: not "${own}" → ${value}`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
+// One word for it: the interface, the extension and its name in the browser say "browser
+// extension". "Companion" was a second name for the same thing in 20 texts (2026-10-13). The pets
+// are companions of another kind and keep the word.
+// What a person adds in ChatGPT is a plugin there (Plugins → Add custom MCP server → Create as a
+// plugin); "connector" no longer appears in ChatGPT, so the app does not use it either.
+it("calls what ChatGPT holds a plugin, not a connector, in every language's source text", () => {
+  const page = new JSDOM(readFileSync('src/renderer/index.html', 'utf8')).window.document;
+  const shown = [page.body.textContent ?? '', ...[...page.querySelectorAll('[title], [aria-label], [placeholder]')]
+    .flatMap(node => ['title', 'aria-label', 'placeholder'].map(name => node.getAttribute(name) ?? ''))].join('\n');
+  expect(shown.split('\n').map(line => line.trim()).filter(line => /connector/i.test(line))).toEqual([]);
+  const catalog = JSON.parse(readFileSync('src/renderer/locales/de.json', 'utf8')) as Record<string, string>;
+  expect(Object.keys(catalog).filter(key => /connector/i.test(key))).toEqual([]);
+  const extension = JSON.parse(readFileSync('extension/_locales/en/messages.json', 'utf8')) as Record<string, { message: string }>;
+  expect(Object.entries(extension).filter(([, entry]) => /connector/i.test(entry.message)).map(([key]) => key)).toEqual([]);
+});
+
+it('calls the browser extension an extension, not a companion', () => {
+  // What a person can read: the page's text and its tooltips, labels and placeholders (comments are not).
+  const page = new JSDOM(readFileSync('src/renderer/index.html', 'utf8')).window.document;
+  const shown = [page.body.textContent ?? '', ...[...page.querySelectorAll('[title], [aria-label], [placeholder]')]
+    .flatMap(node => ['title', 'aria-label', 'placeholder'].map(name => node.getAttribute(name) ?? ''))].join('\n');
+  expect(shown.split('\n').map(line => line.trim()).filter(line => /\bcompanion\b/i.test(line) && !/desktop companions/.test(line))).toEqual([]);
+  const extension = JSON.parse(readFileSync('extension/_locales/en/messages.json', 'utf8')) as Record<string, { message: string }>;
+  expect(Object.entries(extension).filter(([, entry]) => /\bcompanion\b/i.test(entry.message)).map(([key]) => key)).toEqual([]);
+});
+
+// Counts take the language's own plural form (Intl.PluralRules): German and Portuguese verbs agree
+// with the number, Russian nouns have three forms (1/21, 2–4, 5–20), Japanese has none. Before
+// this every count used one form: German "2 ruht", Portuguese "2 terminou", Russian "2 спит".
+it.each([
+  ['de', '{0} sleeping', [[1, '1 ruht'], [2, '2 ruhen']]],
+  ['de', '{0} lines', [[1, '1 Zeile'], [0, '0 Zeilen'], [7, '7 Zeilen']]],
+  ['pt-BR', '{0} finished', [[1, '1 terminou'], [2, '2 terminaram']]],
+  ['fr', '{0} lines', [[0, '0 ligne'], [1, '1 ligne'], [2, '2 lignes'], [1_000_000, '1000000 de lignes']]],
+  ['es', '{0} failed', [[1, '1 fallido'], [3, '3 fallidos']]],
+  ['ru', '{0} lines', [[1, '1 строка'], [2, '2 строки'], [5, '5 строк'], [21, '21 строка'], [22, '22 строки'], [11, '11 строк'], [1.5, '1.5 строки']]],
+  ['ru', '{0} sleeping', [[1, '1 спит'], [3, '3 спят']]],
+  ['ja', '{0} lines', [[1, '1 行'], [5, '5 行']]],
+  ['en', '{0} lines', [[1, '1 line'], [0, '0 lines'], [2, '2 lines']]]
+] as const)('words a %s count of %s in that language\'s plural forms', async (locale, other, cases) => {
+  window.localStorage.setItem('cos.ui.language', locale);
+  const { initLanguage, tn } = await import('../src/renderer/i18n.js');
+  initLanguage();
+  const one = other === '{0} lines' ? '{0} line' : other;
+  expect(cases.map(([count]) => tn(one, other, count))).toEqual(cases.map(([, text]) => text));
+});
+
+it('falls back to the plural text when a count is not a finite number', async () => {
+  window.localStorage.setItem('cos.ui.language', 'ru');
+  const { initLanguage, tn } = await import('../src/renderer/i18n.js');
+  initLanguage();
+  expect(tn('{0} line', '{0} lines', Number.NaN, ['?'])).toBe('? строки');
 });

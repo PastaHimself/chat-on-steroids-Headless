@@ -9,6 +9,7 @@ import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SessionControlsView } from '../src/main/bridge.js';
 import type { ToolCallRecord } from '../src/shared/session.js';
 import { makeTempDir, removeTempDir } from './helpers.js';
 
@@ -63,6 +64,7 @@ const startup = await import('../src/main/browser-startup.js');
 const connection = await import('../src/main/connection.js');
 const { setChatBlocked } = await import('../src/main/session/blocked-chats.js');
 const controlActions = await import('../src/main/control-actions.js');
+const chatModels = await import('../src/main/chat-models.js');
 const controlApi = await import('../src/main/control-api.js');
 const { listInputs, resetInputForTests } = input;
 
@@ -227,6 +229,7 @@ describe('with actions switched off', () => {
         await post('/v1/inputs/00000000-0000-4000-8000-000000000001/cancel'),
         await post('/v1/inputs/ffffffff-ffff-4fff-8fff-ffffffffffff/cancel', { anything: 1 }),
         await post('/v1/inputs/not-even-an-id/cancel'),
+        await post('/v1/sessions/' + chatSession + '/stop', { turnId: 'turn-1' }),
         // Announces far more body than it sends, and names no content type.
         await call('POST', '/v1/inputs', { body: '{}', headers: { 'content-length': '5000000', 'content-type': '' } }),
         await call('POST', '/v1/inputs', { body: 'not json', headers: { 'content-type': 'text/plain' } })
@@ -721,6 +724,78 @@ describe('sending', () => {
   });
 });
 
+describe('starting a new chat', () => {
+  it('starts one when no session is named, through the same send path, and names it by the message id', async () => {
+    const { getSession } = await import('../src/main/session/store.js');
+    const id = randomUUID();
+    const reply = await post('/v1/inputs', { id, text: '  Start a new task: list the open pull requests.  ' });
+    expect(reply.status).toBe(202);
+    expect(reply.body.replayed).toBe(false);
+    // The new chat's id is the message id: the caller can follow it right away.
+    expect(reply.body.input).toMatchObject({
+      id, sessionId: id, state: 'queued', delivery: 'pending', mode: 'auto', automatic: false,
+      text: { text: 'Start a new task: list the open pull requests.', truncated: false }
+    });
+    expect(await getSession(id)).toMatchObject({ id, origin: { kind: 'desktop' } });
+    expect((await call('GET', '/v1/sessions/' + id)).status).toBe(200);
+    expect((await outbox()).filter((entry) => entry.id === id)).toMatchObject([{ sessionId: id, opening: true }]);
+    // The composer's own path opens ChatGPT for it; nothing else sends.
+    await vi.waitFor(() => expect(wake()).toHaveBeenCalledTimes(1));
+
+    // The same request again names the chat that exists and starts no second one.
+    const sends = vi.spyOn(startInput, 'sendDesktopInput');
+    try {
+      const again = await post('/v1/inputs', { id, text: 'Start a new task: list the open pull requests.' });
+      expect(again.status).toBe(200);
+      expect(again.body).toMatchObject({ replayed: true, input: { id, sessionId: id } });
+      // The id of a new chat's first message cannot be reused for another chat or another text.
+      for (const different of [{ id, sessionId: chatSession, text: 'Start a new task: list the open pull requests.' }, { id, text: 'Something else' }]) {
+        const conflict = await post('/v1/inputs', different);
+        expect(conflict.status).toBe(409);
+        expect(conflict.body.error).toBe('id_conflict');
+      }
+      expect(sends).not.toHaveBeenCalled();
+    } finally {
+      sends.mockRestore();
+    }
+    expect((await outbox()).filter((entry) => entry.id === id)).toHaveLength(1);
+  });
+
+  it('starts it in a project only when that project exists, and never moves an existing chat', async () => {
+    const unknown = await post('/v1/inputs', { id: randomUUID(), projectId: randomUUID(), text: 'In a project' });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toBe('project_not_found');
+    // A project belongs to a new chat; with a session it is not a field of this request.
+    const moved = await post('/v1/inputs', sendBody({ projectId: randomUUID() }));
+    expect(moved.status).toBe(400);
+    expect(moved.body.error).toBe('invalid_body');
+    expect(await outbox()).toEqual([]);
+    expect(wake()).not.toHaveBeenCalled();
+
+    const { defaultConfig, saveConfig } = await import('../src/main/config.js');
+    const { validateNewRoot } = await import('../src/main/sandbox.js');
+    const { addProject } = await import('../src/main/projects.js');
+    const { getSession } = await import('../src/main/session/store.js');
+    const folder = path.join(dir, 'project-root');
+    await fs.mkdir(folder, { recursive: true });
+    const approved = await validateNewRoot(folder, []);
+    await saveConfig({ ...defaultConfig(), roots: [{ name: 'approved', path: approved }] });
+    const project = await addProject(approved);
+    const id = randomUUID();
+    const started = await post('/v1/inputs', { id, projectId: project.id, text: 'Work in this project' });
+    expect(started.status).toBe(202);
+    expect(started.body.input).toMatchObject({ id, sessionId: id });
+    expect((await getSession(id))?.projectId).toBe(project.id);
+  });
+
+  it('needs the actions switch like every other send', async () => {
+    gate.actions = false;
+    const reply = await post('/v1/inputs', { id: randomUUID(), text: 'Start' });
+    expect(reply.status).toBe(403);
+    expect(await outbox()).toEqual([]);
+  });
+});
+
 describe('cancelling', () => {
   it('withdraws a queued message and says it was not sent', async () => {
     const sent = await post('/v1/inputs', sendBody());
@@ -1007,6 +1082,99 @@ describe('what a message row proves', () => {
     const listed = new Map((await call('GET', '/v1/inputs')).body.inputs.map((entry: { id: string }) => [entry.id, entry]));
     expect(listed.get(recovery.id)).toMatchObject({ automatic: true, state: 'failed', delivery: 'not_sent' });
     expect(listed.get(typed.id)).toMatchObject({ automatic: false });
+  });
+});
+
+describe('choosing a model', () => {
+  const ready = () => vi.spyOn(chatModels, 'getChatModels').mockReturnValue({
+    state: 'ready', requestedAt: null, observedAt: 1,
+    models: [{ id: 'gpt-6', label: 'GPT-6', efforts: ['medium', 'high'], aliases: ['gpt-6-thinking'] }]
+  });
+
+  it('sends with a model and thinking level the account offers, filed under the catalog id', async () => {
+    const catalog = ready();
+    try {
+      const exact = await post('/v1/inputs', sendBody({ model: 'gpt-6', reasoningEffort: 'medium' }));
+      expect(exact.status).toBe(202);
+      expect(exact.body.input).toMatchObject({ model: 'gpt-6', reasoningEffort: 'medium' });
+      await post('/v1/inputs/' + exact.body.input.id + '/cancel');
+      const alias = await post('/v1/inputs', sendBody({ model: 'gpt-6-thinking', reasoningEffort: 'high' }));
+      expect(alias.status).toBe(202);
+      expect((await outbox()).find((entry) => entry.id === alias.body.input.id)).toMatchObject({ model: 'gpt-6', reasoningEffort: 'high' });
+      // The same id with another model is a different message, never a replay.
+      const changed = await post('/v1/inputs', { id: alias.body.input.id, sessionId: chatSession, text: 'Keep going', model: 'gpt-6', reasoningEffort: 'medium' });
+      expect(changed.body.error).toBe('id_conflict');
+    } finally {
+      catalog.mockRestore();
+    }
+  });
+
+  it('refuses a model or level the account does not offer, half a pair, and an unread catalog, before admitting anything', async () => {
+    const catalog = ready();
+    try {
+      expect((await post('/v1/inputs', sendBody({ model: 'gpt-9', reasoningEffort: 'high' }))).body.error).toBe('model_unknown');
+      const effort = await post('/v1/inputs', sendBody({ model: 'gpt-6', reasoningEffort: 'xhigh' }));
+      expect(effort.body).toMatchObject({ error: 'effort_unavailable', detail: 'gpt-6 offers medium, high' });
+      expect((await post('/v1/inputs', sendBody({ model: 'gpt-6' }))).body.error).toBe('invalid_body');
+      expect((await post('/v1/inputs', sendBody({ reasoningEffort: 'high' }))).body.error).toBe('invalid_body');
+      catalog.mockReturnValue({ state: 'unknown', requestedAt: null, observedAt: null, models: [] });
+      expect((await post('/v1/inputs', sendBody({ model: 'gpt-6', reasoningEffort: 'high' }))).body.error).toBe('models_unknown');
+      expect(await outbox()).toEqual([]);
+    } finally {
+      catalog.mockRestore();
+    }
+  });
+
+  it("leaves ChatGPT's own selection when no model is named", async () => {
+    const sent = await post('/v1/inputs', sendBody());
+    expect(sent.status).toBe(202);
+    expect(sent.body.input).toMatchObject({ model: null, reasoningEffort: null });
+  });
+});
+
+describe('stopping an answer', () => {
+  const controls = (over: Partial<SessionControlsView> = {}): SessionControlsView => ({
+    sessionId: chatSession, conversationId: CHAT, plan: null, automation: 'off', objective: '',
+    activeTurnId: 'turn-1', finishHeld: false, blocked: '', job: null, ...over
+  });
+
+  it("asks the app's own Stop to end exactly the named answer, and reports it as requested", async () => {
+    const stops = vi.spyOn(bridge, 'stopSessionTurn').mockResolvedValue(controls({ stopPending: true }));
+    try {
+      const reply = await post('/v1/sessions/' + chatSession + '/stop', { turnId: 'turn-1' });
+      expect(reply.status).toBe(202);
+      expect(stops).toHaveBeenCalledWith(chatSession, 'turn-1');
+      expect(reply.body.live).toMatchObject({ activeTurnId: 'turn-1', stopPending: true });
+    } finally {
+      stops.mockRestore();
+    }
+  });
+
+  it('refuses an answer that is not running, by the same check as the Stop button', async () => {
+    // Recorded as started, but no browser reports it running, so the app's Stop refuses it too.
+    const answering = await answeringSession('Stopped already', 'chat-stop-1', 'turn-old');
+    const reply = await post('/v1/sessions/' + answering + '/stop', { turnId: 'turn-old' });
+    expect(reply.status).toBe(409);
+    expect(reply.body.error).toBe('turn_not_running');
+  });
+
+  it('refuses a bad body, an unknown chat, a chat without ChatGPT and a worker chat before stopping anything', async () => {
+    const stops = vi.spyOn(bridge, 'stopSessionTurn');
+    try {
+      expect((await post('/v1/sessions/' + chatSession + '/stop', {})).body.error).toBe('invalid_body');
+      expect((await post('/v1/sessions/' + chatSession + '/stop', { turnId: 't', now: true })).body.detail).toBe('unknown field');
+      expect((await post('/v1/sessions/nosuchsession/stop', { turnId: 't' })).body.error).toBe('session_not_found');
+      const unattached = await makeSession('Nothing to stop', null);
+      expect((await post('/v1/sessions/' + unattached + '/stop', { turnId: 't' })).body.error).toBe('no_chat');
+      const worker = await makeSession('Worker', 'chat-worker-stop', { kind: 'worker', fromSessionId: chatSession, agentId: 'worker-1', task: 't' });
+      expect((await post('/v1/sessions/' + worker + '/stop', { turnId: 't' })).body.error).toBe('session_not_controllable');
+      const get = await call('GET', '/v1/sessions/' + chatSession + '/stop');
+      expect(get.status).toBe(405);
+      expect(get.headers.allow).toBe('POST');
+      expect(stops).not.toHaveBeenCalled();
+    } finally {
+      stops.mockRestore();
+    }
   });
 });
 

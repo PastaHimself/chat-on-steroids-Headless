@@ -260,9 +260,11 @@ export function forgetExposedSurface(): void {
   surfaceExposure.clear();
 }
 
-export async function startMcpServer(getContext: () => ToolContext): Promise<McpEndpoint> {
+export async function startMcpServer(getContext: () => ToolContext, kept: Partial<Record<SurfaceId, string>> = {}): Promise<McpEndpoint> {
   // A per-session token in the path is what authorises callers. It is regenerated on
-  // every app start, so a URL that leaks stops working when the app restarts.
+  // every app start, so a URL that leaks stops working when the app restarts, unless the
+  // user opted into keeping it (`mcp.persistentUrls`, see persistent-paths.ts): then the
+  // caller passes each surface's stored token, and only a well-formed one is used.
   requestSeenAt = null;
   surfaceRequestAt.clear();
   resetToolClock();
@@ -274,7 +276,7 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
   // Desktop" and "give me everything" the same act.
   const surfacePaths = SURFACE_IDS.map((id) => ({
     id,
-    basePath: `/mcp/${id}/${randomBytes(32).toString('base64url')}`
+    basePath: `/mcp/${id}/${kept[id] && /^[A-Za-z0-9_-]{43}$/.test(kept[id]!) ? kept[id] : randomBytes(32).toString('base64url')}`
   }));
 
   // ChatGPT can keep a cached tools/list snapshot for the lifetime of a connector
@@ -358,6 +360,8 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
     const prmRoute = routes.find((candidate) => safeEqual(pathOnly, candidate.prmPath)) ?? null;
 
     const startedAt = Date.now();
+    // The JSON-RPC method a failed request named, so the log says which call ChatGPT made (#1557).
+    let rpcMethod: string | null = null;
     const publication = { completedAt: null as number | null, failed: false };
     res.once('close', () => { if (publication.completedAt === null) publication.failed = true; });
     res.on('finish', () => {
@@ -381,7 +385,7 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       const expectedTunnelProbe = tunnelProbe && res.statusCode === 415 && route !== null && method === 'POST';
       if (optional) logInfo(`request ${line} (stream/session not offered — normal)`);
       else if (expectedTunnelProbe) logInfo(`request ${line} (probe compatibility check — normal)`);
-      else if (res.statusCode >= 400) logWarn(`request ${line}`);
+      else if (res.statusCode >= 400) logWarn(`request ${line}${rpcMethod ? ` (method ${rpcMethod})` : ''}`);
       else logInfo(`request ${line}`);
     });
 
@@ -443,7 +447,7 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       };
       res.once('finish', release);
       res.once('close', release);
-      withInboundRequestId(requestId, () => void route.handler(req, res, body), timing, publication);
+      withInboundRequestId(requestId, () => void route.handler(req, res, body), timing, publication, !selfTest && !tunnelProbe);
     };
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       void readBoundedJsonBody(req).then((parsed) => {
@@ -456,6 +460,8 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
           jsonError(res, 400, 'invalid_json');
           return;
         }
+        const named = (parsed.body as { method?: unknown } | undefined)?.method;
+        if (typeof named === 'string' && /^[A-Za-z0-9_/.-]{1,80}$/.test(named)) rpcMethod = named;
         dispatch(parsed.body);
       });
       return;

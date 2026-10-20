@@ -1,5 +1,6 @@
 // Real Chromium layout for the setup guide, using the production modules and styles.
 // Serves a UI-only fixture; no app backend, credentials, browser pairing or tunnel is started.
+const { withoutScripts } = require('./ui-check-page.cjs');
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -28,8 +29,7 @@ app.whenReady().then(async () => {
   const server = await createServer({ configFile: false, root: path.join(root, 'src/renderer'),
     server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'setup-fixture', configureServer(vite) {
       vite.middlewares.use('/setup-preview.html', async (_request, response) => {
-        const source = fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')
-          .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+        const source = withoutScripts(fs.readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8'))
           .replace('</body>', `<script type="module">
             import { initSetupGuide } from '/setup-guide.ts';
             import { initLanguage, setLanguage, t } from '/i18n.ts';
@@ -54,7 +54,7 @@ app.whenReady().then(async () => {
     assert.equal(ready, true);
     const results = [];
     for (const [width, height, zoom, language, theme] of [
-      [1100, 900, 1, 'en', 'dark'], [800, 650, 1, 'en', 'dark'],
+      [1100, 900, 1, 'en', 'dark'], [800, 650, 1, 'en', 'dark'], [1100, 900, 1, 'de', 'dark'],
       [1100, 900, 1.5, 'zh-CN', 'light'], [640, 720, 1, 'zh-CN', 'dark'],
       [800, 650, 1, 'es', 'dark'], [800, 650, 1, 'zh-TW', 'light'],
       [1100, 900, 1, 'ja', 'dark'], [1100, 900, 1.5, 'ja', 'light'], [640, 720, 1, 'ja', 'dark'],
@@ -107,7 +107,8 @@ app.whenReady().then(async () => {
       // Each step's pictures sit in a carousel inside that step; only the open step is on screen.
       const groups = await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-setup-guide]')]
         .map(host => [host.dataset.setupGuide, host.querySelectorAll('.guide-frame').length]).filter(([, count]) => count > 0)`);
-      assert.ok(groups.length >= 6, 'Setup has its picture guides: ' + JSON.stringify(groups));
+      // Sign-in (two browsers), tunnel, API key and plugin; ChatGPT's Developer mode switch is gone.
+      assert.ok(groups.length >= 5, 'Setup has its picture guides: ' + JSON.stringify(groups));
       for (const [group, count] of groups) {
         for (let index = 0; index < count; index++) {
           const selector = `[data-setup-guide="${group}"]`;

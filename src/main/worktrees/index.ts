@@ -182,9 +182,12 @@ function cleanGitEnvironment(): NodeJS.ProcessEnv {
   return environment;
 }
 
-// Adapted from upstream v2.1.38: Git worktree add/remove share the common admin
-// directory even when the workers have different allocation IDs. Concurrent adds
-// can observe another worktree before its commondir file exists.
+/**
+ * One repository's worktrees change one Git process at a time. `git worktree add` reads every
+ * other worktree's admin folder, and one being created at that moment has no `commondir` yet:
+ * concurrent worker allocations failed with "failed to read .git/worktrees/…/commondir"
+ * (2026-10-14). Keyed by the repository's common Git directory; add, remove and list wait here.
+ */
 const worktreeChanges = new Map<string, Promise<unknown>>();
 function oneWorktreeChangeAtATime<T>(commonDir: string, change: () => Promise<T>): Promise<T> {
   const run = (worktreeChanges.get(commonDir) ?? Promise.resolve()).then(change);
@@ -265,6 +268,8 @@ async function rootsOf(approvedRoots: readonly Root[]): Promise<ResolvedRoot[]> 
   const result: ResolvedRoot[] = [];
   for (const root of approvedRoots) {
     if (!root.name || /[\\/]/.test(root.name)) throw new WorkerWorktreeError('WORKTREE_ROOT_INVALID', 'approved root has an invalid virtual name');
+    // A server folder (#1469) has no local path; worktrees are only made in folders on this computer.
+    if (root.remote) continue;
     // An unrelated approved folder may be offline (for example a disconnected drive).
     // Only existing, resolved roots may authorize an allocation or an owned lease.
     // The selected source and lease's original owning root are checked below.
@@ -1236,8 +1241,13 @@ async function withLeaseMutation<T>(lease: WorkerWorktreeLease, operation: () =>
 }
 
 
-async function branchCheckedOut(cwd: string, branchRef: string): Promise<boolean> {
-  const listed = await runGit(cwd, ['worktree', 'list', '--porcelain'], 1024 * 1024);
+/**
+ * Listing reads every worktree's admin folder as well, so it waits behind add and remove: beside a
+ * removal that emptied `.git/worktrees` it failed with "Invalid path …/.git/worktrees", and two
+ * workers of one repository finishing together could fail one cleanup (full suite, 2026-10-17).
+ */
+async function branchCheckedOut(cwd: string, commonDir: string, branchRef: string): Promise<boolean> {
+  const listed = await oneWorktreeChangeAtATime(commonDir, () => runGit(cwd, ['worktree', 'list', '--porcelain'], 1024 * 1024));
   if (listed.code !== 0) throw new WorkerWorktreeError('WORKTREE_LIST_FAILED', listed.stderr || 'Git worktrees could not be listed');
   return text(listed).split('\n').some(line => line === `branch ${branchRef}`);
 }
@@ -1262,7 +1272,7 @@ async function deletableBranchOid(marker: Marker, disposition: WorkerFinalizeBra
 async function deleteOwnedBranch(marker: Marker, disposition: WorkerFinalizeBranch): Promise<boolean> {
   const branchHead = await deletableBranchOid(marker, disposition);
   if (!branchHead) return false;
-  if (await branchCheckedOut(marker.sourceRepoRoot, marker.branchRef)) throw new WorkerWorktreeError('WORKTREE_BRANCH_IN_USE', 'worker branch is checked out by another worktree');
+  if (await branchCheckedOut(marker.sourceRepoRoot, marker.commonDir, marker.branchRef)) throw new WorkerWorktreeError('WORKTREE_BRANCH_IN_USE', 'worker branch is checked out by another worktree');
   const removed = await runGit(marker.sourceRepoRoot, ['update-ref', '-d', marker.branchRef, branchHead], 256);
   if (removed.code !== 0) throw new WorkerWorktreeError('WORKTREE_BRANCH_REMOVE_FAILED', removed.stderr || 'owned worker branch could not be removed');
   return true;
@@ -1325,7 +1335,7 @@ export function finalizeWorkerWorkspace(input: {
     if (worktreeExists) {
       await assertOwnedWorktree(input.lease);
       const args = ['worktree', 'remove', ...(input.discardChanges === true ? ['--force'] : []), marker.worktreePath];
-      const removed = await runGit(marker.sourceRepoRoot, safeGitArgs(marker.hooksPath, args));
+      const removed = await oneWorktreeChangeAtATime(input.lease.commonDir, () => runGit(marker.sourceRepoRoot, safeGitArgs(marker.hooksPath, args)));
       if (removed.code !== 0) throw new WorkerWorktreeError('WORKTREE_REMOVE_FAILED', removed.stderr || 'owned worker worktree could not be removed');
     }
     const branchRemoved = await deleteOwnedBranch(marker, disposition);

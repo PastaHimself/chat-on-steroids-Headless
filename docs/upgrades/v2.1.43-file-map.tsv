@@ -1,0 +1,621 @@
+path	status	evidence
+.github/ISSUE_TEMPLATE/bug_report.yml	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+.github/pull_request_template.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+.github/workflows/firefox-sign-check.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+.github/workflows/issue-version.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+.github/workflows/pr-checklist.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+.github/workflows/pr-not-ready.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+.github/workflows/publish.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+.github/workflows/waiting-prs.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+.github/workflows/welcome.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+AGENTS.md	DEFERRED	Headless operating guide retained; changed contracts recorded in AGENTS and upgrade report
+CHANGELOG.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+CONTRIBUTING.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+README.md	DEFERRED	Headless operating guide retained; changed contracts recorded in AGENTS and upgrade report
+docs/images/app-chat.jpg	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/images/app-home.jpg	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/images/composer-sheet.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/images/demo.gif	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/images/demo.mp4	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/images/extension-popup.jpg	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/images/model-picker.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/images/settings.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/images/workspace.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/licenses/native/SOURCE-BUILD.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/licenses/native/sources.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/plugins.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/recovery-inventory.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.35.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.36.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.37.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.38.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.39.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.40.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.41.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.42.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/release-notes/v2.1.43.md	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+docs/setup.md	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+docs/superpowers/plans/2026-10-15-ssh-projects.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+docs/windows-dictation.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+electron-builder.yml	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+electron.vite.config.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/de/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/en/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/es/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/fr/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/ja/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/ko/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/pt_BR/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/pt_PT/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/ru/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/tr/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/vi/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/zh_CN/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/_locales/zh_TW/messages.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/background.js	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+extension/browser-control.js	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/chatgpt-dom.js	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/content.js	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+extension/fiber.js	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+extension/i18n.js	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/manifest.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/popup.html	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/popup.js	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+extension/usage.js	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+native/macos-desktop-helper/main.swift	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+package-lock.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+package.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+pets/whip/animations.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+pets/whip/atlas.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+pets/whip/pet.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/capture-extension-pages.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/capture-layout-previews.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/capture-readme-demo.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/capture-readme-shots.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/capture-setup-pages.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/fetch-retry.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/fetch-ripgrep.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/fetch-tunnel-client.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/firefox-update-manifest.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/fixtures/readme-fixture.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/fixtures/smoke-dictation-parent-windows.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/issue-version.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/make-icon.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/package-native-sources.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/pet-whip/build.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/pet-whip/draw.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/pet-whip/frames.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/pr-check.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/pr-fail-first.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/pr-not-ready.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/prepare-packaging-native.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/smoke-dictation-windows.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/stage-firefox-extension.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/ui-check-page.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-appearance.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-browser-setup.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-chat-opening-scroll.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-chat-stays-at-end.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-chat-switch.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-composer-invocation.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-connection-compact.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-connection-layer.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-disconnect-ui.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-dropdown-layout.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-goal-progress.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-history-scroll.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-input-queue.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-message-reactions.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-navigation-motion.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-plugin-refresh-recovery.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-pr-workspace.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-recovery-layout.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-release-assets.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-round-subagents.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-settings-focus.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-settings-layout.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-setup-guide.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-shared-tunnel.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-sidebar-setup.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-update-actions.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-update-readiness.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-usage-week.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-whats-new.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/verify-workspace-terminal.cjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/waiting-prs.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/weekly-digest.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+scripts/windows-installer-acl.nsh	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/agent-admission.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/agents.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/app-proxy.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/appearance-schema.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/approval-wait.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/bridge.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/browser.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/chat-models.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/apply-patch/file-update.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/apply-patch/index.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/command-batch.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/filesystem.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/ownership.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/read-backend.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/shell.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/tool-specs.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/unified-exec.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/codex/view-image.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/computer/index.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/computer/macos-grants.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/computer/windows-apps.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/config.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/connection.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/control-actions.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/control-api.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/control-reads.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/control-stream.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/control-workers.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/cos-browser/host.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/cos-browser/index.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/diagnostics-facts.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/diagnostics-report.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/diagnostics.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/dictation.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/durable.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/goal-helper-size.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/goal.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/image-export.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/index.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/ipc.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/keep-awake.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/logger.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/main-texts.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/call-context.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/code-mode-tool.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/code-mode-worker.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/inbound.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/instructions.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/kernel.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/mcp/persistent-paths.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/server.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/surfaces.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/mcp/tools-core.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/mcp/tools.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/plugin-refresh.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/plugins-ipc.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/plugins/exposure.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/plugins/manager.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/project-files.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/project-git.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/projects.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/provider-usage.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/remote/project-fs.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/remote/sftp.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/remote/ssh.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/rotation-hold.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/sandbox.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/search.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/secrets.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/automatic-replies.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/branch-history.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/continuation.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/session/edits.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/image-request.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/input-history.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/input.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/session/markdown-export.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/prompt.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/read-model.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/recorder.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/session/resume-gate.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/search.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/store.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/main/session/title.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/session/usage.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/skill-github.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/skills.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/stuck-notice.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/tunnel/index.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/tunnel/proxy.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/turn-notifications.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/turn-rotation.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/update-all.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/update-progress.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/update.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/usage-tool.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/version.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/worker-archive.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/workspace-terminal.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/workspace.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/main/worktrees/index.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/preload/cos-browser-worker.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/preload/index.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/agent-activity.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/agent-communication.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/agent-panel.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/appearance.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/browser-icons/README.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/browser-icons/firefox.svg	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/chat-error.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/chat-find.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/chat-search.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/chat.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/context-meter.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/credentials-notice.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/desktop-access-notice.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/dom.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/extension-pictures.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/file-panel.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/i18n.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/icons.css	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/image-storage.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/index.html	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/layout-previews/README.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/layout-previews/inbox-dark.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/layout-previews/inbox-light.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/layout-previews/projects-dark.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/layout-previews/projects-light.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/locales/de.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/es.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/fr.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/ja.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/ko.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/pt-BR.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/pt-PT.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/ru.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/tr.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/vi.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/zh-CN.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/locales/zh-TW.json	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/main-texts.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/main.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/math.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/pets.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/plugin-refresh-offer.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/plugins.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/recovery.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/renderer/search-popup.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/session-title.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/settings.css	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-browser.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-guide.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/api-key-create.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/api-key-tunnels.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/browser-extensions.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/developer-mode.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-de-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-de-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-en-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-en-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-es-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-es-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-fr-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-fr-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-ja-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-ja-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-ko-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-ko-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-pt-BR-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-pt-BR-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-pt-PT-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-pt-PT-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-ru-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-ru-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-tr-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-tr-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-vi-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-vi-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-zh-CN-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-zh-CN-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-zh-TW-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/brave-zh-TW-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-de-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-de-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-en-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-en-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-es-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-es-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-fr-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-fr-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-ja-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-ja-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-ko-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-ko-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-pt-BR-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-pt-BR-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-pt-PT-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-pt-PT-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-ru-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-ru-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-tr-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-tr-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-vi-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-vi-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-zh-CN-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-zh-CN-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-zh-TW-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/chrome-zh-TW-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-de-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-de-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-en-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-en-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-es-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-es-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-fr-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-fr-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-ja-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-ja-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-ko-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-ko-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-pt-BR-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-pt-BR-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-pt-PT-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-pt-PT-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-ru-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-ru-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-tr-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-tr-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-vi-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-vi-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-zh-CN-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-zh-CN-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-zh-TW-dev.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/edge-zh-TW-load.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/extensions/manifest.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/api-key-create-en.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/api-key-tunnels-en.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/manifest.json	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-de.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-en.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-es.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-fr.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-ja.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-ko.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-pt-BR.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-pt-PT.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-ru.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-tr.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-vi.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-zh-CN.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-add-zh-TW.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-de.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-en.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-es.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-fr.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-ja.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-ko.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-pt-BR.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-pt-PT.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-ru.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-tr.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-vi.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-zh-CN.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/plugin-new-zh-TW.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/tunnel-create-en.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/pages/tunnel-id-en.webp	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/plugin-add.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/plugin-new.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/tool-approval.jpg	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/tunnel-create.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/setup-images/tunnel-id.png	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/shortcuts.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/skills-library.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/skills.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/ssh-project-dialog.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/stop-notices.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/styles.css	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/timeline-rounds.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/tool-approval.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/tunnel-warning.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/unified-diff.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/update-error.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/update-progress.css	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/update-progress.html	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/update-progress.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/update-readiness-state.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/update-readiness.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/usage.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/whats-new.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/workspace-docks.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/renderer/workspace-terminal.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/appearance.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/approval-wait.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/chronology.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/content-reference.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/control-api.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/shared/dictation.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/dil-tables.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/firefox-addon.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/fold-case.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/input.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/main-texts.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/markdown-export.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/markdown-text.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/plugin-refresh.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/plugins.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/project-git.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/projects.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/shared/provider-usage.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/recovery.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/shared/session.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/shared/skills.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/stop-notice.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/task-progress.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/tunnel-ids.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+src/shared/types.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+src/shared/usage.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/agent-activity.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/agent-communication.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/agents.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/app-proxy.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/appearance.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/apply-patch-line-endings-property.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/approval-wait.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/backend-recording.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/background-window.test.ts	ALREADY PRESENT	Identical bytes already in Headless
+test/branch-in-new-chat-dom.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/bridge-turn-rotation.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/bridge.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/browser-control-extension.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/browser-control-unloaded.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/browser.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/chat-error-presentation.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/chat-find.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/chatgpt-dom-input.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/chronology.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/code-mode-runtime.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/codex-apply-patch-bom.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/config.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/connection.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/content-reference.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/content-script.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/continuation.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/control-api-actions.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/control-api-reads.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/control-api-stream.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/control-api-workers.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/control-api.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/cos-browser-sign-in-host.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/cos-browser-worker-preload.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/credentials-notice.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/desktop-input-maintenance.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/diagnostics-facts.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/diagnostics-report-remote.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/diagnostics-report.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/diagnostics-save.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/dictation-lifecycle.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/dictation.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/durable.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/edit-question-dom.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/exec-completed-results.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/exec-shell-regressions.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/extension-app-language.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/extension-auto-reload.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/extension-environment.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/extension-i18n.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/extension-popup.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/extension.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/feature-parity.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/fetch-retry.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/final-answer-residency.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/firefox-extension-package.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/firefox-update-manifest.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/fixtures/macos-window-capture.swift	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/fixtures/verify-macos-window-capture.mjs	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/goal-backends.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/goal.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/image-export.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/image-request.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/image-storage-ui.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/image-storage.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/input-delivery-integration.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/instructions-remote.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/ipc.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/issue-version.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/keep-awake.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/kernel-rotation-hold.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/kernel-run-inbox.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/logger-windows-lock.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/logger.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/macos-grants.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/macos-permission-diagnostics.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/macos-window-capture.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/main-texts.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/markdown-export.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/mcp-empty-catalogs.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/mcp-persistent-paths.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/mcp-sent-results.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/mcp-user-instructions.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/mcp-worktree-spawn.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/mcp.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/model-picker-state.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/packaging.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/pet-bundled.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/pet-overlay-renderer.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/pets-renderer.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/plugin-refresh-browser-creation.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/plugin-refresh-dom.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/plugin-refresh-evidence.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/plugin-refresh-offer.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/plugin-refresh-workflow.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/plugin-refresh.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/plugins-ipc-refresh.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/plugins-manager.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/plugins-ui.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/pr-check.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/pr-fail-first.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/pr-not-ready.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/project-files.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/project-git.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/provider-usage-parse.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/provider-usage.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/recording-storage-cleanup.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/recording-storage-notice.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/recovery-message.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/remote-exec.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/remote-project-fs.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/remote-projects.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/remote-sandbox.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/remote-sftp.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/remote-ssh.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/remote-tools.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-agent-panel.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-desktop-access-notice.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-dictation.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-dil-table.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-file-panel.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-html.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-i18n-source.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-i18n.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-layout.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-recovery.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/renderer-session-title.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-shortcuts.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-skills.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-ssh-project-dialog.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-state.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-timeline.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/renderer-usage.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/renderer-workspace-docks.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/sandbox.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/secrets.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/session-completion-order.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/session-input.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/session-list-refresh.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/session-markdown-export.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/session-metadata-diagnostics.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/session-search.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/session-title.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/session-usage.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/session.test.ts	PORTED	Adapted source with Headless functionality and strict ownership retained; see upgrade report and tests
+test/shell-compat.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/skill-github.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/skills.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/task-progress.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/timeline-rounds.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/tool-approval-notice.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/transcript-window.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/tunnel-ids.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/tunnel-lifecycle.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/tunnel-proxy.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/tunnel.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/turn-notifications.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/turn-rotation.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/unified-exec-exit-code.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update-all.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update-error.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update-progress.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update-readiness-state.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update-readiness.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update-texts-actions.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update-texts-components.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update-texts-recovery.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/update.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/usage-observer.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/usage-tool.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/verify-release-assets.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/waiting-prs.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/weekly-digest.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/windows-apps.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/worker-archive.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/workspace-terminal.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/workspace.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
+test/worktrees-git-serial.test.ts	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance

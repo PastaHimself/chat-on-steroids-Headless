@@ -674,6 +674,21 @@ describe('Core app mention on app-owned sends (#861)', () => {
     await vi.advanceTimersByTimeAsync(10);
     return result;
   }
+  it('uses the exact Plugins app token and does not add a Core token for an opted-in send', async () => {
+    const plugins = { path: 'app://asdk_app_plugins123', name: 'Chat On Steroids Plugins (Windows)' };
+    let atClick = '';
+    button.addEventListener('click', () => {
+      atClick = box.innerHTML;
+      user('Exact app prompt');
+      box.replaceChildren();
+    });
+    expect(await sendMention({ mention: plugins })).toBe(true);
+    const sent = document.createElement('div'); sent.innerHTML = atClick;
+    const chips = sent.querySelectorAll('[app-mention-path]');
+    expect(chips).toHaveLength(1);
+    expect(chips[0]?.getAttribute('app-mention-path')).toBe(plugins.path);
+    expect(chips[0]?.getAttribute('data-prompt-link-label')).toBe('$chat-on-steroids-plugins-windows');
+  });
   // ChatGPT's editor drops the inserted element on a microtask and draws its own token one
   // task later; only that token is part of what Send submits.
   function redrawingEditor(draw = true) {
@@ -1264,7 +1279,7 @@ describe('native image readiness', () => {
 
 
 describe('transport failures in German', () => {
-  // Upstream measured 2026-10-14 on a German account: a long answer whose stream broke showed
+  // Measured 2026-10-14 on a German account: a long answer whose stream broke showed
   // "Verbindung unterbrochen…" after every reload, and its end the delivery timeout alert with
   // "Erneut versuchen". Neither was a failure, so each recovery reload claimed a phantom turn.
   it('recognises the delivery timeout alert with its localized Retry', () => {
@@ -1299,7 +1314,7 @@ describe('transport failures in German', () => {
 });
 
 describe('transport failures in Portuguese', () => {
-  // Upstream measured 2026-10-12 on a pt-BR account: a send ChatGPT could not deliver showed this alert with
+  // Measured 2026-10-12 on a pt-BR account: a send ChatGPT could not deliver showed this alert with
   // its Retry button, and the dropped answer "Conexão interrompida…". Read only in English, neither
   // was a failure, so the undelivered message counted as sent and nothing retried it.
   it('recognises the delivery timeout alert with its localized Retry', () => {
@@ -1554,13 +1569,29 @@ describe('locale-independent provider composer evidence', () => {
     expect(api.stopGeneration(() => true)).toBe(false);
   });
 
-  it('does not anchor to a microphone glyph in prose or an unrelated composer control', () => {
+  it('anchors to the provider microphone in an empty composer without action-row markers', () => {
+    // ChatGPT 2026-10-17 (German UI): no test ids and no trailing grid area anywhere in the
+    // composer, the microphone glyph is microphone-light-*, and an empty composer shows Voice,
+    // not Send. The app's composer control never appeared on such a page.
+    document.documentElement.lang = 'de-DE';
+    document.querySelector('form')!.innerHTML = '<div id="prompt-textarea" contenteditable="true"></div>' +
+      '<div class="flex justify-end"><div><div><span><button type="button" aria-label="ChatGPT-Modell auswählen">5.6</button></span></div></div>' +
+      '<div id="row"><div id="mic-wrap"><div><span><button type="button" aria-label="Diktieren"><svg><use href="/cdn/sprites.svg#microphone-light-20"></use></svg></button></span></div></div>' +
+      '<div><button type="button" aria-label="Sprachchat starten"><svg><use href="/cdn/sprites.svg#voice-regular-20"></use></svg></button></div></div></div>';
+    expect(api.sendButton()).toBeNull();
+    expect(api.composerActions()).toEqual({ host: document.getElementById('row'), before: document.getElementById('mic-wrap') });
+  });
+
+  it('does not anchor to a microphone glyph in prose or outside the composer', () => {
     button.parentElement!.removeAttribute('data-testid');
     button.removeAttribute('data-testid'); button.removeAttribute('aria-label');
-    button.innerHTML = '<svg><use href="#microphone-regular-24"></use></svg>';
+    button.innerHTML = '<svg><use href="#plus-regular-24"></use></svg>';
     const quote = document.createElement('section'); quote.setAttribute('data-testid', 'conversation-turn-1');
     quote.innerHTML = '<button><svg><use href="#microphone-regular-24"></use></svg></button>';
     document.body.prepend(quote);
+    const outside = document.createElement('div');
+    outside.innerHTML = '<button><svg><use href="#microphone-light-20"></use></svg></button>';
+    document.body.append(outside);
     expect(api.composerActions()).toBeNull();
     expect(api.sendButton()).toBeNull();
     expect(api.generating()).toBe(false);
@@ -1597,5 +1628,29 @@ describe('locale-independent provider composer evidence', () => {
     expect(tool.getAttribute('data-clf-native-hidden')).toBe('1');
     expect(disclosure.getAttribute('data-clf-native-hidden')).toBe('1');
     expect(action.closest('[data-clf-native-hidden]')).toBeNull();
+  });
+});
+
+// 2026-10-15: the diagnostics report says which of ChatGPT's controls the extension still finds,
+// so a report after ChatGPT changed its page says what broke without a follow-up question.
+describe('page checks for the diagnostics report', () => {
+  type Checks = { composer: boolean; sendArea: boolean; modelMenu: boolean; plusMenu: boolean; language: string | null };
+  const checks = () => (api as unknown as { pageChecks(): Checks }).pageChecks();
+
+  it('finds the composer, its send area and the model menu on a normal page, and names the page language', () => {
+    document.documentElement.lang = 'de-DE';
+    const plus = document.createElement('button'); plus.id = 'composer-plus-btn'; document.querySelector('form')!.prepend(plus);
+    expect(checks()).toEqual({ composer: true, sendArea: true, modelMenu: true, plusMenu: true, language: 'de-DE' });
+    // Measured 2026-10-15: the current composer's + button has no id, only its navigation target.
+    plus.removeAttribute('id'); plus.setAttribute('data-composer-navigation-target', 'add-context');
+    expect(checks().plusMenu).toBe(true);
+    plus.remove();
+    expect(checks().plusMenu).toBe(false);
+  });
+
+  it('says what is missing when ChatGPT moved things, and reports no text from the page', () => {
+    document.querySelector('form')!.remove();
+    document.documentElement.lang = 'en <script>';
+    expect(checks()).toEqual({ composer: false, sendArea: false, modelMenu: false, plusMenu: false, language: null });
   });
 });
