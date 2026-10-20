@@ -37,7 +37,7 @@ async function codexFile(name: string, lines: string, mtime = NOW): Promise<stri
 beforeEach(async () => {
   dir = await makeTempDir('clf-provider-usage-');
   initConfigPath(dir);
-  await saveConfig(defaultConfig());
+  await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, localAppUsage: true } });
   homes = { codex: path.join(dir, 'codex'), claude: path.join(dir, 'claude') };
   resetProviderUsageForTests();
 });

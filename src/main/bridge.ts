@@ -7125,7 +7125,7 @@ async function captureRecordedBrief(
       (delivery === 'background' && session.browserRecoveryDismissedAt !== undefined) ||
       (entry.automatic && !automaticCompactionAllowed(session))) return null;
   const response = await readHandoffResponse(entry.sessionId, conversationId, anchor, token);
-  if (response.status === 'ambiguous') {
+  if (response.status === 'ambiguous' && entry.captureIssue !== response.reason) {
     noticeRefusal(`handoff-ambiguous:${token}`,
       `bridge: compaction ${token.slice(0, 8)} refused capture: ${handoffCaptureDiagnostic(response.reason)}`);
   }

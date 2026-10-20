@@ -1,3 +1,4 @@
+import { allowSyntheticProxyOrigin } from './network-isolation.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import net from 'node:net';
@@ -60,6 +61,7 @@ it.skipIf(!builtIn)('routes fetch through the proxy, skips direct endpoints, and
   await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const proxyPort = (proxy.address() as AddressInfo).port;
   const targetPort = (target.address() as AddressInfo).port;
+  const releaseOrigin = allowSyntheticProxyOrigin(`http://updates.invalid:${targetPort}`);
   vi.spyOn(logger, 'logInfo').mockImplementation(() => undefined);
   try {
     const resolve = async (url: string) => url.includes('provider.invalid') ? 'DIRECT' : `PROXY 127.0.0.1:${proxyPort}`;
@@ -76,6 +78,7 @@ it.skipIf(!builtIn)('routes fetch through the proxy, skips direct endpoints, and
     await fetch(`http://updates.invalid:${targetPort}/`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
     expect(tunnels).toHaveLength(1);
   } finally {
+    releaseOrigin();
     await new Promise(resolve => proxy.close(resolve));
     await new Promise(resolve => target.close(resolve));
   }

@@ -642,7 +642,7 @@ describe('MAIN-world usage projection', () => {
       rate_limit: { primary_window: { used_percent: 20 } }
     });
     expect(h.posts[1]?.rows).toHaveLength(80);
-    expect(JSON.stringify(h.posts)).not.toMatch(/private@example|<script>/);
+    expect(JSON.stringify(h.posts)).not.toMatch(/private@example|<script>/i);
   });
 
   it('publishes an exact conversation/request pair from a chunked live response before React renders it', async () => {

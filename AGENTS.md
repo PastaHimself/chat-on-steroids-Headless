@@ -3362,7 +3362,7 @@ it must not guess a new rebind, delete history or become the path for new contin
 
 ## 16. Multiple prime families and reusable workers
 
-v2.1.43 opens a worker on Activity first (`renderer/worker-activity.ts`): exact tool
+v2.1.43 opens a worker on Activity first (`renderer/agent-activity.ts`): exact tool
 actions, results and changed files. Its conversation remains a separate view.
 `agent-admission.ts` adapts upstream local API entry points to the existing Headless
 `worker-admission.ts`; MCP, Discord and local controls share one admission owner.
@@ -4887,6 +4887,10 @@ it is not a general browser automation fallback. Capture/privacy settings and pl
 failures remain explicit, with no Linux/helper fallback that bypasses the capability model.
 
 ## 19. Debugging, tests and working here
+
+Plugin refresh UI acknowledgements persist only SHA-256 declaration digests. Legacy plaintext
+acknowledgements migrate before removal; asynchronous paints prove their latest renderer
+generation before changing the reminder. This is presentation only, never refresh authority.
 
 Before editing, inspect `git status --short` and `git diff -- <intended files>`. Reproduce one
 concrete identity through the relevant owners. State the intended behavior and the first wrong

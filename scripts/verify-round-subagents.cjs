@@ -50,13 +50,14 @@ const fixture = `(() => {
   selectedModel:{conversationId:'worker-chat-'+n,model:'gpt-6-sol',reasoningEffort:'high',observedAt:now}}));
  const history=Array.from({length:48},(_,i)=>({seq:i+1,time:now+i,source:'extension',kind:'assistant_message',
   messageId:'worker-result-'+i,message:stored('Verification step '+(i+1)+': checked selection, history refresh, keyboard navigation and narrow layout. The prime composer remains intact.'),final:true,state:'final'}));
+ const actions=[tool('exec_command',{cmd:'npm test -- dashboard'},'Verified dashboard tests'),{...tool('apply_patch',{},'Updated dashboard regression'),call:{...tool('apply_patch',{},'Updated dashboard regression').call,summary:{kind:'edit',title:'Updated dashboard regression',tone:'good'},changes:[{path:'src/dashboard.ts',added:8,removed:2,approximate:false}]}}];
  window.workerReads=[]; window.workerViews=[];
  window.appendPrimeOutput=()=>{f.events.push(prose('Additional live prime output: verification is continuing.'));f.emit('onSessionChanged',{allTranscripts:true});};
  window.refreshWorker=()=>{workers[0].updatedAt++;f.emit('onSessionChanged',{sessionIds:[workers[0].id]});};
  const methods={
   getState:async()=>{const r=await old.getState();r.data.config=fixtureMerge(fixtureDefaults,r.data.config);return r;},
   listSessions:()=>ok({sessions:[{...f.summary,events:f.events.length},...workers],activeId:f.summary.id,pressure:[]}),
-  getSession:(id,options)=>{if(id.startsWith('worker-local-')){window.workerReads.push(id);window.workerViews.push(options?.actions?'activity':'conversation');return ok({summary:workers.find(w=>w.id===id),events:history,total:history.length,nextFrom:history.length+1});}return old.getSession(id,options);}
+  getSession:(id,options)=>{if(id.startsWith('worker-local-')){window.workerReads.push(id);window.workerViews.push(options?.actions?'activity':'conversation');return ok({summary:workers.find(w=>w.id===id),events:options?.actions?actions:history,total:options?.actions?actions.length:history.length,nextFrom:history.length+1});}return old.getSession(id,options);}
  };
  window.api=new Proxy(methods,{get:(target,key)=>key in target?target[key]:old[key]});
 })();`;
@@ -109,6 +110,7 @@ app.whenReady().then(async () => {
   // A worker opens on its Activity (#105), read as tool calls only; its conversation is one tab away.
   await until(`document.querySelector('#workDockRight .agent-panel-view[aria-selected="true"]')?.dataset.view==='activity'&&!!document.querySelector('#workDockRight .agent-activity-heading')`);
   assert.deepEqual(await js(`workerViews`),['activity']);
+  await capture('worker-activity.png');
   await js(`document.querySelector('#workDockRight .agent-panel-view[data-view="conversation"]').click()`);
   await until(`document.querySelectorAll('#workDockRight .ev-assistant_message').length===48`);
   assert.deepEqual(await js(`workerViews`),['activity','conversation']);

@@ -175,23 +175,23 @@ describe('settings migration', () => {
     await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, startAtLogin: true, autoConnect: false } });
     expect((await loadConfig()).ui).toMatchObject({ startAtLogin: true, autoConnect: false });
   });
-  it('rotates long turns after 30 minutes for fresh, legacy and malformed settings, keeping saved choices', async () => {
-    expect(defaultConfig().ui.rotateTurnMinutes).toBe(30);
+  it('keeps Headless fresh turns opt-in for fresh, legacy and malformed settings, retaining explicit intervals', async () => {
+    expect(defaultConfig().ui.rotateTurnMinutes).toBe(0);
     const legacy = defaultConfig(); delete legacy.ui.rotateTurnMinutes;
     await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
-    expect((await loadConfig()).ui.rotateTurnMinutes).toBe(30);
-    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...legacy, ui: { ...legacy.ui, rotateTurnMinutes: 'soon', startAtLogin: true } }), 'utf8');
-    expect((await loadConfig()).ui).toMatchObject({ rotateTurnMinutes: 30, startAtLogin: true });
-    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, rotateTurnMinutes: 0 } });
     expect((await loadConfig()).ui.rotateTurnMinutes).toBe(0);
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...legacy, ui: { ...legacy.ui, rotateTurnMinutes: 'soon', startAtLogin: true } }), 'utf8');
+    expect((await loadConfig()).ui).toMatchObject({ rotateTurnMinutes: 0, startAtLogin: true });
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, rotateTurnMinutes: 30 } });
+    expect((await loadConfig()).ui.rotateTurnMinutes).toBe(30);
   });
-  it('reads other apps’ usage for fresh and legacy settings and keeps it off once switched off', async () => {
-    expect(defaultConfig().ui.localAppUsage).toBe(true);
+  it('keeps optional local-app log discovery off in Headless until explicitly enabled', async () => {
+    expect(defaultConfig().ui.localAppUsage).toBe(false);
     const legacy = defaultConfig(); delete legacy.ui.localAppUsage;
     await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
-    expect((await loadConfig()).ui.localAppUsage).toBe(true);
-    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, localAppUsage: false } });
     expect((await loadConfig()).ui.localAppUsage).toBe(false);
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, localAppUsage: true } });
+    expect((await loadConfig()).ui.localAppUsage).toBe(true);
   });
   it('keeps the local control API off for fresh, legacy and malformed configs while preserving explicit opt-in', async () => {
     expect(defaultConfig().controlApi).toEqual({ enabled: false, allowActions: false });

@@ -44,7 +44,7 @@ export async function worker(inputs: Array<{ id: string; conversationId: string 
     json: async () => new URL(input).pathname === '/hello'
       ? { app: 'chat-on-steroids', bridge: BRIDGE_PROTOCOL, compatible: true, paired: true }
       : { ok: true, inputs, background: true, modelCatalogRequest,
-        ...(rendered ? { inputOpeningIds: inputs.map(input => input.id), nonDiscardableConversations: inputs.map(input => input.conversationId).filter(Boolean) } : {}) }
+        ...(rendered ? { inputOpeningIds: inputs.map(input => input.id), commandIds: [], nonDiscardableConversations: inputs.map(input => input.conversationId).filter(Boolean) } : {}) }
   }));
   const scripting = { executeScript: vi.fn(async ({ target, func }: any): Promise<any[]> => {
     const documentId = (saved.tabDocuments as Record<string, string> | undefined)?.[target.tabId];

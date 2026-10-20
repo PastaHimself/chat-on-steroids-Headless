@@ -110,7 +110,7 @@ function github(options: {
     const url = String(input);
     const name = url.split('/').pop()!;
     asked.push(name);
-    if (url.includes('api.github.com')) {
+    if (new URL(url).hostname === 'api.github.com') {
       if (options.apiStatus) return new Response('{"message":"API rate limit exceeded"}', { status: options.apiStatus });
       if (options.fail === 'release') return new Response('nope', { status: 503 });
       return new Response(JSON.stringify({ tag_name: `v${version}` }), { status: 200 });

@@ -39,11 +39,14 @@ const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"'
 
 /** Plain text of captured message HTML: block ends become line breaks, tags go, entities decode. */
 export function plainTextOfHtml(html: string): string {
+  html = html.replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6]|pre|blockquote|tr)>/gi, '\n');
+  let previous: string;
+  do {
+    previous = html;
+    html = html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, '');
+  } while (html !== previous);
   return html
-    .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6]|pre|blockquote|tr)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
     .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+|#39);/gi, (entity, name: string) => {
       if (name.startsWith('#x') || name.startsWith('#X')) return String.fromCodePoint(parseInt(name.slice(2), 16));
       if (name.startsWith('#') && name !== '#39') return String.fromCodePoint(Number(name.slice(1)));

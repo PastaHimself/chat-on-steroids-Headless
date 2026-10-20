@@ -1246,8 +1246,9 @@ async function withLeaseMutation<T>(lease: WorkerWorktreeLease, operation: () =>
  * removal that emptied `.git/worktrees` it failed with "Invalid path …/.git/worktrees", and two
  * workers of one repository finishing together could fail one cleanup (full suite, 2026-10-17).
  */
-async function branchCheckedOut(cwd: string, commonDir: string, branchRef: string): Promise<boolean> {
-  const listed = await oneWorktreeChangeAtATime(commonDir, () => runGit(cwd, ['worktree', 'list', '--porcelain'], 1024 * 1024));
+async function branchCheckedOut(cwd: string, branchRef: string): Promise<boolean> {
+  // The enclosing finalization owns the repository mutation queue through branch deletion.
+  const listed = await runGit(cwd, ['worktree', 'list', '--porcelain'], 1024 * 1024);
   if (listed.code !== 0) throw new WorkerWorktreeError('WORKTREE_LIST_FAILED', listed.stderr || 'Git worktrees could not be listed');
   return text(listed).split('\n').some(line => line === `branch ${branchRef}`);
 }
@@ -1272,7 +1273,7 @@ async function deletableBranchOid(marker: Marker, disposition: WorkerFinalizeBra
 async function deleteOwnedBranch(marker: Marker, disposition: WorkerFinalizeBranch): Promise<boolean> {
   const branchHead = await deletableBranchOid(marker, disposition);
   if (!branchHead) return false;
-  if (await branchCheckedOut(marker.sourceRepoRoot, marker.commonDir, marker.branchRef)) throw new WorkerWorktreeError('WORKTREE_BRANCH_IN_USE', 'worker branch is checked out by another worktree');
+  if (await branchCheckedOut(marker.sourceRepoRoot, marker.branchRef)) throw new WorkerWorktreeError('WORKTREE_BRANCH_IN_USE', 'worker branch is checked out by another worktree');
   const removed = await runGit(marker.sourceRepoRoot, ['update-ref', '-d', marker.branchRef, branchHead], 256);
   if (removed.code !== 0) throw new WorkerWorktreeError('WORKTREE_BRANCH_REMOVE_FAILED', removed.stderr || 'owned worker branch could not be removed');
   return true;
@@ -1335,7 +1336,7 @@ export function finalizeWorkerWorkspace(input: {
     if (worktreeExists) {
       await assertOwnedWorktree(input.lease);
       const args = ['worktree', 'remove', ...(input.discardChanges === true ? ['--force'] : []), marker.worktreePath];
-      const removed = await oneWorktreeChangeAtATime(input.lease.commonDir, () => runGit(marker.sourceRepoRoot, safeGitArgs(marker.hooksPath, args)));
+      const removed = await runGit(marker.sourceRepoRoot, safeGitArgs(marker.hooksPath, args));
       if (removed.code !== 0) throw new WorkerWorktreeError('WORKTREE_REMOVE_FAILED', removed.stderr || 'owned worker worktree could not be removed');
     }
     const branchRemoved = await deleteOwnedBranch(marker, disposition);

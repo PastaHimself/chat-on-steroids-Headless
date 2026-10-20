@@ -1254,6 +1254,7 @@ it.each([true, false])('lets an automatic Compact & Resume start in a chat\'s fi
   // It compacted only after the turn had ended.
   const f = fixture();
   runningFirstExchange(f);
+  editing(f);
   const job = { sessionId: 's-first', stage: 'handoff-pending', busy: true, automatic: true, handoffId: null, error: null,
     sourceSend: { state: 'not-attempted', messageId: null } };
   const r = await recorder(f, {
@@ -1276,12 +1277,12 @@ it.each([true, false])('lets an automatic Compact & Resume start in a chat\'s fi
     const compacts = () => r.sent.filter(m => m.type === 'compact');
     if (first) {
       await vi.waitFor(() => expect(compacts().some(m => m.resume === true)).toBe(true), { timeout: 20000 });
-      expect(compacts().some(m => m.sourceDeferred === true)).toBe(false);
+      expect(compacts().filter(m => m.sourcePending === true).map(m => m.sourceError)).toEqual([]);
       expect(f.doc.contains(stop)).toBe(false);
     } else {
       await done;
       expect(compacts().some(m => m.resume === true)).toBe(false);
-      expect(compacts()).toContainEqual(expect.objectContaining({ sourceDeferred: true, sourceError: expect.stringContaining('original question has not loaded') }));
+      expect(compacts()).toContainEqual(expect.objectContaining({ sourcePending: true, sourceError: expect.stringContaining('original question has not loaded') }));
       expect(f.doc.contains(stop)).toBe(true);
     }
   } finally { (f.win as any).__CLF_CONTENT_RECORDER__?.stop(); }

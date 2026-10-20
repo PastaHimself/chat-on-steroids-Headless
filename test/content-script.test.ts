@@ -20418,7 +20418,7 @@ describe('the goal loop', () => {
     // just sent, and the worker stayed unbound — its calls refused — until its turn had ended.
     const commandId = 'cmd-worker-hard-breaks';
     const typed = '[[COS_CONTEXT:34]]\nYou are worker-1. Run the check.\n[[/COS_CONTEXT]]\nReport with agents action=finish.';
-    const asRendered = typed.replace(/\n/g, '\\\n');
+    const asRendered = typed.replace(/\\/g, '\\\\').replace(/\n/g, '\\\n');
     expect(asRendered).not.toBe(typed);
     live = await harness(
       `https://chatgpt.com/?clf=${commandId}`,

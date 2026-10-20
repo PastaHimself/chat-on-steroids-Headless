@@ -1,6 +1,6 @@
 // @ts-expect-error The target planner is a plain Node script without type declarations.
 import { releaseTargets } from '../scripts/release-targets.mjs';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -810,49 +810,23 @@ Load command 11
     expect(workflow).toContain('name: chat-on-steroids-candidate-${{ github.run_id }}');
   });
 
-  // The Firefox add-on is signed by Mozilla only when a tag is published: AMO signs each version
-  // once, so canary builds cannot. Signing needs the AMO_JWT_* repository secrets.
-  it('signs the Firefox add-on once per published tag and attaches it with its update manifest', () => {
+  it('publishes only Headless source candidates without depending on Mozilla signing', () => {
     const publish = yamlFile('.github/workflows/publish.yml');
-    const sign = publish.jobs['firefox-addon'];
-    expect(sign?.needs).toBe('preflight');
-    const steps = sign.steps as Array<Record<string, any>>;
+    expect(publish.jobs['firefox-addon']).toBeUndefined();
+    expect(publish.jobs.publish.needs).toBe('candidate');
+    const steps = publish.jobs.publish.steps as Array<Record<string, any>>;
     const script = steps.map(step => String(step.run ?? '')).join('\n');
-    const env = JSON.stringify(steps.map(step => step.env ?? {}));
-    expect(script).toContain('node scripts/write-extension-stamp.mjs');
-    expect(script).toContain('node scripts/stage-firefox-extension.mjs');
-    // Self-hosted: the add-on names its own update_url, which the default (AMO-listed) lint refuses.
-    expect(script).toMatch(/npx --yes web-ext@\d+\.\d+\.\d+ lint --source-dir \S+ --self-hosted/);
-    expect(script).toMatch(/npx --yes web-ext@\d+\.\d+\.\d+ sign --channel=unlisted/);
-    expect(script).toContain('node scripts/firefox-update-manifest.mjs');
-    expect(env).toContain('${{ secrets.AMO_JWT_ISSUER }}');
-    expect(env).toContain('${{ secrets.AMO_JWT_SECRET }}');
-    // Secrets reach web-ext through the environment, never the command line.
-    expect(script).not.toMatch(/--api-(key|secret)/);
-    expect(publish.jobs.publish.needs).toEqual(['candidate', 'firefox-addon']);
-    const publishSteps = publish.jobs.publish.steps as Array<Record<string, any>>;
-    const names = publishSteps.map(step => step.name);
-    expect(names.indexOf('Add the signed Firefox add-on')).toBeGreaterThan(names.indexOf('Re-verify the checksums'));
-    expect(names.indexOf('Add the signed Firefox add-on')).toBeLessThan(names.indexOf('Publish the release'));
-    const release = String(publishSteps.find(step => step.name === 'Publish the release')?.run);
-    expect(release).toContain('publish/Chat-On-Steroids-Firefox.xpi');
-    expect(release).toContain('publish/firefox-updates.json');
+    expect(script).toContain('publish/Chat-On-Steroids-Headless-Source.tar.gz');
+    expect(script).toContain('publish/Chat-On-Steroids-Headless-Extension.zip');
+    expect(script).not.toContain('Chat-On-Steroids-Firefox.xpi');
+    expect(JSON.stringify(steps)).not.toMatch(/AMO_JWT/);
   });
 
-  // Proves the AMO credentials and Mozilla's validation before a release depends on them, without
-  // spending a release version: it signs <app version>.<run number + 1000>, never the release number.
-  it('can check Firefox signing on demand without using up a release version', () => {
-    const check = yamlFile('.github/workflows/firefox-sign-check.yml');
-    expect(Object.keys(check.on)).toEqual(['workflow_dispatch']);
-    const steps = check.jobs.sign.steps as Array<Record<string, any>>;
-    const script = steps.map(step => String(step.run ?? '')).join('\n');
-    expect(script).toContain('node scripts/stage-firefox-extension.mjs');
-    expect(script).toMatch(/npx --yes web-ext@\d+\.\d+\.\d+ lint --source-dir \S+ --self-hosted/);
-    expect(script).toMatch(/\$\{pkg\}\.\$\(\(\s*GITHUB_RUN_NUMBER \+ 1000\s*\)\)/);
-    expect(script).toMatch(/npx --yes web-ext@\d+\.\d+\.\d+ sign --channel=unlisted/);
-    expect(script).not.toMatch(/--api-(key|secret)/);
-    expect(JSON.stringify(steps.map(step => step.env ?? {}))).toContain('${{ secrets.AMO_JWT_SECRET }}');
-    expect(check.permissions).toEqual({ contents: 'read' });
+  it('keeps Firefox signing inactive while retaining the offline Firefox staging tool', () => {
+    expect(existsSync(path.join(root, '.github/workflows/firefox-sign-check.yml'))).toBe(false);
+    expect(existsSync(path.join(root, 'scripts/stage-firefox-extension.mjs'))).toBe(true);
+    const config = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+    expect(config.scripts['extension:firefox:stage']).toBe('node scripts/stage-firefox-extension.mjs');
   });
 
   it('keeps version metadata aligned and validates artifacts independently of editorial release notes', () => {

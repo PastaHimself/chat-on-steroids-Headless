@@ -4549,7 +4549,12 @@ ${SAMPLE_BRIEF}`)
 
     const bound = await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
     expect(bound.status).toBe(200);
-    expect(bound.body).toMatchObject({ bound: true, stored: true });
+    expect(bound.body.bound).toBe(true);
+    // The /events background reconciler may have captured before this page binds.
+    // Durable summary custody, rather than this request winning the race, is the invariant.
+    const captured = continuationByToken(token);
+    expect(captured?.handoffId).toBeTruthy();
+    expect((await sessionStoreModule.readHandoff(captured!.sessionId, captured!.handoffId!))?.text).toContain(SAMPLE_BRIEF);
   });
 
   it('refuses a later Retry final that reused the same handoff user message', async () => {
@@ -4565,6 +4570,17 @@ ${SAMPLE_BRIEF}`)
     expect(bound.status).toBe(200);
     expect(bound.body.stored).toBeUndefined();
     expect(continuationByToken(token)).toMatchObject({ state: 'awaiting-summary', handoffId: null });
+    const refusals = () => getLog().filter(row => row.message.includes(`compaction ${token.slice(0, 8)} refused capture`)).length;
+    const before = refusals(), start = Date.now();
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      for (let minute = 1; minute <= 3; minute++) {
+        clock.mockReturnValue(start + minute * 120_000);
+        await request('POST', '/compact', { body: { conversationId, token, sourceMessageId: anchor } });
+      }
+      expect(refusals()).toBe(before);
+      expect(continuationByToken(token)?.captureIssue).toBe('multiple-generations');
+    } finally { clock.mockRestore(); }
   });
 });
 

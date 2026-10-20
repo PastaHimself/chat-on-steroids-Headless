@@ -3,11 +3,11 @@ path	status	evidence
 .github/pull_request_template.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
 .github/workflows/firefox-sign-check.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
 .github/workflows/issue-version.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
-.github/workflows/pr-checklist.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
-.github/workflows/pr-not-ready.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+.github/workflows/pr-checklist.yml	PORTED	Compatible wording/native-runner support; upstream-only moderation guard retained; no upstream publication authority
+.github/workflows/pr-not-ready.yml	PORTED	Compatible wording/native-runner support; upstream-only moderation guard retained; no upstream publication authority
 .github/workflows/publish.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
 .github/workflows/waiting-prs.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
-.github/workflows/welcome.yml	INCOMPATIBLE	Headless Ubuntu/Discord release and inactive community-workflow policy retained
+.github/workflows/welcome.yml	PORTED	Compatible wording/native-runner support; upstream-only moderation guard retained; no upstream publication authority
 AGENTS.md	DEFERRED	Headless operating guide retained; changed contracts recorded in AGENTS and upgrade report
 CHANGELOG.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance
 CONTRIBUTING.md	PORTED	Exact upstream bytes (or matching deletion); source validation separate from live acceptance

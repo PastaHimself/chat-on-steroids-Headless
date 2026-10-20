@@ -40,5 +40,5 @@ export async function measureSleepingWorkers(caller: Caller): Promise<void> {
 
 export function spawnAgentWorkers(input: SpawnInput, workspace: () => Promise<{ real: string; virtual: string } | null>, canIsolate: () => boolean, admission?: { validate(): Promise<void>; assertCurrent(): void; workspace?: { real: string; virtual: string } | null }) {
   admission?.assertCurrent();
-  return admitWorkerSpawn(input, { workspace, canIsolate, validateOwner: admission?.validate, assertCurrent: admission?.assertCurrent });
+  return admitWorkerSpawn(input, { workspace, canIsolate, selectedWorkspace: admission?.workspace, validateOwner: admission?.validate, assertCurrent: admission?.assertCurrent });
 }
