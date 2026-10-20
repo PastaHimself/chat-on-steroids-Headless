@@ -78,7 +78,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   for (const file of plan.remove) rmSync(file, { force: true });
   console.log(`Running ${plan.tests.length} changed test file(s) against the base branch's code:`);
   for (const file of plan.tests) console.log(`  ${file}`);
-  const run = spawnSync('npx', ['vitest', 'run', ...plan.tests], { stdio: 'inherit', shell: process.platform === 'win32' });
+  // This gate proves a changed test fails on base. Once one fails, more base
+  // failures add no proof; the candidate job still runs the complete current suite.
+  const run = spawnSync('npx', ['vitest', 'run', '--bail=1', '--maxWorkers=2', ...plan.tests], { stdio: 'inherit', shell: process.platform === 'win32' });
   if (run.status === 0) {
     const message = 'The changed tests also pass without your code change, so they do not show that it fixes anything. ' +
       'Add a test that fails on main and passes with your change, or write "Fail-first: n/a <reason>" if the tests only follow a refactor.';
