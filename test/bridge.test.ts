@@ -4537,7 +4537,9 @@ describe('capturing a sent handoff from the recorder', () => {
   // brief's interval held two turns and the finished brief was refused as ambiguous.
   it('captures a handoff when the source turn reports its end after the request', async () => {
     await pair();
-    const conversationId = 'c0c0c0c0-7870-4000-8000-000000000006';
+    // Headless already exercises a captured handoff under upstream's fixed fixture id.
+    // This independent request must not reuse that real recorded generation.
+    const conversationId = randomUUID();
     await request('POST', '/events', { body: { conversationId, events: [{ kind: 'turn_start', time: Date.now(), turnId: 'source-turn' }] } });
     const { token, anchor } = await sentHandoff(conversationId);
     await request('POST', '/events', { body: { conversationId, events: [
@@ -4833,7 +4835,7 @@ describe('delivering a bootstrap', () => {
     await noteChatOrigin(escapedWorker, { kind: 'worker', fromSessionId: null, agentId: 'worker-1', task: 'Read the bounded fixture' });
     await request('POST', '/events', { body: { conversationId: escapedWorker, events: [
       { kind: 'user_message', time: Date.now(), messageId: 'escaped-opening',
-        text: boot.text.replace(/([_:#*[\]`])/g, '\\$1') }
+        text: boot.text.replace(/([\\_:#*[\]`])/g, '\\$1') }
     ] } });
     expect((await request('GET', `/activity?conversationId=${escapedWorker}&since=999999`)).body.bootstrapMessageId)
       .toBe('escaped-opening');
