@@ -1,6 +1,6 @@
 // @ts-expect-error The target planner is a plain Node script without type declarations.
 import { releaseTargets } from '../scripts/release-targets.mjs';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -164,6 +164,26 @@ describe('cross-platform packaging targets', () => {
     expect(installer).not.toMatch(/(?:no-sandbox|disable-gpu-sandbox)/i);
   });
 
+  it('shows an update the person asked for as a branded progress window that restarts the app by itself', () => {
+    // 2026-10-15: after Restart and install the app vanished for about 100 s with nothing on
+    // screen. The installer now runs visibly for that case; it skips every question an update
+    // already answered and closes itself at the end instead of waiting for Finish.
+    const config = yamlFile('electron-builder.yml');
+    const installer = readFileSync(path.join(root, 'scripts/windows-installer-acl.nsh'), 'utf8');
+    // An update keeps the installation's own mode; the "install for whom" page never shows.
+    expect(installer).toMatch(/!macro customInstallMode[\s\S]*\$\{if\} \$\{isUpdated\}[\s\S]*\$isForceMachineInstall "1"[\s\S]*\$isForceCurrentInstall "1"[\s\S]*!macroend/);
+    // The finish page of an update starts the app when asked to and ends the installer.
+    expect(installer).toMatch(/!macro customFinishPage[\s\S]*MUI_PAGE_CUSTOMFUNCTION_PRE[\s\S]*!insertmacro MUI_PAGE_FINISH[\s\S]*!macroend/);
+    expect(installer).toMatch(/\$\{if\} \$\{isUpdated\}\s+\$\{if\} \$\{isForceRun\}[\s\S]*ExecShellAsUser[\s\S]*\$\{endif\}\s+Abort/);
+    // A fresh install keeps its Run checkbox.
+    expect(installer).toContain('!define MUI_FINISHPAGE_RUN_FUNCTION');
+    expect(config.nsis.installerHeader).toBe('build/installerHeader.bmp');
+    expect(config.nsis.installerSidebar).toBe('build/installerSidebar.bmp');
+    const icons = readFileSync(path.join(root, 'scripts/make-icon.mjs'), 'utf8');
+    expect(icons).toContain("'installerHeader.bmp'");
+    expect(icons).toContain("'installerSidebar.bmp'");
+  });
+
   it('builds canaries only for the targets most installs use, and releases for all of them', () => {
     expect(releaseTargets('common').include.map((target: { name: string }) => target.name)).toEqual(['Windows x64', 'macOS arm64', 'Linux x64']);
     expect(releaseTargets('common').files).toEqual(['Chat-On-Steroids-Setup-x64.exe', 'Chat-On-Steroids-macOS-arm64.dmg',
@@ -299,6 +319,9 @@ describe('cross-platform packaging targets', () => {
     expect(String(firstInteraction?.with?.pr_message ?? '').trim()).not.toBe('');
     expect(welcome.on).toHaveProperty('issues');
     expect(welcome.on).not.toHaveProperty('pull_request_target');
+    // The bug form requires versions, OS and the diagnostics report, and the intake check names
+    // anything missing (#1527); the welcome asking again read as a second, different list (#1534, #1540).
+    expect(String(firstInteraction?.with?.issue_message)).not.toMatch(/versions|steps that lead/i);
   });
 
   it('assembles every platform artifact in the reusable release workflow', () => {
@@ -785,6 +808,25 @@ Load command 11
     expect(workflow.slice(publish)).toContain('node scripts/check-release-absent.mjs');
     expect(workflow.slice(publish).match(/npm run verify:tunnel-current/g)).toHaveLength(1);
     expect(workflow).toContain('name: chat-on-steroids-candidate-${{ github.run_id }}');
+  });
+
+  it('publishes only Headless source candidates without depending on Mozilla signing', () => {
+    const publish = yamlFile('.github/workflows/publish.yml');
+    expect(publish.jobs['firefox-addon']).toBeUndefined();
+    expect(publish.jobs.publish.needs).toBe('candidate');
+    const steps = publish.jobs.publish.steps as Array<Record<string, any>>;
+    const script = steps.map(step => String(step.run ?? '')).join('\n');
+    expect(script).toContain('publish/Chat-On-Steroids-Headless-Source.tar.gz');
+    expect(script).toContain('publish/Chat-On-Steroids-Headless-Extension.zip');
+    expect(script).not.toContain('Chat-On-Steroids-Firefox.xpi');
+    expect(JSON.stringify(steps)).not.toMatch(/AMO_JWT/);
+  });
+
+  it('keeps Firefox signing inactive while retaining the offline Firefox staging tool', () => {
+    expect(existsSync(path.join(root, '.github/workflows/firefox-sign-check.yml'))).toBe(false);
+    expect(existsSync(path.join(root, 'scripts/stage-firefox-extension.mjs'))).toBe(true);
+    const config = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+    expect(config.scripts['extension:firefox:stage']).toBe('node scripts/stage-firefox-extension.mjs');
   });
 
   it('keeps version metadata aligned and validates artifacts independently of editorial release notes', () => {

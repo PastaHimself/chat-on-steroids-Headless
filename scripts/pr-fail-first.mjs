@@ -10,6 +10,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, rmSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { withoutComments } from './pr-check.mjs';
 
 const CODE = /^(src|extension|scripts|native|build)\//;
 const TEST = /^test\/.+\.test\.ts$/;
@@ -41,9 +42,16 @@ export function planFailFirst(nameStatus) {
  * Select an OS that can execute the changed native tests rather than skip their proof.
  * @param {string} nameStatus
  */
+/** Whether the description opts out of the fail-first proof, outside any HTML comment (a hidden one does not count). */
+export function optedOut(body) {
+  return OPT_OUT.test(withoutComments(String(body ?? '')));
+}
+
 export function runnerForFailFirst(nameStatus) {
-  return planFailFirst(nameStatus).tests.some(file => /^test\/(?:windows-[^/]+|computer(?:-[^/]+)?)\.test\.ts$/.test(file))
-    ? 'windows-2025' : 'ubuntu-24.04';
+  const tests = planFailFirst(nameStatus).tests;
+  if (tests.some(file => /^test\/(?:windows-[^/]+|computer(?:-[^/]+)?)\.test\.ts$/.test(file))) return 'windows-2025';
+  if (tests.some(file => /^test\/macos-[^/]+\.test\.ts$/.test(file))) return 'macos-15';
+  return 'ubuntu-24.04';
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
@@ -56,7 +64,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     console.log(`runner=${runnerForFailFirst(nameStatus)}`);
     process.exit(0);
   }
-  if (OPT_OUT.test(String(pr.body ?? '').replace(/<!--[\s\S]*?-->/g, ''))) {
+  if (optedOut(pr.body)) {
     console.log('The description says this PR has no failing-first test ("Fail-first: n/a"). Nothing to prove.');
     process.exit(0);
   }
@@ -70,7 +78,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   for (const file of plan.remove) rmSync(file, { force: true });
   console.log(`Running ${plan.tests.length} changed test file(s) against the base branch's code:`);
   for (const file of plan.tests) console.log(`  ${file}`);
-  const run = spawnSync('npx', ['vitest', 'run', ...plan.tests], { stdio: 'inherit', shell: process.platform === 'win32' });
+  // This gate proves a changed test fails on base. Once one fails, more base
+  // failures add no proof; the candidate job still runs the complete current suite.
+  const run = spawnSync('npx', ['vitest', 'run', '--bail=1', '--maxWorkers=2', ...plan.tests], { stdio: 'inherit', shell: process.platform === 'win32' });
   if (run.status === 0) {
     const message = 'The changed tests also pass without your code change, so they do not show that it fixes anything. ' +
       'Add a test that fails on main and passes with your change, or write "Fail-first: n/a <reason>" if the tests only follow a refactor.';

@@ -24,10 +24,12 @@ import { updateStatus } from './update.js';
 import { APP_VERSION } from './version.js';
 import { REMOTE_ACTION_ROUTES, REMOTE_READ_ROUTES } from '../shared/remote-control.js';
 import { serveRemoteRead } from './remote-control.js';
+import { closeEventStreams, eventStreamSession, serveEventStream } from './control-stream.js';
+import { serveWorkerRead } from './control-workers.js';
 
 /**
  * The local control API: an opt-in loopback listener for a trusted local caller. It reads by
- * default; a second switch lets it send and cancel messages through the outbox.
+ * default; a second switch allows outbox actions and direct local worker-broker control.
  *
  * Its caller is typically an MCP server an agent launched to watch this app from outside its
  * process. It is deliberately not a fourth MCP surface: those are published through tunnels and
@@ -213,6 +215,8 @@ async function stopOnce(): Promise<void> {
   recentActions.length = 0;
   await removeFiles();
   if (!instance) return;
+  // A stream never finishes on its own; without this the drain would wait out its full grace.
+  closeEventStreams('stopped');
   await drain(instance);
   logInfo('control API stopped');
 }
@@ -422,6 +426,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, token
   // A cancel path answers to POST only; a GET there is a wrong method, not a missing page.
   if (isActionPath(route) && route !== '/v1/inputs') return reply(res, 405, { error: 'method_not_allowed' }, { allow: 'POST' });
 
+  const streamed = eventStreamSession(route);
+  if (streamed) {
+    try {
+      return await serveEventStream(req, res, streamed, url.searchParams, withReadDeadline);
+    } catch (error) {
+      if (error instanceof RequestError && !res.headersSent) return reply(res, error.status, { error: error.code, ...(error.detail ? { detail: error.detail } : {}) });
+      throw error;
+    }
+  }
+
   if (route === '/v1/health') {
     const uptime = process.uptime();
     const body: ControlApiHealth = {
@@ -450,6 +464,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, token
 async function read(route: string, params: URLSearchParams): Promise<unknown> {
   const remote = await serveRemoteRead(route, params);
   if (remote !== undefined) return remote;
+  const workers = await serveWorkerRead(route, params);
+  if (workers !== undefined) return workers;
   if (route !== '/v1/status') return serveRead(route, params);
   return projectStatus({
     connection: getStatus(),

@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -47,4 +49,31 @@ it('separates service availability from task readiness and preserves per-owner o
     const health = projectOperationalHealth({ ...healthy, recording });
     expect(health.components.find(row => row.id === 'recording')?.state).toBe(recording ? 'attention' : 'unknown');
   }
+});
+
+
+it('refuses code-only rollback before new native edit or branch inputs can be reinterpreted', async () => {
+  const data = path.join(directory, 'data'), legacy = path.join(directory, 'legacy-runtime');
+  await fs.mkdir(legacy);
+  await verifyDurableFormats(data);
+  await fs.mkdir(path.join(data, 'state'));
+  const pending = JSON.stringify([
+    { id: 'pending-branch', branch: { conversationId: 'source', messageId: 'exact-reply' }, sendAuthorizedAt: 123 },
+    { id: 'pending-edit', edit: { messageId: 'original-question' } }
+  ]);
+  const file = path.join(data, 'state/session-input.json');
+  await fs.writeFile(file, pending);
+  const formats = JSON.parse(await fs.readFile(new URL('../runtime/durable-formats.json', import.meta.url), 'utf8'));
+  delete formats.providerInputActions;
+  await fs.writeFile(path.join(legacy, 'durable-formats.json'), JSON.stringify(formats));
+  for (const name of ['durable-formats.mjs', 'receipt-archive.mjs'])
+    await fs.copyFile(new URL(`../runtime/${name}`, import.meta.url), path.join(legacy, name));
+  const module = pathToFileURL(path.join(legacy, 'durable-formats.mjs')).href;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `const runtime = await import(${JSON.stringify(module)}); await runtime.verifyDurableFormats(${JSON.stringify(data)}, false); console.log('browser traffic would start');`
+  ], { encoding: 'utf8', timeout: 10_000 });
+  expect(child.status).not.toBe(0);
+  expect(child.stderr).toContain('cannot read the durable formats');
+  expect(child.stdout).not.toContain('browser traffic would start');
+  expect(await fs.readFile(file, 'utf8')).toBe(pending);
 });

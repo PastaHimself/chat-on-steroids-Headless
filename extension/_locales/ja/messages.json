@@ -38,6 +38,9 @@
   "content_bootstrap_composer_replaced": {
     "message": "初期メッセージの挿入中に ChatGPT が入力欄を置き換えました"
   },
+  "content_bootstrap_composer_never_ready": {
+    "message": "ChatGPTが開始用の使用可能な入力欄を表示しませんでした"
+  },
   "content_bootstrap_composer_unavailable": {
     "message": "モデル選択後にChatGPTが使用可能な入力欄を再表示しませんでした"
   },
@@ -273,25 +276,25 @@
     "message": "ワーカーチャットは現在の会話のまま維持され、手動で圧縮したり再開したりすることはありません。"
   },
   "content_connector_identity_ambiguous": {
-    "message": "インストール済みコネクターの識別情報を取得できないか、特定できません"
+    "message": "インストール済みプラグインの識別情報を取得できないか、特定できません"
   },
   "content_connector_refresh_claim_unconfirmed": {
-    "message": "コネクターの更新要求またはページの所有状態を確認できませんでした"
+    "message": "プラグインの更新要求またはページの所有状態を確認できませんでした"
   },
   "content_connector_refresh_schema_unchanged": {
     "message": "更新を要求しましたが、一致するスキーマの変更を確認できませんでした"
   },
   "content_connector_refresh_unverified": {
-    "message": "コネクターの更新を確認できませんでした"
+    "message": "プラグインの更新を確認できませんでした"
   },
   "content_connector_schema_no_refresh": {
-    "message": "コネクターのスキーマが異なりますが、ChatGPTに更新ボタンがありません。現在のツールスキーマを読み込むには、このカスタムアプリを再作成するか再公開してください。"
+    "message": "プラグインのスキーマが異なりますが、ChatGPTに更新ボタンがありません。現在のツールスキーマを読み込むには、このプラグインを再作成するか再公開してください。"
   },
   "content_connector_settings_unreadable": {
-    "message": "このリクエストに対応するページでコネクター設定を読み取れませんでした"
+    "message": "このリクエストに対応するページでプラグイン設定を読み取れませんでした"
   },
   "content_connector_settings_unverified": {
-    "message": "コネクターの正確な設定を確認できませんでした"
+    "message": "プラグインの正確な設定を確認できませんでした"
   },
   "content_delivery_attachment_transfer_failed": {
     "message": "添付ファイルの転送に失敗しました。メッセージは送信されていません。"
@@ -322,6 +325,9 @@
   },
   "content_delivery_existing_draft": {
     "message": "ChatGPT に未送信の下書きがあります。再試行する前に Chrome でその下書きを送信するか削除してください。"
+  },
+  "content_delivery_signed_out": {
+    "message": "このブラウザーでは ChatGPT にサインインしていません。そこで ChatGPT にサインインしてから、もう一度送信してください。"
   },
   "content_delivery_model_unconfirmed": {
     "message": "指定したモデルまたは推論強度を確認できませんでした"
@@ -722,12 +728,6 @@
   "content_workers_still_running": {
     "message": "$1 個のワーカーがまだ実行中です"
   },
-  "content_workers_summary": {
-    "message": "$1 完了 · $2 実行中"
-  },
-  "content_workers_summary_failed": {
-    "message": "$1 完了 · $2 実行中 · $3 失敗"
-  },
   "content_working": {
     "message": "作業中…"
   },
@@ -741,7 +741,7 @@
     "message": "ChatGPT を Chat On Steroids に接続し、DOM、スクリーンショット、開発者ツールを使ってバックグラウンドでブラウザータブを操作します。"
   },
   "extension_name": {
-    "message": "Chat On Steroids 連携拡張機能"
+    "message": "Chat On Steroids ブラウザー拡張機能"
   },
   "popup_advanced": {
     "message": "詳細"
@@ -815,9 +815,6 @@
   "popup_detail_app_value": {
     "message": "v$1 · ポート $2"
   },
-  "popup_detail_browser_queue_value": {
-    "message": "$1 件を保持 · 合計 $2 件"
-  },
   "popup_detail_chat_id": {
     "message": "チャット ID"
   },
@@ -842,17 +839,11 @@
   "popup_detail_observed": {
     "message": "観測済み"
   },
-  "popup_detail_observed_value": {
-    "message": "$1 件のイベント · $2 件の呼び出し"
-  },
   "popup_detail_ownership": {
     "message": "帰属"
   },
   "popup_detail_page_sends": {
     "message": "ページからの送信回数"
-  },
-  "popup_detail_page_sends_value": {
-    "message": "$1 · $2 件失敗"
   },
   "popup_detail_recorder": {
     "message": "記録機能"
@@ -1038,13 +1029,13 @@
     "message": "再試行"
   },
   "popup_version_mismatch_help": {
-    "message": "アプリ v$1（プロトコル $2）、連携拡張機能 v$3（プロトコル $4）。ブラウザーの拡張機能ページを開いてデベロッパーモードを有効にし、この連携拡張機能を更新または再読み込みしてください。まだ一致しない場合は、Chat On Steroids の「拡張機能フォルダーを開く」でそのフォルダーを読み込んでください。ChatGPT タブの作業が終わったら再読み込みしてください。"
+    "message": "アプリ v$1（プロトコル $2）、拡張機能 v$3（プロトコル $4）。ブラウザーの拡張機能ページを開いてデベロッパーモードを有効にし、この拡張機能を更新または再読み込みしてください。まだ一致しない場合は、Chat On Steroids の「拡張機能フォルダーを開く」でそのフォルダーを読み込んでください。ChatGPT タブの作業が終わったら再読み込みしてください。"
   },
   "popup_yes": {
     "message": "はい"
   },
   "content_goal_error_loop_mcp_call_missing": {
-    "message": "前回の応答で MCP ツール呼び出しが記録されませんでした。ChatGPT が質問しているか、ツール接続が失われた可能性があります。質問に答えるか、ツールが動作しなくなった場合はトンネルを確認してください。自動継続は一時停止中ですが、Loop は有効のままです。"
+    "message": "前回の応答で MCP ツール呼び出しが記録されませんでした。ChatGPT が質問しているか、ツール接続が失われた可能性があります。質問に答えるか、ツールが動作しなくなった場合はトンネルを確認してください。自動継続は一時停止中ですが、ループは有効のままです。"
   },
   "content_goal_error_goal_reply_not_pending": {
     "message": "この回答に対する保留中の継続はありません。すでに処理済みか、新しい作業に置き換えられた可能性があります。再試行する前に最新のチャット活動を確認してください。"
@@ -1168,5 +1159,32 @@
   },
   "popup_app_not_running_help": {
     "message": "このコンピューターで Chat On Steroids が開いていることを確認してください。拡張機能は自動的に接続します。"
+  },
+  "content_workers_finished": {
+    "message": "$1 完了"
+  },
+  "content_workers_running": {
+    "message": "$1 実行中"
+  },
+  "content_workers_failed": {
+    "message": "$1 失敗"
+  },
+  "popup_detail_events": {
+    "message": "$1 件のイベント"
+  },
+  "popup_detail_calls": {
+    "message": "$1 件の呼び出し"
+  },
+  "popup_detail_failed": {
+    "message": "$1 件失敗"
+  },
+  "popup_detail_total": {
+    "message": "合計 $1 件"
+  },
+  "content_edit_message_missing": {
+    "message": "そのメッセージはもう ChatGPT のページにないため、編集できません。"
+  },
+  "content_edit_unavailable": {
+    "message": "ChatGPT がそのメッセージの編集を提供しませんでした。ChatGPT でチャットを開いてから、もう一度お試しください。"
   }
 }

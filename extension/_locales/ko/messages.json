@@ -38,6 +38,9 @@
   "content_bootstrap_composer_replaced": {
     "message": "부트스트랩을 입력하는 동안 ChatGPT가 입력창을 교체했습니다"
   },
+  "content_bootstrap_composer_never_ready": {
+    "message": "ChatGPT가 시작에 사용할 수 있는 입력창을 보여 주지 않았습니다"
+  },
   "content_bootstrap_composer_unavailable": {
     "message": "모델 선택 후 ChatGPT가 사용 가능한 입력창을 다시 보여 주지 않았습니다"
   },
@@ -273,25 +276,25 @@
     "message": "워커 대화는 기존 대화에 머무르며 수동으로 압축하거나 재개하지 않습니다."
   },
   "content_connector_identity_ambiguous": {
-    "message": "설치된 커넥터의 식별 정보를 사용할 수 없거나 불분명합니다"
+    "message": "설치된 플러그인의 식별 정보를 사용할 수 없거나 불분명합니다"
   },
   "content_connector_refresh_claim_unconfirmed": {
-    "message": "커넥터 새로고침 요청이나 페이지 소유권이 확인되지 않았습니다"
+    "message": "플러그인 새로고침 요청이나 페이지 소유권이 확인되지 않았습니다"
   },
   "content_connector_refresh_schema_unchanged": {
     "message": "새로고침을 요청했지만 변경된 일치 스키마가 관찰되지 않았습니다"
   },
   "content_connector_refresh_unverified": {
-    "message": "커넥터 새로고침을 확인할 수 없습니다"
+    "message": "플러그인 새로고침을 확인할 수 없습니다"
   },
   "content_connector_schema_no_refresh": {
-    "message": "커넥터 스키마가 다르지만 ChatGPT에 새로고침 버튼이 없습니다. 현재 도구 스키마를 불러오려면 이 사용자 지정 앱을 다시 만들거나 다시 게시하세요."
+    "message": "플러그인 스키마가 다르지만 ChatGPT에 새로고침 버튼이 없습니다. 현재 도구 스키마를 불러오려면 이 플러그인을 다시 만들거나 다시 게시하세요."
   },
   "content_connector_settings_unreadable": {
-    "message": "이 요청이 소유한 페이지에서 커넥터 설정 카드를 읽을 수 없습니다"
+    "message": "이 요청이 소유한 페이지에서 플러그인 설정 카드를 읽을 수 없습니다"
   },
   "content_connector_settings_unverified": {
-    "message": "정확한 커넥터 설정을 확인할 수 없습니다"
+    "message": "정확한 플러그인 설정을 확인할 수 없습니다"
   },
   "content_delivery_attachment_transfer_failed": {
     "message": "첨부 파일 전송에 실패했습니다. 메시지를 보내지 않았습니다."
@@ -322,6 +325,9 @@
   },
   "content_delivery_existing_draft": {
     "message": "ChatGPT에 보내지 않은 초안이 이미 있습니다. 다시 시도하기 전에 Chrome에서 그 초안을 보내거나 지우세요."
+  },
+  "content_delivery_signed_out": {
+    "message": "이 브라우저에서 ChatGPT에 로그인되어 있지 않습니다. 그 브라우저에서 ChatGPT에 로그인한 다음 다시 보내세요."
   },
   "content_delivery_model_unconfirmed": {
     "message": "요청한 모델 또는 추론 수준을 확인할 수 없습니다"
@@ -722,12 +728,6 @@
   "content_workers_still_running": {
     "message": "워커 $1개가 아직 실행 중"
   },
-  "content_workers_summary": {
-    "message": "$1개 완료 · $2개 실행 중"
-  },
-  "content_workers_summary_failed": {
-    "message": "$1개 완료 · $2개 실행 중 · $3개 실패"
-  },
   "content_working": {
     "message": "작업 중…"
   },
@@ -741,7 +741,7 @@
     "message": "ChatGPT를 Chat On Steroids에 연결하고 DOM, 스크린샷, 개발자 도구로 백그라운드에서 브라우저 탭을 제어합니다."
   },
   "extension_name": {
-    "message": "Chat On Steroids 컴패니언"
+    "message": "Chat On Steroids 브라우저 확장 프로그램"
   },
   "popup_advanced": {
     "message": "고급"
@@ -815,9 +815,6 @@
   "popup_detail_app_value": {
     "message": "v$1 · 포트 $2"
   },
-  "popup_detail_browser_queue_value": {
-    "message": "$1개 보류 · 전체 $2개"
-  },
   "popup_detail_chat_id": {
     "message": "대화 ID"
   },
@@ -842,17 +839,11 @@
   "popup_detail_observed": {
     "message": "관찰됨"
   },
-  "popup_detail_observed_value": {
-    "message": "이벤트 $1개 · 호출 $2개"
-  },
   "popup_detail_ownership": {
     "message": "소유권"
   },
   "popup_detail_page_sends": {
     "message": "페이지 전송"
-  },
-  "popup_detail_page_sends_value": {
-    "message": "$1 · $2개 실패"
   },
   "popup_detail_recorder": {
     "message": "recorder"
@@ -1038,7 +1029,7 @@
     "message": "다시 시도"
   },
   "popup_version_mismatch_help": {
-    "message": "앱 v$1(프로토콜 $2), 컴패니언 v$3(프로토콜 $4). 브라우저의 확장 프로그램 페이지를 열고 개발자 모드를 켠 뒤 이 컴패니언을 업데이트/새로고침하세요. 불일치가 계속되면 Chat On Steroids에서 확장 프로그램 폴더 열기를 사용해 그 폴더를 불러오세요. 진행 중인 작업이 끝나면 ChatGPT 탭을 새로고침하세요."
+    "message": "앱 v$1(프로토콜 $2), 확장 프로그램 v$3(프로토콜 $4). 브라우저의 확장 프로그램 페이지를 열고 개발자 모드를 켠 뒤 이 확장 프로그램을 업데이트/새로고침하세요. 불일치가 계속되면 Chat On Steroids에서 확장 프로그램 폴더 열기를 사용해 그 폴더를 불러오세요. 진행 중인 작업이 끝나면 ChatGPT 탭을 새로고침하세요."
   },
   "popup_yes": {
     "message": "예"
@@ -1168,5 +1159,32 @@
   },
   "popup_app_not_running_help": {
     "message": "이 컴퓨터에서 Chat On Steroids가 열려 있는지 확인하세요. 확장 프로그램은 자동으로 연결됩니다."
+  },
+  "content_workers_finished": {
+    "message": "$1개 완료"
+  },
+  "content_workers_running": {
+    "message": "$1개 실행 중"
+  },
+  "content_workers_failed": {
+    "message": "$1개 실패"
+  },
+  "popup_detail_events": {
+    "message": "이벤트 $1개"
+  },
+  "popup_detail_calls": {
+    "message": "호출 $1개"
+  },
+  "popup_detail_failed": {
+    "message": "$1개 실패"
+  },
+  "popup_detail_total": {
+    "message": "전체 $1개"
+  },
+  "content_edit_message_missing": {
+    "message": "해당 메시지가 더 이상 ChatGPT 페이지에 없어 편집할 수 없습니다."
+  },
+  "content_edit_unavailable": {
+    "message": "ChatGPT가 해당 메시지에 편집을 제공하지 않았습니다. ChatGPT에서 채팅을 연 다음 다시 시도하세요."
   }
 }

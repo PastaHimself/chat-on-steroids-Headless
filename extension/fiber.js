@@ -740,6 +740,12 @@
    * it after a reload. The model id is already ChatGPT's durable identity, so there is no
    * reason to make user capture depend on the DOM having caught up.
    */
+  /** A question's parent in ChatGPT's message tree: a message id, or "root" for a chat's first turn. */
+  function parentIdOf(message) {
+    const parent = message.metadata?.parent_id;
+    return typeof parent === 'string' && (parent === 'root' || /^[A-Za-z0-9:_-]{8,190}$/.test(parent)) ? parent : null;
+  }
+
   function authoredUserMessages(messages, budget) {
     const out = [];
     const seen = new Set();
@@ -773,6 +779,10 @@
         // ChatGPT's own mark for text it stored as escaped Markdown (page-inserted text).
         ...(message.metadata?.serialization_metadata?.render_format === 'markdown' ? { markdown: true } : {}),
         ...(attachments.length ? { attachments } : {}),
+        // Its place in ChatGPT's message tree; `parentExact` says two questions sharing it are versions
+        // of one message (always, for a real parent id; for the shell's predecessor, only with ChatGPT's
+        // own versions control on that turn).
+        ...(parentIdOf(message) ? { parentId: parentIdOf(message), parentExact: message.metadata?.clf_parent_exact !== false } : {}),
         order: index,
         createTime: authoredTime(message)
       });
@@ -1138,6 +1148,7 @@
         rawText: userCandidates[c].rawText,
         ...(userCandidates[c].markdown ? { markdown: true } : {}),
         ...(userCandidates[c].attachments ? { attachments: userCandidates[c].attachments } : {}),
+        ...(userCandidates[c].parentId ? { parentId: userCandidates[c].parentId, parentExact: userCandidates[c].parentExact === true } : {}),
         renderedHtml: ''
       });
     }
@@ -2077,6 +2088,8 @@
       typeof reference.model_dil_v2?.fallbackMarkdown === 'string' && reference.model_dil_v2.fallbackMarkdown.trim());
     return own.length === 1 ? unescapeFallbackMarkdown(own[0].model_dil_v2.fallbackMarkdown) : content;
   }
+  /** A display formula longer than this is not looked for; its lines are read as plain text. */
+  const MAX_FORMULA_LINES = 400;
   /**
    * The reply as the model wrote it. `fallbackMarkdown` keeps its formatting but backslash-escapes
    * every literal punctuation mark in plain text (measured on GPT-6, 2026-10-09: `2\^10 = 1024 \[ok\]`,
@@ -2084,30 +2097,66 @@
    * theirs verbatim. Every reader of a reply (Goal markers, Loop decisions, compaction briefs) expects
    * the model's own text, so outside code each `\` before ASCII punctuation is dropped, as Markdown
    * itself would on rendering.
+   *
+   * Formulas are verbatim too (measured 2026-10-12, #1342): a display formula is a block from a line
+   * holding only `\[` to a line holding only `\]`, an inline one sits in `\( … \)`, and both hold raw
+   * LaTeX. Literal brackets are escaped inside their text line and literal parentheses never are,
+   * so neither is mistaken for one. An opening without its closing is plain text.
    */
+  /**
+   * Entities in the fallback's plain text (measured on GPT-6, 2026-10-16: `|` arrives as `&#124;`,
+   * `&` as `&amp;`). A literal `&` is always `&amp;` there, so one left-to-right pass is exact: a
+   * literal `&#124;` the model wrote arrives as `&amp;#124;` and comes back as `&#124;`.
+   */
+  const FALLBACK_ENTITY = /^&(amp|lt|gt|quot|apos|#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6});/;
+  const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+  function fallbackEntity(name) {
+    if (name[0] !== '#') return NAMED_ENTITIES[name] ?? null;
+    const code = name[1] === 'x' || name[1] === 'X' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+    return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : null;
+  }
   function unescapeFallbackMarkdown(markdown) {
+    const lines = markdown.split('\n');
+    const out = [];
     let fence = null;
-    return markdown.split('\n').map(line => {
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
       const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
       if (fence) {
         if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.slice(line.indexOf(marker) + marker.length).trim()) fence = null;
-        return line;
+        out.push(line);
+        continue;
       }
-      if (marker && !(marker[0] === '`' && line.slice(line.indexOf(marker) + marker.length).includes('`'))) { fence = marker; return line; }
-      let out = '';
+      if (marker && !(marker[0] === '`' && line.slice(line.indexOf(marker) + marker.length).includes('`'))) { fence = marker; out.push(line); continue; }
+      if (line.trim() === '\\[') {
+        let close = -1;
+        for (let at = index + 1; at < lines.length && at <= index + MAX_FORMULA_LINES; at++) if (lines[at].trim() === '\\]') { close = at; break; }
+        if (close > index) { for (; index <= close; index++) out.push(lines[index]); index--; continue; }
+      }
+      let text = '';
       for (let at = 0; at < line.length;) {
         const char = line[at];
-        if (char === '\\' && /[!-\/:-@[-`{-~]/.test(line[at + 1] || '')) { out += line[at + 1]; at += 2; continue; }
+        if (char === '\\' && line[at + 1] === '(') {
+          const close = line.indexOf('\\)', at + 2);
+          if (close >= 0) { text += line.slice(at, close + 2); at = close + 2; continue; }
+        }
+        if (char === '\\' && /[!-\/:-@[-`{-~]/.test(line[at + 1] || '')) { text += line[at + 1]; at += 2; continue; }
+        if (char === '&') {
+          const entity = FALLBACK_ENTITY.exec(line.slice(at));
+          const decoded = entity && fallbackEntity(entity[1]);
+          if (decoded !== null && decoded !== undefined) { text += decoded; at += entity[0].length; continue; }
+        }
         if (char === '`') {
           const run = /^`+/.exec(line.slice(at))[0];
           const close = new RegExp(`(?<!\`)${run}(?!\`)`).exec(line.slice(at + run.length));
-          if (close) { const end = at + run.length + close.index + run.length; out += line.slice(at, end); at = end; continue; }
-          out += run; at += run.length; continue;
+          if (close) { const end = at + run.length + close.index + run.length; text += line.slice(at, end); at = end; continue; }
+          text += run; at += run.length; continue;
         }
-        out += char; at++;
+        text += char; at++;
       }
-      return out;
-    }).join('\n');
+      out.push(text);
+    }
+    return out.join('\n');
   }
   /**
    * The provider's own outline of a shell turn's work, in its order: what the model said between
@@ -2177,15 +2226,50 @@
   }
   /** Translate only publicly identified items in the mounted exchange. Missing item ids
    * stay missing; a stopped turn does not manufacture replies to its tool calls. */
+  /**
+   * Where a shell turn's question sits in ChatGPT's message tree (Edit & resubmit, #365). The shell
+   * model carries no parent ids, but the thread's ordered `entries` (a few levels up) does: the
+   * question follows the previous turn's last message, and the first turn follows the root. Two
+   * questions after the same message are versions of one: a thread holds one question after each
+   * message. "root" is weaker, since a thread list that starts later would call its first turn the
+   * root too; there only ChatGPT's versions control (its handler asks the versions endpoint) proves
+   * it. ChatGPT draws that control only once the page is loaded again after an edit (live 2.1.41).
+   */
+  function shellQuestionPlace(fiber, entry, section) {
+    let entries = null, index = -1;
+    for (let at = fiber, up = 0; at && up < 40; up++, at = at.return) {
+      const list = at.memoizedProps?.entries;
+      if (!Array.isArray(list)) continue;
+      // The same entry, or the same turn re-rendered as a new object; one match only.
+      const matches = list.reduce((found, item, at) => item === entry || (item?.id && item.id === entry.id) ? [...found, at] : found, []);
+      if (matches.length === 1) { entries = list; index = matches[0]; break; }
+    }
+    if (!entries || index < 0) return null;
+    const previous = index > 0 ? entries[index - 1]?.turn?.messageIds : null;
+    const parentId = index === 0 ? 'root' : Array.isArray(previous) && previous.length ? str(previous[previous.length - 1]) : null;
+    if (!parentId) return null;
+    let versioned = false;
+    for (const button of section.querySelectorAll('button')) {
+      if (button.closest('[data-turn-key]') !== section) continue;
+      const onClick = fiberOf(button)?.memoizedProps?.onClick;
+      if (typeof onClick === 'function' && /usesVersionsEndpoint/.test(Function.prototype.toString.call(onClick))) { versioned = true; break; }
+    }
+    return { parentId, versioned: versioned || parentId !== 'root' };
+  }
+
   function shellTurnSource(fiber, section, turnId) {
-    let entry = null;
+    let entry = null, entryFiber = null;
     for (let at = fiber, up = 0; at && up < 16; up++, at = at.return) {
-      if (Array.isArray(at.memoizedProps?.entry?.turn?.items)) { entry = at.memoizedProps.entry; break; }
+      if (Array.isArray(at.memoizedProps?.entry?.turn?.items)) { entry = at.memoizedProps.entry; entryFiber = at; break; }
     }
     if (!entry || !turnId || entry.id !== turnId || entry.turn.items.length > MAX_ROWS) return null;
+    const place = shellQuestionPlace(entryFiber, entry, section);
     const messages = [], calls = [], slots = [], seen = new Set(), callSources = new Map(), executionIds = [], images = new Map();
-    let lastAnswer = null;
+    let lastAnswer = null, previousId = null;
     const remember = id => { if (!id || seen.has(id)) return false; seen.add(id); return true; };
+    // GPT-6 (2026-10-12) writes each interim sentence as an assistant message inside the working
+    // group while the turn runs. A top-level item owns its id; a nested copy of it is not read twice.
+    const topLevel = new Set(entry.turn.items.filter(item => item?.type === 'assistant-message').map(item => str(item.messageId)).filter(Boolean));
     let work = 0;
     for (const [index, item] of entry.turn.items.entries()) {
       if (++work > MAX_ROWS) return null;
@@ -2199,7 +2283,13 @@
         const completed = final && item.completed === true && entry.turn.status === 'complete';
         messages.push({ id, author: { role }, content: { content_type: 'text', parts: [typeof text === 'string' ? text : ''] },
           channel: user ? null : final ? 'final' : 'commentary', end_turn: completed,
-          status: completed ? 'finished_successfully' : 'in_progress', metadata: {} });
+          status: completed ? 'finished_successfully' : 'in_progress',
+          // The turn's place belongs to its first message. A message sent into the running answer
+          // follows the message before it in this turn; given the turn's place it read as a version
+          // of the turn's question, and Edit & resubmit folded that question away (2.1.41 round).
+          metadata: !user ? {} : previousId ? { parent_id: previousId, clf_parent_exact: true }
+            : place ? { parent_id: place.parentId, clf_parent_exact: place.versioned } : {} });
+        previousId = id;
         const key = `${turnId}:${index}:${role}`;
         const nodes = [...section.querySelectorAll('[data-content-search-unit-key]')].filter(node =>
           node.closest('[data-turn-key]') === section && node.getAttribute('data-content-search-unit-key') === key);
@@ -2220,6 +2310,14 @@
         const steps = item?.type === 'chatgpt-reasoning-group' && Array.isArray(item.items) ? item.items : [item];
         for (const step of steps) {
           if (++work > MAX_ROWS) return null;
+          if (step?.type === 'assistant-message' && item !== step) {
+            // Interim prose whatever phase it carries: only a top-level answer can end the turn.
+            const id = str(step.messageId), text = shellItemText(step);
+            if (!id || topLevel.has(id) || !remember(id) || !text || ONLY_CONTENT_REFERENCES.test(text)) continue;
+            messages.push({ id, author: { role: 'assistant' }, content: { content_type: 'text', parts: [text] },
+              channel: 'commentary', end_turn: false, status: step.completed === true ? 'finished_successfully' : 'in_progress', metadata: {} });
+            continue;
+          }
           if (step?.type === 'dynamic-tool-call' && step.tool === 'exec') {
             const id = str(step.callId);
             if (!id) continue;
@@ -2246,7 +2344,7 @@
       entry.turn.items.filter(item => item?.type === 'generated-image').every(item =>
         images.has(item) && item.status === 'completed' && item.isPreview !== true)
       ? lastAnswer.chatGptMessageId : null;
-    return { entry, messages, calls, slots, callSources, executionIds, images,
+    return { entry, place, messages, calls, slots, callSources, executionIds, images,
       endMessageId: imageAnswer ? imageEnd : turnEndMessageId(messages) };
   }
   /**
@@ -2283,6 +2381,8 @@
     const desiredMessageStamps = new Map();
     // An exchange whose user slot the shell did not render (see below, `data-clf-fiber-user`).
     const desiredUserStamps = new Map();
+    // A chat's first exchange while it runs without its question (see below, `data-clf-fiber-first`).
+    const desiredFirstStamps = new Map();
     const desiredThoughtStamps = new Map();
     const desiredImageStamps = new Map();
     const groups = [];
@@ -2423,6 +2523,12 @@
           if (!conversation.conflict && !userSlot && users.length === 1 && users[0].rawMessageId) {
             desiredUserStamps.set(section, `${scanToken}:${index}:${encodeURIComponent(users[0].rawMessageId)}`);
           }
+          // A chat's first exchange can hold no user message at all while it runs (2026-10-19:
+          // ChatGPT draws it under `fallback-turn-0` with only its reasoning group until the turn
+          // completes). Its place is exact even so: the conversation's first exchange answers the
+          // conversation's first question. Say only that; the question's id stays the app's.
+          if (!conversation.conflict && !userSlot && !users.length && shell.place?.parentId === 'root' &&
+              shell.entry.turn.status === 'in_progress') desiredFirstStamps.set(section, `${scanToken}:${index}`);
           // Busy hint only, never a completion receipt or a Stop action target.
           const running = shell.entry.turn.status === 'in_progress' ? location.pathname : null;
           if (running && section.getAttribute('data-clf-shell-running') !== running) section.setAttribute('data-clf-shell-running', running);
@@ -2510,6 +2616,11 @@
         if (wantedUser === undefined) {
           if (currentUser !== null) section.removeAttribute('data-clf-fiber-user');
         } else if (currentUser !== wantedUser) section.setAttribute('data-clf-fiber-user', wantedUser);
+        const wantedFirst = desiredFirstStamps.get(section);
+        const currentFirst = section.getAttribute('data-clf-fiber-first');
+        if (wantedFirst === undefined) {
+          if (currentFirst !== null) section.removeAttribute('data-clf-fiber-first');
+        } else if (currentFirst !== wantedFirst) section.setAttribute('data-clf-fiber-first', wantedFirst);
         for (const stamped of [section, ...section.querySelectorAll('[data-content-search-unit-key], [data-chatgpt-search-unit-key]')]) {
           const wanted = desiredTurnStamps.get(stamped);
           const current = stamped.getAttribute('data-clf-fiber-turn');
@@ -2921,11 +3032,73 @@
     return { ...result, refreshAvailable: !!control };
   }
 
+  /**
+   * Branch in new chat (#482): marks ChatGPT's own "new chat" entry in the open Branch submenu.
+   *
+   * The submenu's entries differ only by label and handler: Work mode's handler names its
+   * upsell/work surface, the new chat's does not. Labels are translated, so the handler decides,
+   * and exactly one entry must qualify. Reads handler source only; calls nothing.
+   */
+  function markBranchNewChat(nonce) {
+    const triggers = [...document.querySelectorAll('[role="menuitem"][aria-haspopup="menu"][aria-expanded="true"]')]
+      .filter(item => item.querySelector('svg use[href*="#branch"]'));
+    if (triggers.length !== 1) return 0;
+    const menu = document.getElementById(triggers[0].getAttribute('aria-controls') || '');
+    if (!menu) return 0;
+    const items = [...menu.querySelectorAll('[role="menuitem"]')];
+    const handler = item => {
+      let fiber = null;
+      for (const key in item) if (key.indexOf('__reactFiber$') === 0) { fiber = item[key]; break; }
+      for (let depth = 0; fiber && depth < 24; depth++, fiber = fiber.return) {
+        const onSelect = fiber.memoizedProps && fiber.memoizedProps.onSelect;
+        if (typeof onSelect === 'function') return Function.prototype.toString.call(onSelect);
+      }
+      return null;
+    };
+    for (const item of items) item.removeAttribute('data-clf-branch-new-chat');
+    const plain = items.filter(item => { const source = handler(item); return typeof source === 'string' && !/work/i.test(source); });
+    if (plain.length !== 1) return plain.length;
+    plain[0].setAttribute('data-clf-branch-new-chat', nonce);
+    return 1;
+  }
+
+  /**
+   * Edit & resubmit (#365): marks the Edit control of one question with `nonce`, chosen by handler
+   * (ChatGPT's own edit action on a user message), never by its translated label. The question's
+   * turn is `[data-turn-key=<id>]` on the newer shell (its key is the question's id), or the turn
+   * holding `[data-message-id=<id>]` on the older page. Returns how many controls matched; only
+   * exactly one is marked.
+   */
+  function markQuestionEdit(nonce, messageId) {
+    if (typeof messageId !== 'string' || !/^[0-9a-f-]{36}$/i.test(messageId)) return 0;
+    for (const node of document.querySelectorAll('[data-clf-edit]')) node.removeAttribute('data-clf-edit');
+    const keyed = [...document.querySelectorAll('[data-turn-key]')].filter(node => node.getAttribute('data-turn-key') === messageId);
+    const legacy = [...document.querySelectorAll('[data-message-id]')].filter(node => node.getAttribute('data-message-id') === messageId)
+      .map(node => node.closest('[data-testid^="conversation-turn"], article'));
+    const turns = [...new Set([...keyed, ...legacy].filter(Boolean))];
+    if (turns.length !== 1) return 0;
+    const handler = button => {
+      let fiber = null;
+      for (const key in button) if (key.indexOf('__reactFiber$') === 0) { fiber = button[key]; break; }
+      for (let depth = 0; fiber && depth < 8; depth++, fiber = fiber.return) {
+        const onClick = fiber.memoizedProps && fiber.memoizedProps.onClick;
+        if (typeof onClick === 'function') return Function.prototype.toString.call(onClick);
+      }
+      return '';
+    };
+    const edits = [...turns[0].querySelectorAll('button')].filter(button => {
+      const source = handler(button);
+      return /action:\s*"edit"/.test(source) && /surface:\s*"user_message"/.test(source);
+    });
+    if (edits.length === 1) edits[0].setAttribute('data-clf-edit', nonce);
+    return edits.length;
+  }
+
   const listener = (event) => {
     // Only this window, only our own request shape. Anything else is not ours to answer.
     if (event.source !== window) return;
     const data = event.data;
-    if (!data || typeof data !== 'object' || ![ASK, 'clf-picker-ask', 'clf-plugin-ask'].includes(data.source)) return;
+    if (!data || typeof data !== 'object' || ![ASK, 'clf-picker-ask', 'clf-plugin-ask', 'clf-branch-ask', 'clf-edit-ask'].includes(data.source)) return;
     const nonce = typeof data.nonce === 'string' ? data.nonce.slice(0, 64) : '';
     if (!nonce) return;
     adoptAppNames(data.apps);
@@ -2933,6 +3106,18 @@
     const previousPaths = currentPaths;
     currentPaths = new WeakMap();
     try {
+    if (data.source === 'clf-branch-ask') {
+      let marked = 0;
+      try { marked = markBranchNewChat(nonce); } catch { /* An unknown menu shape marks nothing. */ }
+      post({ source: 'clf-branch-reply', nonce, v: 1, marked }, location.origin);
+      return;
+    }
+    if (data.source === 'clf-edit-ask') {
+      let marked = 0;
+      try { marked = markQuestionEdit(nonce, data.messageId); } catch { /* An unknown turn shape marks nothing. */ }
+      post({ source: 'clf-edit-reply', nonce, v: 1, marked }, location.origin);
+      return;
+    }
     if (data.source === 'clf-plugin-ask') {
       let plugin = null;
       try { plugin = pluginSnapshot(); } catch { /* Unrecognized installed settings. */ }

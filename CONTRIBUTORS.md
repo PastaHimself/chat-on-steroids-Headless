@@ -266,3 +266,12 @@ This is a growing attribution record, not a complete list of everyone who has he
 Keep original authorship when merging a contribution. When adapting or consolidating contributed work, name the original author and PR, and preserve appropriate `Co-authored-by` trailers using the contributor's public GitHub noreply identity. Reports and review deserve explicit acknowledgment without inventing code authorship. See [CONTRIBUTING.md](CONTRIBUTING.md#credit-and-attribution).
 
 The September 2026 attribution correction adds a new public record and retroactive co-author credit for incorporated work. It does not rewrite released commits or imply that contributors authored the correction's prose. GitHub's automatic contributor displays are separate from this maintained record.
+
+## Headless v2.1.43 integration
+
+The Headless compatibility merge incorporates upstream v2.1.43 at
+`457fc3039a415a6b5484a18cd50f4d2f788d0739`, retaining its complete original
+commit authorship and contributor records. [The integration map](docs/upgrades/v2.1.43-commit-map.tsv)
+links every non-merge change to that history. The upstream implementation, including
+work by @Maximapple, @Repcoders and the contributors above, is adapted at the
+Headless runtime, Discord, durable delivery, worktree and deployment boundaries.

@@ -5,6 +5,7 @@ import type { MessageReference, StoredText } from '../src/shared/session.js';
 let dom: JSDOM;
 let renderedMessage: (html: StoredText | null | undefined, fallback: string) => HTMLElement;
 let renderedMarkdown: (text: string, capture?: StoredText, references?: readonly MessageReference[]) => HTMLElement;
+let finishedBlocks: (text: string) => string;
 
 /** A whole capture, as the store holds one. */
 const whole = (text: string): StoredText => ({ text, truncated: false, chars: text.length });
@@ -19,7 +20,7 @@ beforeAll(async () => {
     Element: dom.window.Element,
     Node: dom.window.Node
   });
-  ({ renderedMessage, renderedMarkdown } = await import('../src/renderer/chat.js'));
+  ({ renderedMessage, renderedMarkdown, finishedBlocks } = await import('../src/renderer/chat.js'));
 });
 
 afterAll(() => {
@@ -84,17 +85,38 @@ describe('captured ChatGPT rendered HTML', () => {
   it('renders ChatGPT\'s writing block as a titled quote instead of its raw directive', () => {
     const rendered = renderedMarkdown(':::writing{variant="standard" id="58321" title="Clear <rewrite>"}\nWe want the app to be **faster**.\n:::\n\nAfter the block.');
     const quote = rendered.querySelector('blockquote')!;
-    expect(quote.querySelector('strong')?.textContent).toBe('Clear <rewrite>');
+    expect(rendered.querySelector('.markdown-writing .tool-output-header strong')?.textContent).toBe('Clear <rewrite>');
     expect(quote.textContent).toContain('We want the app to be faster.');
-    expect(quote.querySelectorAll('strong')).toHaveLength(2);
+    expect(quote.querySelectorAll('strong')).toHaveLength(1);
     expect(rendered.textContent).not.toContain(':::');
     expect(rendered.textContent).toContain('After the block.');
     // A block still streaming, or an answer stopped inside it, has no closing `:::` yet. ChatGPT
     // draws it as the block to the end of the message; it showed here as its raw directive.
     const open = renderedMarkdown(':::writing{variant="document" title="The Keeper"}\nElias kept the light.\n\nThen Mara came.');
-    expect(open.querySelector('blockquote strong')?.textContent).toBe('The Keeper');
+    expect(open.querySelector('.markdown-writing .tool-output-header strong')?.textContent).toBe('The Keeper');
     expect(open.querySelector('blockquote')?.textContent).toContain('Then Mara came.');
     expect(open.textContent).not.toContain(':::writing');
+  });
+
+  // #1477: ChatGPT gives a writing block its own Copy button; the app showed a quote with nothing to copy it by.
+  it('gives a writing block a Copy button that copies the block\'s own text, Markdown included', async () => {
+    const writeClipboard = vi.fn(async () => ({ ok: true, data: true }));
+    // chat.ts holds the api object it found at import; give that object the call.
+    Object.assign((dom.window as unknown as { api: object }).api, { writeClipboard });
+    const rendered = renderedMarkdown('Here is the email.\n\n:::writing{id="48317" variant="email" subject="New release is out"}\nHi, the new release is **out**.\n\n- Notes are online\n:::\n\nAnything else?');
+    const panels = rendered.querySelectorAll('.markdown-writing');
+    expect(panels).toHaveLength(1);
+    expect(panels[0]!.querySelector('.tool-output-header strong')?.textContent).toBe('New release is out');
+    const copy = panels[0]!.querySelector<HTMLButtonElement>('.tool-copy')!;
+    expect(copy.textContent).toBe('Copy');
+    copy.click();
+    await vi.waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('Hi, the new release is **out**.\n\n- Notes are online'));
+    expect(rendered.textContent).toContain('Here is the email.');
+    expect(rendered.textContent).toContain('Anything else?');
+    expect(rendered.textContent).not.toContain(':::');
+    // An untitled block still gets the panel, named by what it is.
+    const plain = renderedMarkdown(':::writing{variant="standard"}\nJust text.\n:::');
+    expect(plain.querySelector('.markdown-writing .tool-output-header strong')?.textContent).toBe('Text');
   });
 
   it('shows the page\'s resolved content for a content-reference reply instead of the raw pointer (#574)', () => {
@@ -110,6 +132,20 @@ describe('captured ChatGPT rendered HTML', () => {
     expect(renderedMarkdown(`Before\n${pointer}\nAfter`).textContent).not.toContain('chatgpt-content-reference');
     // Quoted inside code it is text, not a pointer.
     expect(renderedMarkdown(`Use \`${pointer}\` in docs.`).textContent).toContain('chatgpt-content-reference');
+  });
+
+  // 2.1.41 bug hunt: ChatGPT draws an answer's paragraphs with white-space: pre-line, so a poem's single
+  // line breaks stay lines there. Here the three lines ran together as one sentence.
+  it('keeps an answer\'s single line breaks as ChatGPT shows them, inside paragraphs and list items', () => {
+    const rendered = renderedMarkdown('The river weaves its silver dreams,\nAnd carries whispered secrets.\nThe River\'s Song\n\n- first line\n  continued\n- second');
+    const paragraph = rendered.querySelector('p')!;
+    expect(paragraph.querySelectorAll('br')).toHaveLength(2);
+    expect(paragraph.innerHTML.split('<br>').map(line => line.trim())).toEqual(['The river weaves its silver dreams,', 'And carries whispered secrets.', 'The River\'s Song']);
+    expect(rendered.querySelector('li')!.querySelectorAll('br')).toHaveLength(1);
+    // A blank line is still a new paragraph, and code keeps its own lines without breaks added.
+    const code = renderedMarkdown('One\n\nTwo\n\n```\na\nb\n```');
+    expect(code.querySelectorAll('p')).toHaveLength(2);
+    expect(code.querySelector('pre')!.querySelectorAll('br')).toHaveLength(0);
   });
 
   it('never shows an unknown ChatGPT directive as raw text', () => {
@@ -509,8 +545,165 @@ c & d
     expect(rendered.querySelector('a, .evil, [style*="color:red"]')).toBeNull();
   });
 
+  it.each([
+    ['right after a line of text', "Using:\n\\[\n-\\frac{\\hbar^2}{2m}\\psi\n=\nE\\psi\n\\]\n\nAnd:\n$$\n-\\frac{\\hbar^2}{2m}\\psi\n=\nE\\psi\n$$\n"],
+    ['right after a list item\'s text', "1. Using `\\[ ... \\]` syntax\n   \\[\n   -\\frac{\\hbar^2}{2m}\\psi\n   =\n   E\\psi\n   \\]\n2. Using `$$ ... $$` syntax\n   $$\n   -\\frac{\\hbar^2}{2m}\\psi\n   =\n   E\\psi\n   $$\n"],
+    ['as recorded from GPT-6, beside the same source in code fences', "The 3D time-independent Schrödinger equation explicitly expands the Laplacian over \\(x,y,z\\).\n\nUsing `\\[ ... \\]`:\n\n```latex\n\\[\n-\\frac{\\hbar^2}{2m}\n\\left(\n\\frac{\\partial^2 \\psi}{\\partial x^2}\n+\n\\frac{\\partial^2 \\psi}{\\partial y^2}\n+\n\\frac{\\partial^2 \\psi}{\\partial z^2}\n\\right)\n+\nV(x,y,z)\\psi(x,y,z)\n=\nE\\psi(x,y,z)\n\\]\n```\n\nRendered:\n\n\\[\n-\\frac{\\hbar^2}{2m}\n\\left(\n\\frac{\\partial^2 \\psi}{\\partial x^2}\n+\n\\frac{\\partial^2 \\psi}{\\partial y^2}\n+\n\\frac{\\partial^2 \\psi}{\\partial z^2}\n\\right)\n+\nV(x,y,z)\\psi(x,y,z)\n=\nE\\psi(x,y,z)\n\\]\n\nUsing `$$ ... $$`:\n\n```latex\n$$\n-\\frac{\\hbar^2}{2m}\n\\left(\n\\frac{\\partial^2 \\psi}{\\partial x^2}\n+\n\\frac{\\partial^2 \\psi}{\\partial y^2}\n+\n\\frac{\\partial^2 \\psi}{\\partial z^2}\n\\right)\n+\nV(x,y,z)\\psi(x,y,z)\n=\nE\\psi(x,y,z)\n$$\n```\n\nRendered:\n\n$$\n-\\frac{\\hbar^2}{2m}\n\\left(\n\\frac{\\partial^2 \\psi}{\\partial x^2}\n+\n\\frac{\\partial^2 \\psi}{\\partial y^2}\n+\n\\frac{\\partial^2 \\psi}{\\partial z^2}\n\\right)\n+\nV(x,y,z)\\psi(x,y,z)\n=\nE\\psi(x,y,z)\n$$"]
+  ])('draws a display formula spread over several lines with a lone = line, %s (#1342)', (_case, text) => {
+    // A formula opened on the line after prose was read as part of the paragraph, and its bare "="
+    // line turned the paragraph into a large heading: the backslash of \[ was lost and nothing drew.
+    const rendered = renderedMarkdown(text);
+    expect(rendered.querySelectorAll('.math-display .katex-display')).toHaveLength(2);
+    expect(rendered.querySelector('h1, h2')).toBeNull();
+    const shown = [...rendered.querySelectorAll('.math-display .katex-html')].map(node => node.textContent).join(' ');
+    expect(shown).toContain('ℏ');
+    expect(shown).not.toContain(String.raw`\frac`);
+    // Source in code fences stays source.
+    for (const code of rendered.querySelectorAll('pre code')) expect(code.querySelector('.katex')).toBeNull();
+  });
+
+  it('separates only an opening display line, never a closing one or one inside a code fence', async () => {
+    const { separateDisplayMath } = await import('../src/renderer/math.js');
+    expect(separateDisplayMath('A:\n$$\nx\n=\ny\n$$\nB')).toBe('A:\n\n$$\nx\n=\ny\n$$\nB');
+    expect(separateDisplayMath('```\ntext\n$$\n```\nC:\n\\[\nz\n\\]')).toBe('```\ntext\n$$\n```\nC:\n\n\\[\nz\n\\]');
+    expect(separateDisplayMath('Price $5 and $6.')).toBe('Price $5 and $6.');
+  });
+
+  it('draws a GPT-6 answer read from its fallback text: aligned blocks, \\\\[10pt] and inline formulas (#1342)', () => {
+    // The reply as the extension hands it over once formulas keep their LaTeX (recorded 2026-10-12).
+    const rendered = renderedMarkdown("The Lindhard dielectric function, as discussed in *Solid State Physics* by Ashcroft and Mermin, describes the electronic screening response of a noninteracting electron gas.\n\n\\[\n\\begin{aligned}\n\\varepsilon(\\mathbf{q},\\omega)\n\\\\\n=\n\\\\\n1-\\frac{4\\pi e^2}{q^2}\n\\frac{2}{V}\n\\sum_{\\mathbf{k}}\n\\frac{\nf\\!\\left(\\epsilon_{\\mathbf{k}+\\mathbf{q}}\\right)\n-\nf\\!\\left(\\epsilon_{\\mathbf{k}}\\right)\n}{\n\\epsilon_{\\mathbf{k}+\\mathbf{q}}\n-\n\\epsilon_{\\mathbf{k}}\n-\n\\hbar(\\omega+i0^+)\n}\n\\end{aligned}\n\\]\n\nHere, \\(\\mathbf{q}\\) is the wave vector of the perturbation, with magnitude \\(q=|\\mathbf{q}|\\).\n\n\\[\n\\begin{aligned}\n\\epsilon_{\\mathbf{k}} &= \\frac{\\hbar^2 k^2}{2m}\n\\\\[10pt]\nf(\\epsilon) &= \\frac{1}{e^{(\\epsilon-\\mu)/(k_B T)}+1}\n\\end{aligned}\n\\]\n\n[ok] 2^10 = 1024 a_b *star*");
+    expect(rendered.querySelectorAll('.math-display .katex-display')).toHaveLength(2);
+    expect(rendered.querySelectorAll('.math-inline .katex')).toHaveLength(2);
+    expect(rendered.querySelector('h1, h2, .is-source')).toBeNull();
+    // What is drawn, not the source KaTeX keeps for screen readers.
+    const shown = [...rendered.querySelectorAll('.katex-html')].map(node => node.textContent).join(' ');
+    expect(shown).toContain('ℏ');
+    expect(shown).not.toContain(String.raw`\frac`);
+    expect(rendered.querySelector('p:last-of-type')!.textContent).toContain('[ok] 2^10 = 1024 a_b');
+  });
+
+  it.each([
+    ['before', 'The area is \\(\\pi r^2\\).\n\n:::writing{variant="standard" title="Note"}\nArea is \\(\\pi r^2\\) for **any** circle.\n:::'],
+    ['after', ':::writing{variant="standard" title="Note"}\nArea is \\(\\pi r^2\\) for **any** circle.\n:::\n\nThe area is \\(\\pi r^2\\).']
+  ])('keeps a writing panel and its formulas apart, with a formula %s the panel', async (_order, text) => {
+    // Both used to mark their place with the same two characters: the panel's marker drew as a formula.
+    const writeClipboard = vi.fn(async () => ({ ok: true, data: true }));
+    Object.assign((dom.window as unknown as { api: object }).api, { writeClipboard });
+    const rendered = renderedMarkdown(text);
+    const panel = rendered.querySelector('.markdown-writing')!;
+    expect(panel.querySelector('.tool-output-header strong')?.textContent).toBe('Note');
+    expect(rendered.querySelectorAll('.math-inline .katex')).toHaveLength(2);
+    expect(panel.querySelectorAll('.math-inline .katex')).toHaveLength(1);
+    expect(rendered.textContent).not.toMatch(/[-]/);
+    panel.querySelector<HTMLButtonElement>('.tool-copy')!.click();
+    await vi.waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('Area is \\(\\pi r^2\\) for **any** circle.'));
+  });
+
   it('shows the name of a person or place ChatGPT links, instead of dropping it', () => {
     const rendered = renderedMarkdown('No \uE200entity\uE202["place","Antigo Egito"]\uE201, \uE200entity\uE202["people","René \\"Descartes\\"","filósofo"]\uE201 estudou.');
     expect(JSON.stringify(rendered.textContent!.trim())).toBe(JSON.stringify('No Antigo Egito, René "Descartes" estudou.'));
+  });
+});
+
+/** A revision on screen keeps every leading block equal to the one drawn again (the timeline's streaming). */
+describe('an answer drawn again', () => {
+  const report = (snippet: string) => [{ index: 1, sources: [{ title: 'A report', url: 'https://news.example.com/report', source: 'Example News', snippet }] }];
+
+  it('renders the same markdown twice as equal blocks', () => {
+    const sources = [String.raw`Inline \(x^2\) with a source. :chatgpt-content-reference{index="1"}` +
+      '\n\n```ts\nconst a = 1;\n```\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n' + String.raw`\[
+y=mx+b
+\]`, ':::writing{title="Note"}\nDear team\n:::'];
+    const drawn = sources.map(source => [renderedMarkdown(source, undefined, report('A')), renderedMarkdown(source, undefined, report('A'))]);
+    for (const part of ['.math-inline .katex', '.math-display .katex', '.citation', '.markdown-code', '.markdown-table', '.markdown-writing']) {
+      expect(drawn.some(([first]) => first!.querySelector(part)), part).toBe(true);
+    }
+    for (const [first, second] of drawn) {
+      expect(first!.childNodes).toHaveLength(second!.childNodes.length);
+      expect([...first!.childNodes].every((node, index) => node.isEqualNode(second!.childNodes[index]!))).toBe(true);
+    }
+  });
+
+  it('tells apart citation pills that look the same but hold different sources', () => {
+    const source = 'A claim. :chatgpt-content-reference{index="1"}';
+    const [first, second] = [renderedMarkdown(source, undefined, report('First')), renderedMarkdown(source, undefined, report('Second'))];
+    expect(first.querySelector('a.citation-pill')!.isEqualNode(second.querySelector('a.citation-pill'))).toBe(true);
+    expect(first.querySelector('.citation')!.isEqualNode(second.querySelector('.citation'))).toBe(false);
+  });
+
+  it('cuts an answer being written after its last finished block', () => {
+    expect(finishedBlocks('Alpha.\r\n\r\nBeta')).toBe('Alpha.\r\n\r\n');
+    expect(finishedBlocks('Alpha.\n\n')).toBe('Alpha.\n\n');
+    expect(finishedBlocks('Alpha.')).toBe('');
+    // A fence closes only on its own character, at least as long; a writing block or formula on its end.
+    expect(finishedBlocks('```\na\n\n~~~\nb\n```\nAfter')).toBe('```\na\n\n~~~\nb\n```\n');
+    expect(finishedBlocks('Intro.\n\n:::writing{title="Note"}\nDear team,\n\nThanks\n')).toBe('Intro.\n\n');
+    expect(finishedBlocks(':::writing\nDear team,\n\nThanks\n:::\nAfter')).toBe(':::writing\nDear team,\n\nThanks\n:::\n');
+    expect(finishedBlocks('$$\na\n\nb\n$$\n\nAfter')).toBe('$$\na\n\nb\n$$\n\n');
+  });
+
+  it('holds a list back until a finished line ends it, so it never turns loose on screen', () => {
+    // A blank line between items makes the whole list loose once the next item arrives.
+    expect(finishedBlocks('Intro.\n\n- a\n- b\n\n- c')).toBe('Intro.\n\n');
+    expect(finishedBlocks('Intro.\n\n- a\n- b\n\n- c\n\n1')).toBe('Intro.\n\n');
+    expect(finishedBlocks('Intro.\n\n- a\n- b\n\n- c\n\nAfter.\n')).toBe('Intro.\n\n- a\n- b\n\n- c\n\n');
+    // An indented line after a blank one continues the item.
+    expect(finishedBlocks('1. a\n\n   more')).toBe('');
+    expect(finishedBlocks('1. a\n\n   more\n\n2) b\n\nNext.\n\nEn')).toBe('1. a\n\n   more\n\n2) b\n\nNext.\n\n');
+    // A fence inside an item, at any indent, neither cuts the item nor ends the list when it closes.
+    expect(finishedBlocks('- a\n    ```\n    x\n\n    y')).toBe('');
+    expect(finishedBlocks('- a\n    ```\n    x\n\n    y\n    ```\n\nAfter.\n')).toBe('- a\n    ```\n    x\n\n    y\n    ```\n\n');
+    expect(finishedBlocks('- a\n  ```\n  x\n  ```\n- b')).toBe('');
+  });
+
+  it('ends a list as soon as the line being written cannot continue it', () => {
+    expect(finishedBlocks('- a\n\n- b\n\nThe next')).toBe('- a\n\n- b\n\n');
+    expect(finishedBlocks('- a\n\n- b\n\n# Next')).toBe('- a\n\n- b\n\n');
+    // A digit, a marker or an indent may still become an item.
+    expect(finishedBlocks('- a\n\n- b\n\n2')).toBe('');
+    expect(finishedBlocks('- a\n\n- b\n\n-')).toBe('');
+    expect(finishedBlocks('- a\n\n- b\n\n  mo')).toBe('');
+    expect(finishedBlocks('- a\n\n- b\n')).toBe('');
+  });
+
+  it('opens a list or a display formula only where Markdown would', () => {
+    // Indented four spaces after a paragraph's line, "- option" continues the paragraph.
+    expect(finishedBlocks('Para\n    - option\n\n  Next.\n')).toBe('Para\n    - option\n\n');
+    // A display formula opens at the start of its line, as the math tokenizer reads it; in a list, inside its item.
+    expect(finishedBlocks('Alpha.\n\n  $$ x\n\nNext.\n')).toBe('Alpha.\n\n  $$ x\n\n');
+    expect(finishedBlocks('- a\n\n  $$\n  x\n\n  y\n  $$\n\nNext.\n')).toBe('- a\n\n  $$\n  x\n\n  y\n  $$\n\n');
+    expect(finishedBlocks('- a\n\n  $$\n  x\n\n  y')).toBe('');
+  });
+
+  it('finishes a display formula on its closing line, as it does a fence', () => {
+    expect(finishedBlocks('Intro.\n\n$$\nx\n$$\nThen prose')).toBe('Intro.\n\n$$\nx\n$$\n');
+    expect(finishedBlocks('Intro.\n\n\\[\nx\n\\]\nThen prose')).toBe('Intro.\n\n\\[\nx\n\\]\n');
+    // Inside a list the list still decides.
+    expect(finishedBlocks('- a\n\n  $$\n  x\n  $$\n  Then')).toBe('');
+  });
+
+  it('holds an indented code block back until a line after it is not indented', () => {
+    expect(finishedBlocks('Alpha.\n\n    one\n\n    two')).toBe('Alpha.\n\n');
+    expect(finishedBlocks('Alpha.\n\n    one\n\n    two\n\n  ')).toBe('Alpha.\n\n');
+    expect(finishedBlocks('Alpha.\n\n    one\n\n    two\n\nNext')).toBe('Alpha.\n\n    one\n\n    two\n\n');
+    expect(finishedBlocks('\tone\n\n\ttwo\n\nNext.\n')).toBe('\tone\n\n\ttwo\n\n');
+    // An item's indented line is the item's, not code.
+    expect(finishedBlocks('- a\n\n    more\n\nNext.\n')).toBe('- a\n\n    more\n\n');
+  });
+
+  it('opens a writing block only on the line ChatGPT opens one with', () => {
+    expect(finishedBlocks(':::writing example\n\nNext.\n\nMo')).toBe(':::writing example\n\nNext.\n\n');
+    expect(finishedBlocks(':::writing{title="Note"} \nDear team,\n\nThanks')).toBe('');
+  });
+
+  it('reads triple backticks inside a line as inline code, not as a fence', () => {
+    expect(finishedBlocks('```code``` is odd.\n\nNext para.')).toBe('```code``` is odd.\n\n');
+    expect(finishedBlocks('~~~ a`b\nx\n\ny')).toBe('');
+  });
+
+  it('tells apart writing panels that read the same but copy different Markdown', () => {
+    const [first, second] = ['*a*', '_a_'].map(text => renderedMarkdown(`:::writing\n${text}\n:::`));
+    expect(first!.querySelector('blockquote')!.isEqualNode(second!.querySelector('blockquote'))).toBe(true);
+    expect(first!.querySelector('.markdown-writing')!.isEqualNode(second!.querySelector('.markdown-writing'))).toBe(false);
   });
 });

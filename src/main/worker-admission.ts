@@ -51,6 +51,7 @@ export async function acceptAgentMutation(
 export async function admitWorkerSpawn(input: SpawnInput, options: {
   workspace(): Promise<{ real: string; virtual: string } | null>;
   canIsolate(): boolean;
+  selectedWorkspace?: { real: string; virtual: string } | null;
   validateOwner?(): Promise<void>;
   assertCurrent?(): void;
 }) {
@@ -69,8 +70,12 @@ export async function admitWorkerSpawn(input: SpawnInput, options: {
       const source = await options.workspace();
       // Unfiled chats without any selected/learned folder can still delegate ordinary
       // work. Once a source exists, a Git checkout must pass strict isolation checks.
+      const onServer = !!source && getConfig().roots.some(root => root.remote &&
+        (source.virtual === `/${root.name}` || source.virtual.startsWith(`/${root.name}/`)));
       if (!source) {
         isolationNotes.push('No workspace is selected; workers were spawned without isolated Git worktrees.');
+      } else if (onServer) {
+        isolationNotes.push('Workers in a project on a server share its folder; separate worktrees are only made for projects on this computer.');
       } else if (isGitRepository(source.real)) {
         if (!options.canIsolate()) {
           throw new Error('WORKTREE_PERMISSION_REQUIRED: worker isolation requires Command, Create and Edit, with Read-only disabled.');
@@ -145,7 +150,10 @@ export async function admitWorkerSpawn(input: SpawnInput, options: {
       // Only a trusted worktree error code crosses the model-facing boundary.
       logWarn(`multi-agent: worker allocation failed: ${error instanceof Error ? error.message : String(error)}`);
       const code = error instanceof WorkerWorktreeError ? error.code : 'WORKTREE_ALLOCATION_FAILED';
-      throw new Error(`${code}: isolated Git checkout allocation failed; see local app logs for details. The worker spawn was rolled back.`);
+      const hint = code === 'WORKTREE_STORAGE_UNAVAILABLE'
+        ? 'Worker checkouts are kept next to the repository, inside an approved folder, so the approved folder must contain the repository rather than be it. Ask the user to approve the folder that contains this repository, or to turn off "Isolate new workers in Git worktrees" in Settings.'
+        : 'See local app logs for details.';
+      throw new Error(`${code}: isolated Git checkout allocation failed. ${hint} The worker spawn was rolled back.`);
     }
     throw error;
   }
@@ -153,6 +161,12 @@ export async function admitWorkerSpawn(input: SpawnInput, options: {
   // their owners. A failed stage retains its checkout but exposes no orphan cwd.
   for (const lease of admittedLeases) {
     setWorkspaceFor(`agent:${lease.runId}:${lease.agentId}`, lease.workspace);
+  }
+  if (options.selectedWorkspace) {
+    for (const agentId of staged.newlyStagedWorkerIds) {
+      if (!admittedLeases.some(lease => lease.agentId === agentId))
+        setWorkspaceFor(`agent:${staged.runId}:${agentId}`, options.selectedWorkspace);
+    }
   }
   return { ...staged, isolationNotes };
 }

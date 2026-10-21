@@ -106,12 +106,45 @@ describe('MCP worker spawn with automatic Git isolation', () => {
     expect(allocation).not.toHaveBeenCalled();
   });
 
+  // #1469: a project on a server has no checkout on this computer to branch from. Even when a
+  // local folder of the same path happens to be a Git repository, workers share the server folder.
+  it('lets workers in a server project share its folder instead of making a local worktree', async () => {
+    const defaults = defaultConfig();
+    // A server path is POSIX; on Windows a local folder cannot share its spelling.
+    const serverPath = repository.startsWith('/') ? repository : '/srv/repository';
+    await saveConfig({ ...defaults, roots: [{ name: 'approved', path: temp }, { name: 'server', path: `me@devbox:${serverPath}`, remote: { host: 'me@devbox', path: serverPath } }],
+      multiAgent: { ...defaults.multiAgent, enabled: true, autoWorktrees: true } });
+    setWorkspaceFor(`chat:${primeConversation}`, { real: serverPath, virtual: '/server' });
+    const allocation = vi.spyOn(worktrees, 'allocWorkerWorkspace');
+    const response = await spawn([{ task: 'Work in the server project' }]);
+    expect(response.isError, JSON.stringify(response.content)).not.toBe(true);
+    expect(response.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('share its folder') });
+    expect(allocation).not.toHaveBeenCalled();
+  });
+
   it('refuses to promote an orphaned managed worker to a new prime after broker eviction', async () => {
     // The exact session-origin/tombstone fence is resolved asynchronously at MCP admission.
     vi.spyOn(agents, 'managedWorkerIsolationRequired').mockResolvedValueOnce(true);
     const response = await spawn([{ task: 'Do not reopen a retired managed worker as prime' }]);
     expect(response.isError).toBe(true);
     expect(response.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('WORKTREE_OWNER_UNAVAILABLE') });
+    expect(snapshotSwarm()).toBeNull();
+  });
+
+  it('tells the model to approve the folder above the repository when the repository itself is the approved folder', async () => {
+    // Managed worktrees live beside the repository, inside an approved folder. Without one above it
+    // the spawn is refused; the model needs that reason to tell the user what to change.
+    const defaults = defaultConfig();
+    await saveConfig({ ...defaults, roots: [{ name: 'approved', path: repository }], multiAgent: { ...defaults.multiAgent, enabled: true, autoWorktrees: true } });
+    setWorkspaceFor(`chat:${primeConversation}`, { real: repository, virtual: '/approved' });
+
+    const response = await spawn([{ task: 'Work in an isolated checkout' }]);
+    const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
+    expect(response.isError).toBe(true);
+    expect(text).toContain('WORKTREE_STORAGE_UNAVAILABLE');
+    expect(text).toContain('approve the folder that contains this repository');
+    expect(text).toContain('Isolate new workers in Git worktrees');
+    expect(text).not.toContain(temp);
     expect(snapshotSwarm()).toBeNull();
   });
 

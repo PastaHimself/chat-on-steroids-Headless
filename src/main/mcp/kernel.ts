@@ -2,6 +2,7 @@ import { CONVERSATION_DELETED } from '../../shared/chat-error.js';
 import { recoveryHeld } from '../recovery-hold.js';
 import { offerToolInput, acknowledgeToolInput, completeToolInputPublication, TOOL_INPUT_HEADER } from '../session/input.js';
 import { noteConnectorUse } from '../connector-proof.js';
+import { beginPluginToolCall } from '../plugin-refresh.js';
 import { pluginManager } from '../plugins/manager.js';
 import { WINDOWS_COMPUTER_STATE_INPUT_METHODS } from '../../shared/windows-computer.js';
 /**
@@ -27,10 +28,11 @@ import { WINDOWS_COMPUTER_STATE_INPUT_METHODS } from '../../shared/windows-compu
 
 import { rawPromises as fs } from '../rawfs.js';
 import { randomUUID } from 'node:crypto';
-import { beginToolTiming, inboundRequestId, inboundPublication } from './inbound.js';
+import { beginToolTiming, inboundRequestId, inboundPublication, inboundProviderRequest } from './inbound.js';
 import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import type { Capabilities, Root } from '../../shared/types.js';
+import type { Capabilities, RemoteFolder, Root } from '../../shared/types.js';
+import { fsForRoot } from '../remote/project-fs.js';
 import { CAPABILITY_LABELS, WRITE_CAPABILITIES } from '../../shared/types.js';
 import { FsOpError, formatBytes, type FileInfo } from '../fsops.js';
 import { logInfo, logWarn } from '../logger.js';
@@ -50,6 +52,7 @@ import { isUserSkillVirtualPath, resolveUserSkillPath } from '../user-skills.js'
 import { ExecError } from '../exec.js';
 import { ComputerError } from '../computer/index.js';
 import { getConfig } from '../config.js';
+import { noteToolCall, toolOutcome } from '../diagnostics-facts.js';
 import {
   AgentError,
   IdentityLostError,
@@ -91,6 +94,7 @@ import {
   noteOutcome,
   holdWhileSettling,
   runInCallContext,
+  noteCallReleased,
   runningToolProgress,
   setRequestOwner,
   trackInFlight,
@@ -98,6 +102,7 @@ import {
   type CallContext,
   type CallCaller
 } from './call-context.js';
+import { openCallHold } from '../rotation-hold.js';
 import {
   REQUEST_ID_GRACE_MS,
   awaitFreshCallOrigin,
@@ -125,6 +130,7 @@ import {
   conversationUnavailableKnown,
   conversationAttachmentKnown,
   conversationAttachment,
+  replacementOf,
   findSessionByConversation,
   getSession,
   requestBelongsToActiveTurn,
@@ -507,7 +513,7 @@ async function withBackgroundExecRecovery(
 ): Promise<ToolResult> {
   const { publication, caller } = context;
   if (!publication || !caller.requestId) return result;
-  const principal = executionPrincipal(caller.requestId, caller.sessionId, context.allowUnattributed === true);
+  const principal = executionPrincipal(caller.requestId, caller.sessionId);
   if (!principal) return result;
   const used = result.content.reduce((bytes, part) => bytes + (part.type === 'text' ? Buffer.byteLength(part.text, 'utf8') : 0), 0);
   const budget = Math.min(12_000, DEFAULT_MAX_OUTPUT_TOKENS * 4 - used) - 64;
@@ -534,6 +540,9 @@ async function withBackgroundExecRecovery(
  * between a completed local operation, its unknown attribution, and an undelivered agent
  * message: none of those facts implies that completed work is about to disappear.
  */
+/** Tools whose answer does not depend on which chat called them. */
+const IDENTITY_FREE_TOOLS: ReadonlySet<string> = new Set(['usage']);
+
 function withUnattributedNotice(
   conversationId: string | null | undefined,
   result: ToolResult,
@@ -660,15 +669,22 @@ export async function dispatch(
   };
   // Every call runs through here, so the proof is installed before any call can be running.
   setRequestOwner(requestOwner);
+  const confirmUse = !parent && inboundProviderRequest() ? beginPluginToolCall(surface) : null;
   try {
     const result = await trackMcpRequest(() =>
       trackInFlight(context, () => dispatchTracked(context, name, args, transportKey, requestId, surface, run, !!parent))
     );
     // In-process callers have no socket; resolving their outer invocation publishes it.
     if (!parent && !inboundPublication()) context.publication!.completedAt = Date.now();
+    // Only a provider request has a response ChatGPT receives; in-process callers prove nothing.
+    if (!parent && inboundPublication()) noteCallReleased(context);
+    if (!result.isError) confirmUse?.();
     return result;
   } catch (error) {
-    if (!parent) context.publication!.failed = true;
+    if (!parent) {
+      context.publication!.failed = true;
+      if (inboundPublication()) noteCallReleased(context);
+    }
     throw error;
   }
 }
@@ -699,6 +715,7 @@ async function dispatchTracked(
 ): Promise<ToolResult> {
   noteTransportIdentity(transportKey);
   const markTiming = beginToolTiming();
+  const callStartedAt = Date.now();
   // Recorded here rather than in `guard` because only this layer knows which server
   // answered, and "was this connector ever actually used from ChatGPT" is a per-connector
   // question the setup screen has to answer honestly.
@@ -807,6 +824,10 @@ async function dispatchTracked(
     ? await conversationAttachment(context.caller.conversationId, context.caller.sessionId ?? null) : 'unknown';
   const supersededConversation = attachment === 'superseded';
   const unavailableRefusal = attachment === 'unavailable' ? 'CONVERSATION_DELETED: ' + CONVERSATION_DELETED + ' No new local tool was run; reconcile existing effects before replacement.' : null;
+  // Resolve the exact successor while preserving confirmed-deletion fencing.
+  const replacement = supersededConversation
+    ? await replacementOf(context.caller.conversationId!, context.caller.sessionId ?? null).catch(() => null)
+    : null;
   // Preserve the pre-strict fast path exactly: when strict mode is off, Block is a synchronous
   // exact-chat lookup and ordinary calls do not acquire extra microtask yields. Interactive PTYs
   // are timing-sensitive enough that needless awaits can change which terminal frame a poll sees.
@@ -973,7 +994,7 @@ async function dispatchTracked(
   if (!nested && requestId && !preAckPolicyRefusal && !supersededConversation && !compacting) {
     const explicitPoll = name === 'write_stdin' && args && typeof args === 'object'
       ? (args as { session_id?: number }).session_id : undefined;
-    const principal = executionPrincipal(requestId, context.caller.sessionId, allowUnattributed);
+    const principal = executionPrincipal(requestId, context.caller.sessionId);
     await acknowledgeBackgroundExecOutput(principal, startedAt, explicitPoll);
   }
   let admissionRefusal = preAckPolicyRefusal;
@@ -1008,7 +1029,10 @@ async function dispatchTracked(
         : supersededConversation
         ? Promise.resolve(
             fail(
-              'CONVERSATION_SUPERSEDED: Compact & Resume replaced this ChatGPT conversation. Its transcript remains readable, but it can no longer execute local tools. Continue only in the replacement chat; no local tool was run.'
+              'CONVERSATION_SUPERSEDED: Compact & Resume replaced this ChatGPT conversation. Its transcript remains readable, but it can no longer execute local tools. ' +
+                (replacement
+                  ? `The work continues in https://chatgpt.com/c/${replacement.conversationId}${replacement.title.trim() ? `, shown in Chat On Steroids as ${JSON.stringify(replacement.title.trim())}` : ''}. Tell the user to continue there; no local tool was run.`
+                  : 'Continue only in the replacement chat; no local tool was run.')
             )
           )
         : silentCeilingWorker
@@ -1046,6 +1070,8 @@ async function dispatchTracked(
         : invokeHandler()
   );
   markTiming('handler');
+  // Nested exec children are counted under their own names, like direct calls.
+  noteToolCall(name, toolOutcome(result), Date.now() - callStartedAt);
   if (identityRefusals.has(result)) rememberIdentityRefusal(requestId, name);
   // Identity, once, from this call's own evidence — see callerConversation. `agents` has
   // already established its own inside the call and adopted it, and re-reading here would
@@ -1107,7 +1133,10 @@ async function dispatchTracked(
   // The Plugins handler owns validation/redaction of external results. A dispatcher refusal
   // never visited that owner and therefore needs its own single redaction pass.
   const baseResult = surface === 'plugins' && !handlerRan ? pluginManager.redactResult(result) as ToolResult : result;
-  let delivered = nested ? baseResult : withUnattributedNotice(
+  // A tool that reads nothing belonging to a chat (usage) answers before the page's evidence
+  // for its request arrives; the attribution notice would only add noise to every such answer.
+  const identityFree = IDENTITY_FREE_TOOLS.has(name);
+  let delivered = nested ? baseResult : identityFree ? (deliveryFenced ? baseResult : withInbox(context.caller, context.agent, baseResult, isFinish)) : withUnattributedNotice(
     context.caller.conversationId,
     deliveryFenced ? baseResult : withInbox(context.caller, context.agent, baseResult, isFinish),
     context.caller.requestId,
@@ -1170,6 +1199,9 @@ async function dispatchTracked(
   // are measured separately because a row cannot contain the time of its own later commit.
   const durationMs = recorderStartedAt - startedAt;
   markTiming('delivery');
+  // #1662: a call recorded while its answer is still held lets a due fresh-turn continue go in
+  // while ChatGPT still sees the call running; the answer waits for it below, bounded.
+  const closeHold = !nested && context.caller.conversationId ? openCallHold(context.caller.conversationId) : null;
   const recording = recordToolCall({
     nested,
     tool: name,
@@ -1193,7 +1225,7 @@ async function dispatchTracked(
   // broken history never breaks the tool itself. Only the degraded/unidentified path remains
   // fire-and-forget because it may still spend a grace window waiting for page evidence.
   if (context.caller.conversationId) {
-    await recording;
+    try { await recording; } finally { await closeHold?.(); }
   } else {
     void recording.then(() => logInfo(`mcp recording surface=${surface} recorder_async_ms=${Date.now() - recorderStartedAt}`));
     holdWhileSettling(context, recording);
@@ -1333,7 +1365,14 @@ async function liveWorkspace(): Promise<{ workspace: { virtual: string; real: st
   if (!learned) return { workspace: null, missing: null };
   // A learned folder can be deleted while its chat sleeps. Keeping it would make every
   // relative path and every command without a workdir fail with "Not found" for that folder.
-  const exists = await fs.stat(learned.real).then((stat) => stat.isDirectory(), () => false);
+  // A folder on a server (#1469) is checked there. Only a folder that is gone is forgotten: a
+  // connection that failed keeps it, and the call that needs it says why it cannot reach it.
+  const name = learned.virtual.split('/').find(part => part.length > 0)?.toLowerCase();
+  const server = getConfig().roots.find(root => root.remote !== undefined && root.name.toLowerCase() === name);
+  const exists = server
+    ? await fsForRoot(server).getMetadata(learned.real).then(meta => meta.isDirectory,
+      (error: { code?: string }) => error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR')
+    : await fs.stat(learned.real).then((stat) => stat.isDirectory(), () => false);
   if (exists) return { workspace: learned, missing: null };
   forgetMissingWorkspace(learned.real);
   return { workspace: null, missing: learned.virtual };
@@ -1342,7 +1381,7 @@ async function liveWorkspace(): Promise<{ workspace: { virtual: string; real: st
 export async function resolveIn(
   roots: Parameters<typeof resolvePath>[0],
   requested: string,
-  options: { allowMissing?: boolean; base?: string | null; access?: 'read' } = {}
+  options: { allowMissing?: boolean; base?: string | null; access?: 'read'; remote?: boolean } = {}
 ): Promise<Resolved> {
   // The user's own Skill folders are served only to read tools, and never become a workspace.
   if (isUserSkillVirtualPath(requested)) {
@@ -1359,6 +1398,7 @@ export async function resolveIn(
   const base = options.base !== undefined ? options.base : (workspace?.virtual ?? null);
   const resolveOptions = {
     ...(options.allowMissing === undefined ? {} : { allowMissing: options.allowMissing }),
+    ...(options.remote === undefined ? {} : { remote: options.remote }),
     base
   };
   const resolved = await resolveLinkedSkillAlias(roots, requested, resolveOptions) ??
@@ -1374,6 +1414,8 @@ export interface ResolvedCwd {
   virtual: string;
   /** True when the caller named no folder, so the workspace or first root was used instead. */
   defaulted: boolean;
+  /** Set when the folder is on a server (#1469): commands then run there over ssh. */
+  remote?: RemoteFolder;
 }
 
 /**
@@ -1401,7 +1443,12 @@ export async function resolveCwd(ctx: ToolContext, virtualPath: string | undefin
   const fallback = firstTaskRoot(ctx.roots);
   const target = provided ? virtualPath : (workspace?.virtual ?? (fallback ? `/${fallback.name}` : ''));
   if (!target) throw new SandboxError('No folder is approved, so there is nowhere to run');
-  const resolved = await resolveIn(ctx.roots, target);
+  const resolved = await resolveIn(ctx.roots, target, { remote: true });
+  const { remote } = resolved.root;
+  if (remote) {
+    if (!(await fsForRoot(resolved.root).getMetadata(resolved.real)).isDirectory) throw new SandboxError('workdir must be a folder');
+    return { real: resolved.real, virtual: resolved.virtual, defaulted: !provided, remote };
+  }
   const stat = await fs.stat(resolved.real);
   if (!stat.isDirectory()) throw new SandboxError('workdir must be a folder');
   return { real: resolved.real, virtual: resolved.virtual, defaulted: !provided };

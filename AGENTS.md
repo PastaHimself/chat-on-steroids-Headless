@@ -21,7 +21,7 @@ changed lines before applying an older patch. Document the work and its actual v
 the code currently does it. Known implementation gaps are collected in §21 instead of being
 mixed into the happy path as features.
 
-Runtime declarations rechecked **2026-10-15** for the Headless follow-up. App/extension **2.1.34**,
+Runtime declarations rechecked **2026-10-20** for the Headless follow-up. App/extension **2.1.43**,
 bridge protocol **14** in the checked declarations (`package.json`, `src/main/version.ts`,
 `extension/manifest.json`). This does not prove release, installation or live Chrome behavior.
 
@@ -206,7 +206,7 @@ define the tool/config/wire contract. README and worklogs are secondary and can 
 | Strict chat allowlist | Off. | When on, every model-facing tool call needs exact attribution. Existing/direct browser chats require explicit Trust from the chat list. A fresh chat opened by the CoS composer gains an explicit Trust entry only after its exact opening row authoritatively binds to the new conversation. Broker-owned workers follow their exact owning prime and a committed Compact & Resume successor follows its durable source lineage. Block still wins, revocation is dynamic, and unattributed calls are refused even when the ordinary unattributed allowance is on. |
 | Recover ordinary/agent tabs | Off. | Goal/Loop can independently justify recovery; history alone cannot. |
 | Automatic Continue | On. | Unfinished-response recovery also serves enabled Goal/Loop. This switch controls ordinary chats; explicit Off survives and malformed config disables it. See §14. |
-| Timed fresh turns | Off (`ui.rotateTurnMinutes=0`, including migration). | Opt-in 1–120 minutes, normally 30. Only exactly owned ordinary non-Pro turns after attributed tool results; active broker families, workers/helpers, Goal/Loop and compaction stay excluded. Outbox receipts and tool drain gate Send. See §14. |
+| Timed fresh turns | Off (`ui.rotateTurnMinutes=0`, including migration). | Opt-in 1–120 minutes, normally 30. Only exactly owned ordinary and Goal/Loop non-Pro turns at held attributed tool results; active broker families, workers/helpers and compaction stay excluded. Outbox receipts and tool drain gate Send. See §14. |
 | Goal / Loop | Off, preferred mode Goal. Both decision backends default to ChatGPT, helper `gpt-6` High (`DEFAULT_HELPER_CHAT_MODEL`, which High runs on its thinking lane); a config holding a superseded helper (`SUPERSEDED_HELPER_CHAT_MODELS`: `gpt-5.6-sol`, `gpt-6-thinking`) adopts it on load. | API uses the configured OpenRouter/custom endpoint and stored model. These defaults are not account-availability proof. |
 | Ordinary new-chat model | Automatic: no persisted model or reasoning override. | Optional `ui.defaultChatModel` / `ui.defaultChatReasoning` apply only to a fresh ordinary chat before it has a conversation selection. A recorded conversation or accepted opening input wins. Worker and Goal/Loop/Plan defaults remain separate. |
 | Desktop | Windows on; macOS retains its off default and separate native OS consent; Linux supports extension browser control. | Existing screen/control grants also govern browser tools; unsupported native clipboard remains masked. No new per-tab permission dialog. |
@@ -3121,7 +3121,7 @@ awaiting-summary -> awaiting-chat -> claimed -> committing -> committed
    token/message/turn identity. Enforce minimum and bounded brief content; do not capture the
    latest convenient assistant text. Once the authored handoff anchor is durable (`sent`), binding
    it lets the bridge capture from the recorder's bounded interval after that anchor (store
-   `readHandoffResponse`): exactly one local generation, its latest boundary a completed
+   `readHandoffResponse`): exactly one local generation (excluding a delayed source end only with independent pre-anchor chronology), its latest boundary a completed
    `turn_end`, exactly one nonempty final. That outranks the mounted Fiber shape, which can
    lose the terminal when ChatGPT remounts a long answer under another assistant id. A second
    generation for the same user message (Retry/regenerate) fails closed; never pick the
@@ -3361,6 +3361,11 @@ Legacy shadow repair requires exact old continuation proof. It may repair missin
 it must not guess a new rebind, delete history or become the path for new continuations.
 
 ## 16. Multiple prime families and reusable workers
+
+v2.1.43 opens a worker on Activity first (`renderer/agent-activity.ts`): exact tool
+actions, results and changed files. Its conversation remains a separate view.
+`agent-admission.ts` adapts upstream local API entry points to the existing Headless
+`worker-admission.ts`; MCP, Discord and local controls share one admission owner.
 
 **Intent:** each prime can delegate bounded work to its own reusable workers while several
 independent user tasks run at once. Inside a family the worker topology is a star: workers report
@@ -3853,6 +3858,9 @@ leases, approved-root revalidation and caller incarnation; MCP and remote contro
 `discord/src/state.ts` owns only bot grants, setup drafts, local session mappings and notification
 checkpoints. It never reads backend ledgers. Discord status skips provider-scoped worker reads
 for an unbound admitted local session, so a legitimate `no_chat` cannot hide its input status.
+Discord `/workerlogs` and recorded history show bounded tool outcomes, results and changed-file
+counts from the existing Control API event projection. Missing results remain explicitly
+unknown; shortening a result is labelled. These read-only views grant no worker authority.
 Discord status prioritizes provider restrictions, compaction attention and recovery attempts
 over a saved open-turn marker. An open recorded turn is shown as Turn Open and does not prove
 provider liveness; a reload alone does not prove assistant recovery. Recovery kinds/deadlines
@@ -4883,6 +4891,10 @@ failures remain explicit, with no Linux/helper fallback that bypasses the capabi
 
 ## 19. Debugging, tests and working here
 
+Plugin refresh UI acknowledgements persist only SHA-256 declaration digests. Legacy plaintext
+acknowledgements migrate before removal; asynchronous paints prove their latest renderer
+generation before changing the reminder. This is presentation only, never refresh authority.
+
 Before editing, inspect `git status --short` and `git diff -- <intended files>`. Reproduce one
 concrete identity through the relevant owners. State the intended behavior and the first wrong
 transition, then repair that owner. For a race, pause A before publication, complete B, resume A
@@ -4982,9 +4994,14 @@ Tests: `report-scrub.test.ts`, `diagnostics-report.test.ts` and `ipc.test.ts` (n
 
 ## 20. Build, installation, updater and release
 
+The v2.1.43 source integration, immutable provenance, complete commit/file dispositions,
+validation gates and production backup blocker are tracked in `docs/upgrades/v2.1.43.md`.
+Source integration does not establish installation or feature parity. Headless CI/publication
+remains fork-owned; upstream native/Firefox publication jobs are not activated.
+
 Source, bundle, package, installed bytes and live behavior are separate gates (§3). `runtime/durable-formats.json`
-now includes `providerHistoryBackoff:1` and `freshTurns:1`; older code cannot ignore the
-restriction ledger or misparse rotation rows during a code-only downgrade. Use a matching
+includes `providerHistoryBackoff:1`, `freshTurns:1` and `providerInputActions:1`; older code cannot ignore the
+restriction ledger or misparse rotation, native edit or branch rows during a code-only downgrade. Use a matching
 encrypted pre-upgrade backup and the existing restore/reconciliation hold for rollback. The app id
 is `com.chatonsteroids.app`. Native release targets are Windows x64/arm64 NSIS, macOS x64/arm64
 DMG+ZIP and Linux x64/arm64 AppImage+DEB. Windows is per-user-capable and `asInvoker`; replacing

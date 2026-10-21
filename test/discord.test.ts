@@ -1,3 +1,4 @@
+import { historyDescription } from '../discord/src/ui.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -441,4 +442,22 @@ it('offers owner-bound operation inspection and never resends an uncertain recei
   expect(api.action).not.toHaveBeenCalled();
   const stolen = { ...interaction('operations', {}, other), customId: choose, values: [operation], isChatInputCommand: () => false, isStringSelectMenu: () => true };
   await controller.handle(stolen); expect(api.action).not.toHaveBeenCalled(); expect(stolen.reply).toHaveBeenCalled();
+});
+
+
+it('shows recorded worker action outcomes, bounded results and changed files through Discord history', () => {
+  const shown = historyDescription([{ kind: 'tool_call', position: 4, tool: {
+    summary: { title: 'Updated the dashboard', detail: 'Added the missing regression' }, outcome: 'ok', durationMs: 25,
+    result: { text: 'Regression passed.' }, changes: [{ path: 'src/dashboard.ts', added: 8, removed: 2 }]
+  } }]);
+  expect(shown).toContain('Updated the dashboard');
+  expect(shown).toContain('Outcome: ok');
+  expect(shown).toContain('Regression passed.');
+  expect(shown).toContain('src/dashboard.ts (+8 / -2)');
+  const bounded = historyDescription([{ kind: 'tool_call', position: 5, tool: { summary: { title: 'Read fixture' }, outcome: 'tool_rejected',
+    result: { text: 'x'.repeat(20_000), truncated: true }, changes: [] } }]);
+  expect(bounded.length).toBeLessThan(800);
+  expect(bounded).toContain('tool_rejected');
+  expect(bounded).toContain('[result shortened]');
+  expect(historyDescription([{ kind: 'assistant_message', position: 6, message: { text: 'Existing prose' } }])).toContain('Existing prose');
 });

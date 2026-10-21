@@ -23,8 +23,35 @@ let secretsPath = '';
 let cache: Record<string, string> | null = null;
 /** A successful decrypt asked us to reseal the blob with the current async key. */
 let rotationPending = false;
+/**
+ * True after a read found a file that working secure storage could not turn back into keys:
+ * the key is gone (keychain reset, profile copied to another computer) or the file is damaged.
+ * Every mutation then fails closed, which used to be a dead end. A keychain that is only locked
+ * can look the same, so nothing is done about it unless the person asks
+ * (`setAsideUnreadableSecrets`), and even then only after one more attempt to read it.
+ */
+let unreadable = false;
+const UNAVAILABLE = 'Secure OS credential storage is unavailable, so the key was not saved';
+const UNREADABLE = 'The saved keys could not be read, so the key was not saved';
+
+export function storedSecretsUnreadable(): boolean {
+  return unreadable;
+}
 /** Invalidates a decrypt that started before an explicit store reset/delete boundary. */
 let loadGeneration = 0;
+/** Counts every change to the stored secrets this process sees, read or written. */
+let revision = 0;
+function setCache(values: Record<string, string> | null): void {
+  cache = values;
+  revision += 1;
+}
+/**
+ * Changes whenever the stored secrets may have: lets a cache scoped to a credential notice a new
+ * one without keeping the credential or anything derived from it.
+ */
+export function secretsRevision(): number {
+  return revision;
+}
 /**
  * Coalesces concurrent cache misses into one disk/keyring read.
  *
@@ -63,7 +90,7 @@ function enqueue<T>(operation: () => Promise<T>): Promise<T> {
  * drafts, one per active provider), so they live under the same OS-backed encrypted blob
  * as the rest and never leave the main process.
  */
-export type SecretKey = 'openaiApiKey' | 'bridgeToken' | 'openRouterApiKey' | 'customProviderApiKey' | `plugin:${string}` | `setup:${string}`;
+export type SecretKey = 'openaiApiKey' | 'bridgeToken' | 'openRouterApiKey' | 'customProviderApiKey' | `plugin:${string}` | `setup:${string}` | `mcp:path:${string}`;
 
 export function initSecretsPath(userDataDir: string): void {
   secretsPath = path.join(userDataDir, FILE_NAME);
@@ -187,6 +214,7 @@ async function loadAll(): Promise<Record<string, string>> {
       // there is no supported secure Linux v10 format to migrate here.
       logWarn('Stored Linux credentials use Electron’s insecure hard-coded-key fallback; the file was left untouched');
       rotationPending = false;
+      unreadable = true;
       return {};
     }
     const decrypted = await keychain(() => safeStorage.decryptStringAsync(blob));
@@ -195,13 +223,15 @@ async function loadAll(): Promise<Record<string, string>> {
     // unavailable provider. Once deletion starts, plaintext from the older generation must never
     // republish credentials that have just been removed from disk.
     if (generation !== loadGeneration) return cache ?? {};
-    cache = parsed;
+    setCache(parsed);
+    unreadable = false;
     rotationPending = decrypted.shouldReEncrypt;
   } catch (err) {
     if (generation !== loadGeneration) return cache ?? {};
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
-      cache = {};
+      setCache({});
+      unreadable = false;
       rotationPending = false;
     } else {
       // Electron's async API can reject while a key provider is temporarily unavailable, but
@@ -218,10 +248,11 @@ async function loadAll(): Promise<Record<string, string>> {
           : 'Stored credentials are temporarily unavailable because secure storage could not decrypt them'
       );
       rotationPending = false;
+      unreadable = available;
       return {};
     }
   }
-  return cache;
+  return cache ?? {};
 }
 
 async function readAll(): Promise<Record<string, string>> {
@@ -250,7 +281,7 @@ async function writeAll(values: Record<string, string>): Promise<void> {
   await fs.rename(tmp, secretsPath);
   // Published only once the rename succeeded. A failed disk write must leave the
   // process believing the old state, not a credential it never actually saved.
-  cache = values;
+  setCache(values);
   rotationPending = false;
 }
 
@@ -318,9 +349,7 @@ export function setSecret(key: SecretKey, value: string): Promise<void> {
     // Keychain/Secret Service is unavailable. A mutation must never compose from that view:
     // if the read did not establish an authoritative cache, writing it would replace real
     // encrypted credentials with a partial/empty blob after a transient unlock race.
-    if (cache === null) {
-      throw new Error('Secure OS credential storage is unavailable, so the key was not saved');
-    }
+    if (cache === null) throw new Error(unreadable ? UNREADABLE : UNAVAILABLE);
     const all = { ...current };
     const trimmed = isApiKey(key) ? cleanApiKey(value) : value.trim();
     if (trimmed === '') {
@@ -343,10 +372,11 @@ export function deleteAllSecrets(): Promise<void> {
     // view instead of resurrecting the deleted credentials into cache.
     loadGeneration += 1;
     rotationPending = false;
-    cache = null;
+    setCache(null);
     try {
       await fs.rm(secretsPath, { force: true });
-      cache = {};
+      setCache({});
+      unreadable = false;
     } catch (err) {
       logError(`Could not remove stored credentials: ${(err as Error).message}`);
       throw err;
@@ -354,10 +384,34 @@ export function deleteAllSecrets(): Promise<void> {
   });
 }
 
+/**
+ * The way out of an unreadable file, taken only when the person asks for it: the file is renamed
+ * and kept, and the store starts empty. Returns the backup's name, or null when the file could
+ * be read after all (a keychain that was only locked) and nothing was changed.
+ */
+export function setAsideUnreadableSecrets(now: Date = new Date()): Promise<string | null> {
+  return enqueue(async () => {
+    if (!(await isEncryptionAvailable())) throw new Error('Secure OS credential storage is unavailable, so nothing was changed');
+    if (cache === null) await readAll();
+    if (cache !== null || !unreadable) return null;
+    const stamp = now.toISOString().replace(/[^0-9]/g, '');
+    const name = `secrets.unreadable-${stamp.slice(0, 8)}-${stamp.slice(8, 14)}-${stamp.slice(14, 17)}.bin`;
+    // A decrypt still under way must not publish the old file's contents afterwards.
+    loadGeneration += 1;
+    rotationPending = false;
+    await fs.rename(secretsPath, path.join(path.dirname(secretsPath), name));
+    setCache({});
+    unreadable = false;
+    logWarn(`Stored credentials could not be read; at the user's request the file was set aside as ${name}`);
+    return name;
+  });
+}
+
 /** Test seam: forgets the decrypted blob so the next read comes from disk. */
 export function resetSecretsCacheForTests(): void {
   loadGeneration += 1;
-  cache = null;
+  unreadable = false;
+  setCache(null);
   rotationPending = false;
   loadInFlight = null;
 }

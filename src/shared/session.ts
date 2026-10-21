@@ -92,7 +92,7 @@ export interface AssetRef {
   height?: number;
 }
 
-/** Recording-asset storage is global; cleanup never changes the configured 2 GiB ceiling. */
+/** Recording-asset storage is global; cleanup never changes the configured ceiling. */
 export interface ImageStorageInfo {
   /** All bytes charged to the global session-asset quota, including preserved non-image assets. */
   usedBytes: number;
@@ -100,12 +100,21 @@ export interface ImageStorageInfo {
 }
 
 export interface ImageStorageClearResult extends ImageStorageInfo {
-  /** Physical image bytes removed by this explicit user operation. */
+  /** Physical bytes removed by this explicit user operation. */
   freedBytes: number;
   removedFiles: number;
 }
 
-export type ImageStorageClearMode = 'oldest-gib' | 'all';
+/**
+ * `oldest-gib` and `all` remove images only. `old-chats-gib` empties whole chats unused for a
+ * week, oldest first, of images and long texts until about 1 GiB is free (#1406).
+ */
+export type ImageStorageClearMode = 'oldest-gib' | 'all' | 'old-chats-gib';
+
+/** The recording storage sizes Settings offers, in GiB. The first is the default. */
+export const RECORDING_STORAGE_LIMITS_GIB = [2, 5, 10, 20, 50] as const;
+export type RecordingStorageLimitGiB = (typeof RECORDING_STORAGE_LIMITS_GIB)[number];
+export const DEFAULT_RECORDING_STORAGE_GIB: RecordingStorageLimitGiB = 2;
 
 /** Compact human-readable presentation of one tool call. */
 export interface ActivitySummary {
@@ -378,6 +387,12 @@ export type SessionEvent =
       wireTokenEstimate?: number;
       /** Native badge on this exact user message. Missing means unobserved; null means absent. */
       reaction?: string | null;
+      /** Its parent in ChatGPT's message tree ("root" for a chat's first question), as first seen. */
+      parentId?: string;
+      /** Edit & resubmit (#365): the question this one is a later version of, in ChatGPT's own edit. */
+      replaces?: string;
+      /** A Goal or Loop follow-up its page typed: the app's message, not the person's (#1655). */
+      automatic?: true;
       attachments?: import('./input.js').InputAttachment[];
       assets?: AssetRef[];
       /** Image assets explicitly removed from local recording storage; same-message replay cannot restore them. */
@@ -485,7 +500,7 @@ export type SessionEvent =
   | (BaseEvent & { kind: 'turn_end'; outcome: TurnOutcome; detail?: string; reason?: 'thinking_failed'; providerMessageId?: string;
       /** The user sent a message into this running answer and ChatGPT carried the response on into the next turn (#1301). */
       continued?: true })
-  | (BaseEvent & { kind: 'chat_error'; message: StoredText; recoverable?: boolean; blocking?: boolean; reason?: 'thinking_failed' | 'stream_gone' | 'conversation_deleted'; conversationId?: string })
+  | (BaseEvent & { kind: 'chat_error'; message: StoredText; recoverable?: boolean; blocking?: boolean; retryAt?: number; reason?: 'thinking_failed' | 'stream_gone' | 'conversation_deleted'; conversationId?: string })
   | (BaseEvent & { kind: 'tool_call'; call: ToolCallRecord; origin?: number })
   /**
    * An app-authored line. `continuation` names the Compact & Resume it is about, so the
@@ -587,6 +602,11 @@ export interface SessionOrigin {
   agentId: string | null;
   /** The worker's task, verbatim from `agents action=spawn`. Empty for a resume. */
   task: string;
+  /**
+   * Branch in new chat (#482): the ChatGPT chat and exact native reply this chat was branched
+   * from, with `fromSessionId` naming the source session. Presentation only; nothing carries over.
+   */
+  branchOf?: { conversationId: string; messageId: string };
 }
 
 /** Historical presentation projected from an accepted broker snapshot; grants no worker authority. */
@@ -927,6 +947,8 @@ export interface AgentInfo {
   label: string;
   /** Spawn brief, or a bounded inbox preview for the current reused assignment. */
   task: string;
+  /** The job's name from the spawn brief, kept when a wake replaces `task`; display only. */
+  jobTitle?: string;
   /**
    * Requested reasoning level for this worker's chat, or null to inherit the default.
    *
@@ -1308,3 +1330,9 @@ export function providerUnavailableFor(summary: Pick<SessionSummary, 'conversati
   conversationId = summary?.conversationId): NonNullable<SessionSummary['providerUnavailable']>[string] | undefined {
   return conversationId ? summary?.providerUnavailable?.[conversationId] : undefined;
 }
+/**
+ * Stored title of the chat that collects tool calls no chat could be named for. It doubles as the
+ * marker the app finds that chat by (with no conversation), so it stays English on disk and the
+ * window shows it in the interface language.
+ */
+export const UNATTRIBUTED_SESSION_TITLE = 'Unattributed activity';

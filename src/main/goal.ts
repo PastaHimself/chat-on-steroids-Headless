@@ -46,24 +46,25 @@ import { recoveryHeld } from './recovery-hold.js';
 
 import { requestBrowserDecision, authorizeBrowserHelperRetry } from './session/input.js';
 import { goalErrorKey, goalErrorMessage } from '../shared/goal-errors.js';
-import { MAX_CHATGPT_MESSAGE_CHARS, userPromptText } from '../shared/user-prompt.js';
+import { userPromptText } from '../shared/user-prompt.js';
 import { planProgressText, type TaskProgressUpdate } from '../shared/task-progress.js';
 import { TaskRequestError } from './task-request.js';
 import { GOAL_MARKER_INSTRUCTION, templateGoalDecision } from '../shared/goal-templates.js';
 import type { GoalBackend } from '../shared/types.js';
-import { createHash } from 'node:crypto';
 import { defaultConfig, getConfig } from './config.js';
 import { getChatModels, refreshForUnoffered } from './chat-models.js';
 import { DEFAULT_HELPER_CHAT_MODEL, resolveChatModel } from '../shared/chat-models.js';
 import type { ReasoningEffort } from '../shared/session.js';
 import { writeDurableNow, writeDurableSnapshotSoon, writeDurableSoon } from './durable.js';
+import { goalHelperPromptLimit, noteGoalHelperUnanswered, resetGoalHelperSizeForTests } from './goal-helper-size.js';
+export { GOAL_HELPER_SIZE_STATE, restoreGoalHelperSize } from './goal-helper-size.js';
 import { logInfo, logWarn } from './logger.js';
-import { getSecret } from './secrets.js';
+import { getSecret, secretsRevision } from './secrets.js';
 import { findSessionByConversation, getSession, readEvents, readHandoff, readRecentEvents, turnHasMcpCall } from './session/store.js';
 import { providerUnavailableFor, foldProgress } from '../shared/session.js';
 import { modelFacingText } from '../shared/content-reference.js';
 import { supportsFinishAutomation } from '../shared/finish.js';
-import { BROWSER_PICKUP_MAX_ATTEMPTS } from '../shared/recovery.js';
+import { BROWSER_PICKUP_MAX_ATTEMPTS, rotationMessage } from '../shared/recovery.js';
 
 /** A finish-only preference has authority only while the finish tool is available. */
 export async function astraFinishOnly(sessionId: string, conversationId: string): Promise<boolean> {
@@ -80,6 +81,7 @@ export function loopAfterTurnFor(conversationId: string): boolean {
   return control.enabled && (control.afterTurn || getConfig().ui.finishTool !== true);
 }
 import { resumeBootstrapMatches, resumeBootstrapText } from './session/handoff.js';
+import { noteAutomaticReply } from './session/automatic-replies.js';
 import {
   GOAL_LOOP_STOP_REFUSED,
   GOAL_LOOP_TRAILER,
@@ -151,7 +153,8 @@ export function goalProviderKey(kind: GoalProviderKind): Promise<string | null> 
 const MAX_CONTEXT_MESSAGES = 120;
 /** Recent CoS calls read to count per turn; a busy turn can make hundreds. */
 const MAX_TOOL_CALLS_COUNTED = 500;
-const HOLD_TOOLS = new Set(['session_finish', 'keep_astra_on_forever']);
+/** Calls that wait for the app (Session Finish, keep-on): their result is Loop's next instruction, not work. */
+export const GOAL_HOLD_TOOLS: ReadonlySet<string> = new Set(['session_finish', 'keep_astra_on_forever']);
 /** …and how many characters of them, so one 200k-character answer cannot be the whole prompt. */
 const MAX_CONTEXT_CHARS = 120_000;
 /** The per-message cut. Long enough to carry an answer's substance, short enough to fit many. */
@@ -1799,6 +1802,7 @@ export async function claimGoalRecoveryStopNow(conversationId: string, replyId: 
 export function resetGoalStateForTests(): void {
   goalControlRecoveryRequired = false; compoundGoalControls.clear();
   for (const draft of drafts.values()) draft.abort?.abort();
+  resetGoalHelperSizeForTests();
   invalidateGoalControlWrites(pendingGoalObjectives);
   invalidateGoalControlWrites(pendingGoalSwitches);
   pendingGoalObjectives.clear();
@@ -2021,7 +2025,8 @@ async function requestGoalDecision(request: GoalRequest): Promise<GoalDecision |
     const reference = request.messages.map(message => ({ ...message }));
     let omitted = false;
     const incomplete = replacement + ' Some older reference rows or text were omitted to fit the browser; absence is not completion.';
-    while (render(reference, omitted ? incomplete : replacement).length > MAX_CHATGPT_MESSAGE_CHARS) {
+    const limit = goalHelperPromptLimit();
+    while (render(reference, omitted ? incomplete : replacement).length > limit) {
       const firstUser = reference.findIndex(message => message.role === 'user');
       const last = reference.length - 1;
       const newestResult = reference.findLastIndex(message => message.role === 'assistant');
@@ -2040,10 +2045,13 @@ async function requestGoalDecision(request: GoalRequest): Promise<GoalDecision |
     const direction = omitted ? incomplete : replacement;
     // Each decision owns one Temporary Chat and the complete bounded reference.
     // Historical helper identities remain fenced, but never receive new requests.
-    const decision = normalizeGoalDecision(await requestBrowserDecision(render(reference, direction), request.signal, {
+    const prompt = render(reference, direction);
+    const decision = normalizeGoalDecision(await requestBrowserDecision(prompt, request.signal, {
       sourceSessionId: request.sourceSessionId, conversationId: null,
       lifetime: 'temporary-planner',
       publish: request.publish,
+      // Only a timeout teaches the size: a newer turn or Goal switched off also cancels a prompt.
+      onSentUnanswered: () => { if (request.signal.reason?.name === 'TimeoutError') noteGoalHelperUnanswered(prompt.length); },
       ...goalHelperSelection()
     }), false);
     request.signal.throwIfAborted();
@@ -2231,7 +2239,7 @@ async function run(draft: GoalDraft): Promise<void> {
 
   const abort = new AbortController();
   draft.abort = abort;
-  const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => abort.abort(new DOMException('Goal request timed out', 'TimeoutError')), REQUEST_TIMEOUT_MS);
   try {
     const decision = draft.backend === 'templates' ? templateGoalDecision(messages.filter((message) => message.role === 'assistant').at(-1)?.content ?? '', Math.floor(Math.random() * 200), Math.floor(Math.random() * 200)) : await requestDrivingDecision({
       backend: draft.backend,
@@ -2296,6 +2304,11 @@ async function run(draft: GoalDraft): Promise<void> {
       draft.reply = '';
       return settle(draft, 'no-reply');
     }
+    // A Goal whose chat keeps giving the same visible answer cannot be satisfied by asking again:
+    // it sees answers, not tool results. On 2026-10-14 one got thirteen "verify it" follow-ups to
+    // "done" in ten minutes. Loop is exempt; repeating is its job.
+    const repeated = draft.mode === 'goal' ? goalRepeatsItself(messages) : null;
+    if (repeated !== null) return pauseRepeatingGoal(draft, repeated);
     // Typed rather than written. See humanReply: the em dashes go, and a couple of the
     // mistakes a person leaves behind go in. After the NO_REPLY test above, never before it.
     draft.reply = draft.backend === 'templates' ? humanReply(decision.reply.slice(0, -GOAL_MARKER_INSTRUCTION.length)) + GOAL_MARKER_INSTRUCTION : humanReply(decision.reply);
@@ -2309,6 +2322,8 @@ async function run(draft: GoalDraft): Promise<void> {
       }
       return;
     }
+    // Its page types it: the message it comes back as is marked the app's (#1655).
+    noteAutomaticReply(draft.conversationId, draft.reply);
     settle(draft, 'ready');
   } catch (err) {
     const detail = (err as Error).message;
@@ -2788,6 +2803,42 @@ function deltaOf(parsed: unknown): string {
   return typeof content === 'string' ? content : '';
 }
 
+/** Answers that differ only in case, punctuation or spacing count as the same answer. */
+const REPEAT_ROUNDS = 3;
+function answerKey(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+/**
+ * The answer a Goal chat has given at the end of each of its last three rounds, when it is the
+ * same every time; otherwise null. A round is everything after one user message. Exported for tests.
+ */
+export function goalRepeatsItself(messages: readonly ChatMessage[], rounds = REPEAT_ROUNDS): string | null {
+  const finals: string[] = [];
+  let inRound = false;
+  for (const message of messages) {
+    if (message.role === 'user') { inRound = true; finals.push(''); continue; }
+    if (inRound) finals[finals.length - 1] = message.content;
+  }
+  const last = finals.slice(-rounds);
+  if (last.length < rounds) return null;
+  const key = answerKey(last[0]!);
+  return key && last.every(answer => answerKey(answer) === key) ? last.at(-1)!.trim() : null;
+}
+
+async function pauseRepeatingGoal(draft: GoalDraft, answer: string): Promise<void> {
+  logInfo(`goal: ${draft.conversationId} gave the same answer ${REPEAT_ROUNDS} times in a row; pausing Goal instead of asking again`);
+  await setGoalSwitchNow(draft.conversationId, 'goal', false).catch(() => undefined);
+  const shown = answer.length > 80 ? `${answer.slice(0, 77)}...` : answer;
+  const { recordNote } = await import('./session/recorder.js');
+  await recordNote(draft.sessionId, `Goal paused: ChatGPT gave the same answer three times in a row ("${shown}"). ` +
+    'Goal sees answers, not tool results, so asking again would only repeat itself. Check the chat, then send a message or switch Goal back on.').catch(() => undefined);
+  const { noticeChatStopped } = await import('./stuck-notice.js');
+  noticeChatStopped('Goal paused', 'ChatGPT gave the same answer three times in a row, so Goal stopped asking. Open the chat to continue.', draft.sessionId);
+  draft.reply = '';
+  settle(draft, 'no-reply');
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -2886,13 +2937,17 @@ export async function conversationMessages(sessionId: string, deliveredInput: re
   // Only how many CoS calls each turn made. Without it the helper cannot tell "ran the
   // command" from "said it did" and keeps asking for the same work again.
   const callsByTurn = new Map<string, number>();
+  const lastCallOfTurn = new Map<string, number>();
   for (const call of toolCalls) {
     // Hold calls are waiting, not work, exactly as the finish boundary counts them.
-    if (call.kind === 'tool_call' && call.source === 'mcp' && call.turnId && !HOLD_TOOLS.has(call.call.tool)) {
+    if (call.kind === 'tool_call' && call.source === 'mcp' && call.turnId && !GOAL_HOLD_TOOLS.has(call.call.tool)) {
       callsByTurn.set(call.turnId, (callsByTurn.get(call.turnId) ?? 0) + 1);
+      lastCallOfTurn.set(call.turnId, Math.max(lastCallOfTurn.get(call.turnId) ?? -1, call.seq));
     }
   }
   const lastAnswerOfTurn = new Map<string, number>();
+  const answerOfTurn = new Map<string, { at: number; seq: number }>();
+  const rotationSeqs: number[] = [];
   const automaticIds = new Set(inputs.filter(input => input.sessionId === sessionId && input.finishOwner).map(input => input.id));
   // Assistant traffic must not evict the user's middle corrections before selection.
   const events = [...new Map([...recent, ...userReferences].map(event => [event.seq, event])).values()]
@@ -2902,6 +2957,8 @@ export async function conversationMessages(sessionId: string, deliveredInput: re
   for (const event of foldProgress(events)) {
     let next: ChatMessage | null = null;
     if (event.kind === 'user_message') {
+      // ChatGPT may keep a page-inserted message with its Markdown escaped.
+      if (event.message.text.replace(/\\(.)/g, '$1').includes(rotationMessage())) rotationSeqs.push(event.seq);
       if (event.inputId && excludedInputIds.has(event.inputId)) continue;
       // The helper judges the user's work, not the executor's transport guidance.
       const content = clip(event.authoredText ?? userPromptText(event.message.text) ?? event.message.text, MAX_USER_MESSAGE_CHARS);
@@ -2928,11 +2985,35 @@ export async function conversationMessages(sessionId: string, deliveredInput: re
       ordered.push(next);
     }
     const turn = next.role === 'assistant' && 'turnId' in event && typeof event.turnId === 'string' ? event.turnId : null;
-    if (turn && callsByTurn.has(turn)) lastAnswerOfTurn.set(turn, Math.max(lastAnswerOfTurn.get(turn) ?? -1, existingAt ?? ordered.length - 1));
+    if (turn) {
+      const at = Math.max(answerOfTurn.get(turn)?.at ?? -1, existingAt ?? ordered.length - 1);
+      answerOfTurn.set(turn, { at, seq: Math.max(answerOfTurn.get(turn)?.seq ?? -1, event.seq) });
+      if (callsByTurn.has(turn)) lastAnswerOfTurn.set(turn, at);
+    }
+  }
+  // A fresh turn (#1402) continues the turn it replaced, which ends without an answer. Its calls
+  // belong to the answer that finished the work: the first one after the app's own continue.
+  // Only across that continue, so the calls of an unrelated unanswered turn are never borrowed.
+  const carried = new Map<string, number>();
+  for (const [turn, count] of callsByTurn) {
+    if (answerOfTurn.has(turn)) continue;
+    const lastCall = lastCallOfTurn.get(turn)!;
+    const rotation = Math.min(...rotationSeqs.filter(seq => seq > lastCall));
+    if (!Number.isFinite(rotation)) continue;
+    let target: string | null = null;
+    for (const [answered, answer] of answerOfTurn) {
+      if (answer.seq > rotation && (target === null || answer.seq < answerOfTurn.get(target)!.seq)) target = answered;
+    }
+    if (target) {
+      carried.set(target, (carried.get(target) ?? 0) + count);
+      lastAnswerOfTurn.set(target, answerOfTurn.get(target)!.at);
+    }
   }
   for (const [turn, at] of lastAnswerOfTurn) {
-    const count = callsByTurn.get(turn)!;
-    ordered[at] = { ...ordered[at]!, content: `${ordered[at]!.content}\n\n[Chat On Steroids: ${count} tool call${count === 1 ? '' : 's'} ran in this turn. Arguments and results are not shown.]` };
+    const before = carried.get(turn) ?? 0;
+    const count = (callsByTurn.get(turn) ?? 0) + before;
+    const continued = before ? `, ${before} of them before Chat On Steroids continued it in a fresh turn` : '';
+    ordered[at] = { ...ordered[at]!, content: `${ordered[at]!.content}\n\n[Chat On Steroids: ${count} tool call${count === 1 ? '' : 's'} ran in this turn${continued}. Arguments and results are not shown.]` };
   }
   for (const text of deliveredInput.slice(-5)) {
     const content = clip(userPromptText(text) ?? text, MAX_USER_MESSAGE_CHARS);
@@ -3105,8 +3186,17 @@ function undash(text: string): string {
  *
  * A typo is only harmless in prose. Inside a path, a command, a URL or a file name it is a
  * different instruction, and the whole point of this message is that ChatGPT acts on it.
+ * A command is not always in backticks (2026-10-19: "run powershel -NoProfile …"), so the rest
+ * of a clause after run/execute/invoke counts as one, and so does a word followed by a flag.
+ * Quoted text and the word after "word" are what a reply has to say, letter for letter.
  */
-const PROTECTED = /```[\s\S]*?```|`[^`\n]*`|https?:\/\/\S+|\S+[\\/@]\S+|[\w-]+\.[\w-]+/g;
+const PROTECTED = new RegExp([
+  '```[\\s\\S]*?```', '`[^`\\n]*`', 'https?:\\/\\/\\S+', '\\S+[\\\\/@]\\S+', '[\\w-]+\\.[\\w-]+',
+  '"[^"\\n]*"', '“[^”\\n]*”',
+  '\\b(?:run|runs|running|execute|executes|executing|invoke|invokes)\\s[^.,;:!?\\n]*',
+  '\\S+(?=\\s+--?[a-z0-9])',
+  '\\bwords?\\s+\\S+'
+].join('|'), 'gi');
 
 /** One plain lowercase word: no capitals, so an acronym or a model id is never a candidate. */
 const CANDIDATE = /(?<![\w'’-])[a-z][a-z'’]{2,}[a-z](?![\w'’-])/g;
@@ -3237,17 +3327,14 @@ export async function listGoalModels(
 async function allGoalModels(): Promise<GoalModel[]> {
   const endpoint = goalEndpoint();
   const custom = endpoint.kind === 'custom';
-  const key = await goalProviderKey(endpoint.kind);
   // OpenRouter may return a key-restricted catalogue. A cache filled under key A is therefore
-  // not valid under key B. Keep only a one-way fingerprint beside the models rather than the
-  // credential itself; replacing a key immediately changes the cache scope without retaining
-  // either secret for the five-minute listing TTL. A custom endpoint joins the scope by URL,
-  // so switching servers never serves the previous server's catalogue.
-  const keyScope = custom
-    ? `custom:${endpoint.baseUrl.trim()}:${key ? createHash('sha256').update(key).digest('hex') : 'public'}`
-    : key
-      ? createHash('sha256').update(key).digest('hex')
-      : 'public';
+  // not valid under key B. The scope names the stored secrets' revision, read before the key, so
+  // replacing a key changes it at once, without keeping the key or anything derived from it for
+  // the five-minute listing TTL. A custom endpoint joins the scope by URL, so switching servers
+  // never serves the previous server's catalogue.
+  const revision = secretsRevision();
+  const key = await goalProviderKey(endpoint.kind);
+  const keyScope = `${custom ? `custom:${endpoint.baseUrl.trim()}` : 'openrouter'}:${key ? `key@${revision}` : 'public'}`;
   if (modelCache && modelCache.keyScope === keyScope && Date.now() - modelCache.at < MODEL_CACHE_MS) {
     return modelCache.models;
   }

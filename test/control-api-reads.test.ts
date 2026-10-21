@@ -40,6 +40,7 @@ const inputModule = await import('../src/main/session/input.js');
 const readModelModule = await import('../src/main/session/read-model.js');
 const reads = await import('../src/main/control-reads.js');
 const agentsModule = await import('../src/main/agents.js');
+const chatModelsModule = await import('../src/main/chat-models.js');
 
 let dir: string;
 let port = 0;
@@ -757,6 +758,23 @@ describe('delivery proof', () => {
     expect(reads.projectInput(row({ silenceBoundary: { turnId: 't', conversationId: 'c', workSeq: 1 } })).automatic).toBe(false);
     expect(reads.projectInput(row({ finishOwner: { turnId: 't', periodic: false } })).automatic).toBe(true);
     expect(reads.projectInput(row({ transportIntent: 'tool', state: 'tool', offeredAt: 5 }))).toMatchObject({ transportIntent: 'tool', delivery: 'unconfirmed' });
+  });
+});
+
+describe('models', () => {
+  it("serves the saved catalog of the account's models, without the app's own bookkeeping", async () => {
+    const catalog = vi.spyOn(chatModelsModule, 'getChatModels').mockReturnValue({
+      state: 'ready', requestedAt: 5, observedAt: 10, waiting: 'inspecting', error: 'an old failure',
+      models: [{ id: 'gpt-6', label: 'GPT-6', efforts: ['medium', 'high'], aliases: ['gpt-6-thinking'] }]
+    });
+    try {
+      expect((await call('/v1/models')).body).toEqual({
+        state: 'ready', observedAt: 10, models: [{ id: 'gpt-6', label: 'GPT-6', efforts: ['medium', 'high'] }]
+      });
+      expect((await call('/v1/models?refresh=1')).status).toBe(400);
+    } finally {
+      catalog.mockRestore();
+    }
   });
 });
 
